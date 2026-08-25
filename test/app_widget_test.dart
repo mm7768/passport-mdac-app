@@ -1,0 +1,169 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:passport_mdac_app/main.dart';
+
+void main() {
+  testWidgets('owner can enter the MDAC Desk workspace', (tester) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('欢迎回来'), findsOneWidget);
+    expect(find.text('owner@mdac.local'), findsOneWidget);
+
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('早上好，粉肠哥'), findsOneWidget);
+    expect(find.text('活跃客户'), findsOneWidget);
+    expect(find.text('Worker 在线'), findsOneWidget);
+  });
+
+  testWidgets('workspace navigation exposes customers and task queue', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+    expect(find.text('客户档案'), findsOneWidget);
+    expect(find.text('TANG FUMING'), findsOneWidget);
+
+    await tester.tap(find.text('任务'));
+    await tester.pumpAndSettle();
+    expect(find.text('任务队列'), findsOneWidget);
+    expect(find.text('MDAC 批量注册'), findsWidgets);
+  });
+
+  testWidgets('customer screen exposes manual entry and edit actions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('手动录入'), findsOneWidget);
+    await tester.tap(find.text('手动录入'));
+    await tester.pumpAndSettle();
+    expect(find.text('手动录入护照'), findsOneWidget);
+    expect(find.text('Gmail PIN（可留空）'), findsOneWidget);
+    final cancelButton = find.text('取消').last;
+    await tester.ensureVisible(cancelButton);
+    await tester.tap(cancelButton);
+    await tester.pumpAndSettle();
+    expect(find.text('手动录入护照'), findsNothing);
+
+    final customerName = find.text('TANG FUMING');
+    await tester.ensureVisible(customerName);
+    await tester.tap(customerName);
+    await tester.pumpAndSettle();
+    expect(find.text('编辑档案'), findsOneWidget);
+    expect(find.text('Gmail PIN'), findsOneWidget);
+    await tester.tap(find.text('编辑档案'));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑客户档案'), findsOneWidget);
+    expect(find.text('保存修改'), findsOneWidget);
+  });
+
+  testWidgets('manual customer submission closes cleanly', (tester) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('手动录入'));
+    await tester.pumpAndSettle();
+
+    final fields = find.byType(TextFormField);
+    final values = [
+      'MANUAL SUBMIT',
+      'ZX900099',
+      '01/01/1990',
+      'CHINA',
+      'CHN',
+      '01/01/2030',
+      'AB  12 CD',
+    ];
+    for (var index = 0; index < values.length; index++) {
+      await tester.enterText(fields.at(index), values[index]);
+    }
+    final genderDropdown = find.byType(DropdownButtonFormField<String>).first;
+    await tester.ensureVisible(genderDropdown);
+    await tester.tap(genderDropdown);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('男').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('创建客户'));
+    await tester.tap(find.text('创建客户'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('MANUAL SUBMIT'), findsWidgets);
+  });
+
+  testWidgets('ocr review shows passport number and structured fields', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入护照'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('选择单张图片'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看草稿'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('审核').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('人工确认 OCR 结果'), findsOneWidget);
+    expect(find.text('护照号码'), findsWidgets);
+    expect(find.text('出生日期（DD/MM/YYYY）'), findsOneWidget);
+    expect(find.text('护照有效期（DD/MM/YYYY）'), findsOneWidget);
+    expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(2), '02021990');
+    expect(
+      tester.widget<TextFormField>(fields.at(2)).controller?.text,
+      '02/02/1990',
+    );
+
+    await tester.tap(find.text('取消').last);
+    await tester.pumpAndSettle();
+    expect(find.text('人工确认 OCR 结果'), findsNothing);
+  });
+
+  testWidgets('phone width keeps primary pages free of layout exceptions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    for (final section in ['客户', '任务', '设置']) {
+      await tester.tap(find.text(section));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull, reason: '布局异常发生在 $section 页面');
+    }
+  });
+}
