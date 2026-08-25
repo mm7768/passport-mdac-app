@@ -122,6 +122,37 @@ class SupabaseAdminClient:
             raise SupabaseError(f"找不到 OCR 批次：{batch_id}")
         return rows[0]
 
+    def claim_next_batch(self) -> dict[str, Any] | None:
+        """Atomically claim the oldest uploaded OCR batch through PostgREST."""
+        response = self.session.get(
+            f"{self.rest_url}/ocr_batches",
+            params={
+                "status": "eq.UPLOADED",
+                "select": "id,file_path,source_type,status,total_results,processed_results,metadata",
+                "order": "created_at.asc",
+                "limit": "1",
+            },
+            timeout=self.config.request_timeout,
+        )
+        self._raise(response, "读取待处理 OCR 批次")
+        rows = response.json()
+        if not rows:
+            return None
+        candidate = rows[0]
+        claim = self.session.patch(
+            f"{self.rest_url}/ocr_batches",
+            params={
+                "id": f"eq.{candidate['id']}",
+                "status": "eq.UPLOADED",
+            },
+            headers={"Prefer": "return=representation"},
+            json={"status": "PROCESSING", "error_message": None},
+            timeout=self.config.request_timeout,
+        )
+        self._raise(claim, "领取 OCR 批次")
+        claimed_rows = claim.json()
+        return claimed_rows[0] if claimed_rows else None
+
     def download_private_file(self, file_path: str) -> bytes:
         safe_path = "/".join(quote(part, safe="") for part in PurePosixPath(file_path).parts)
         response = self.session.get(
@@ -356,9 +387,15 @@ def _mrz_text(node: dict[str, Any]) -> str:
     return _first_text(node)
 
 
-def process_batch(batch_id: str, config: WorkerConfig) -> dict[str, Any]:
-    supabase = SupabaseAdminClient(config)
-    azure = AzureIdentityDocumentClient(config)
+def process_batch(
+    batch_id: str,
+    config: WorkerConfig,
+    *,
+    supabase: SupabaseAdminClient | None = None,
+    azure: AzureIdentityDocumentClient | None = None,
+) -> dict[str, Any]:
+    supabase = supabase or SupabaseAdminClient(config)
+    azure = azure or AzureIdentityDocumentClient(config)
     batch = supabase.get_batch(batch_id)
     file_path = str(batch.get("file_path", "")).strip()
     if not file_path:
@@ -405,9 +442,71 @@ def _display_date(value: str) -> str:
         return ""
 
 
+def run_poll_loop(
+    config: WorkerConfig,
+    *,
+    worker_id: str,
+    queue_poll_seconds: float = 15.0,
+    once: bool = False,
+) -> int:
+    """Continuously claim and process uploaded OCR batches for Railway."""
+    supabase = SupabaseAdminClient(config)
+    azure = AzureIdentityDocumentClient(config)
+    interval = max(queue_poll_seconds, 5.0)
+    LOG.info("OCR Worker 已启动：worker_id=%s，轮询间隔 %.1fs", worker_id, interval)
+    while True:
+        try:
+            batch = supabase.claim_next_batch()
+            if batch is None:
+                if once:
+                    return 0
+                time.sleep(interval)
+                continue
+            batch_id = str(batch["id"])
+            LOG.info("Worker %s 开始处理批次 %s", worker_id, batch_id)
+            try:
+                result = process_batch(
+                    batch_id,
+                    config,
+                    supabase=supabase,
+                    azure=azure,
+                )
+                LOG.info(
+                    "批次 %s 完成：status=%s confidence=%s",
+                    batch_id,
+                    result.get("status"),
+                    result.get("confidence"),
+                )
+            except (AzureAnalyzeError, SupabaseError, requests.RequestException) as exc:
+                LOG.exception("批次 %s 处理失败", batch_id)
+                try:
+                    supabase.set_batch_status(
+                        batch_id,
+                        "FAILED",
+                        error_message=str(exc),
+                    )
+                except (SupabaseError, requests.RequestException):
+                    LOG.exception("批次 %s 失败状态回写也失败", batch_id)
+            if once:
+                return 0
+        except (SupabaseError, requests.RequestException) as exc:
+            LOG.error("Worker 轮询失败：%s", exc)
+            if once:
+                return 1
+            time.sleep(interval)
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Azure passport OCR Worker")
-    parser.add_argument("--batch-id", required=True, help="Supabase ocr_batches.id")
+    parser.add_argument("--batch-id", help="Supabase ocr_batches.id; omit to poll automatically")
+    parser.add_argument("--poll", action="store_true", help="continuously process UPLOADED batches")
+    parser.add_argument("--once", action="store_true", help="poll once and exit when no batch remains")
+    parser.add_argument("--worker-id", default=os.getenv("OCR_WORKER_ID", "azure-ocr-worker"))
+    parser.add_argument(
+        "--queue-poll-seconds",
+        type=float,
+        default=float(os.getenv("OCR_QUEUE_POLL_SECONDS", "15")),
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(
@@ -416,9 +515,18 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     try:
         config = WorkerConfig.from_env()
-        result = process_batch(args.batch_id, config)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+        if args.batch_id:
+            result = process_batch(args.batch_id, config)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if not args.poll and not args.once:
+            parser.error("请提供 --batch-id、--poll 或 --once")
+        return run_poll_loop(
+            config,
+            worker_id=args.worker_id,
+            queue_poll_seconds=args.queue_poll_seconds,
+            once=args.once,
+        )
     except (WorkerConfigError, AzureAnalyzeError, SupabaseError, requests.RequestException) as exc:
         LOG.error("OCR Worker 失败：%s", exc)
         return 1

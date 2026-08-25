@@ -1,0 +1,15 @@
+.git
+.dart_tool
+build
+coverage
+android/.gradle
+android/local.properties
+supabase/queries
+worker/__pycache__
+worker/demo_results.json
+docs/preview-checks.md
+docs/supabase-dashboard-check.md
+*.apk
+*.aab
+*.iml
+.idea

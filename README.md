@@ -1,10 +1,10 @@
 # Passport MDAC Desk
 
-Passport MDAC Desk 是按 `passport-mdac-app-spec` 实现的 Flutter Android 首版。它将护照资料、OCR 人工确认、客户主档案和 MDAC 自动化任务放在同一个可追踪工作区中；办公室 Worker 与手机端通过任务边界协作。
+Passport MDAC Desk 是按 `passport-mdac-app-spec` 实现的 Flutter Android 应用。它将护照资料、OCR 人工确认、客户主档案和 MDAC 自动化任务放在同一个可追踪工作区中；手机端、Supabase 和服务端 Worker 通过明确的任务边界协作。
 
-当前版本是 **演示数据层 + 可替换 OCR 边界 + dry-run Worker**。它不连接真实 Supabase、不访问真实 Gmail、不打开真实 MDAC 网页，也不会提交真实注册。请不要在此版本上传真实护照或保存真实凭证。
+当前版本已经接入真实 Supabase Auth、客户 CRUD、软删除、私有 Storage、图片/PDF 上传和 OCR 批次记录。Azure 护照 OCR Worker 已完成真实 API 适配和离线解析测试；真实 Azure 识别需要在 Railway Secret Variables 配置 Azure Key 和 Supabase Service Role Key。
 
-## 运行与验证
+## Flutter 运行与验证
 
 需要 Flutter stable、Dart、Android SDK 和 JDK 21。项目根目录可执行：
 
@@ -15,45 +15,96 @@ flutter test
 flutter build apk --debug
 ```
 
-生成的 Debug APK 位于 `build/app/outputs/flutter-apk/app-debug.apk`。手机端默认演示账号为 `owner@mdac.local`，密码为 `demo123`；也可使用 `operator1@mdac.local` 进入操作员视图。
-
-## Supabase 真后端模式
-
-Flutter 不把 URL 或 Publishable Key 硬编码进源码，而是通过 `dart-define` 注入。使用真实项目构建或运行时执行：
+真实 Supabase 模式通过 `dart-define` 注入客户端配置，不把 URL 或 Publishable Key 硬编码进 Dart 源码：
 
 ```bash
-flutter run \
-  --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
-  --dart-define=SUPABASE_PUBLISHABLE_KEY=你的_sb_publishable_key
-
-flutter build apk --debug \
-  --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
+flutter build apk --debug \\
+  --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \\
   --dart-define=SUPABASE_PUBLISHABLE_KEY=你的_sb_publishable_key
 ```
 
-真实模式会使用 Supabase Email/Password 登录，恢复已有会话，读取 `profiles`、`customers` 和 `automation_batches`，并把 OCR 确认建档与手机端任务写入数据库。未提供 `dart-define` 时仍会自动回退到演示模式，方便离线开发和测试。
+未提供 `dart-define` 时会回退到演示模式，方便离线测试。真实模式支持 Email/Password 登录、会话恢复、客户读取/新建/编辑/软删除、OCR 结果恢复和审核确认建档。
 
-首次真实登录前，需要在 Supabase Authentication 中创建一个测试用户，并在 `profiles` 中把该用户设置为 `OWNER`；公开注册保持关闭。当前版本不会在手机端持有创建任意用户所需的高权限密钥。
+## 文件上传与 OCR 流程
 
-## Worker dry-run
-
-```bash
-python3 worker/dry_run_worker.py --output worker/demo_results.json
+```text
+Flutter 选择 JPG/PNG/PDF
+        ↓
+Supabase 私有 passport-documents bucket
+        ↓
+ocr_batches（包含文件名、MIME、大小、SHA-256）
+        ↓
+Railway Python Azure OCR Worker
+        ↓
+Azure Document Intelligence prebuilt-idDocument
+        ↓
+ocr_results（raw_result、extracted_data、confidence、status）
+        ↓
+Flutter 人工审核并确认建档
 ```
 
-Worker 会验证客户必填字段、日期顺序、性别值和旧版网页选择器映射，并输出脱敏护照号、逐项成功/失败和心跳信息。结果中的 `submitted: false` 与 `result_confirmed: false` 是安全边界，不代表真实 MDAC 注册成功。
+手机端文件大小上限为 15 MB。上传内容使用 SHA-256 保护重复提交；OCR 结果缺少关键字段、性别不支持、日期无效或文档类型异常时会进入 `REVIEW_REQUIRED`，不会自动建立客户档案。
+
+## Railway Worker 部署
+
+仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
+
+```bash
+python worker/azure_ocr_worker.py --poll
+```
+
+Railway Variables 需要配置以下服务端变量：
+
+```text
+AZURE_DI_ENDPOINT=https://passport-mdac-ocr.cognitiveservices.azure.com/
+AZURE_DI_KEY=你的 Azure Key
+SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=Worker 专用密钥
+OCR_WORKER_ID=railway-azure-ocr-worker
+OCR_QUEUE_POLL_SECONDS=15
+OCR_POLL_SECONDS=2
+OCR_REQUEST_TIMEOUT_SECONDS=45
+```
+
+Azure Key 和 Supabase Service Role Key 只能放在 Railway Secret Variables 中，不能放进 Flutter、GitHub 或聊天消息。Worker 会自动查找并领取最早的 `UPLOADED` OCR 批次，更新为 `PROCESSING`，读取私有文件，调用 Azure，并将结果回写为 `READY_TO_CREATE`、`REVIEW_REQUIRED` 或 `FAILED`。
+
+## 本地 Worker 测试
+
+离线测试不会调用 Azure，也不会上传文件：
+
+```bash
+PYTHONPATH=worker python -m unittest discover -s worker -p 'test_*.py'
+```
+
+手动处理单个真实批次：
+
+```bash
+python worker/azure_ocr_worker.py --batch-id <OCR批次UUID>
+```
+
+持续轮询待处理批次：
+
+```bash
+python worker/azure_ocr_worker.py --poll
+```
+
+`dry_run_worker.py` 只用于演示旧版字段映射、任务状态和失败隔离，不调用 Azure、Gmail 或 MDAC 网页。
 
 ## 目录
 
 | 路径 | 用途 |
 |---|---|
-| `lib/main.dart` | Flutter 首版界面、演示数据层、状态和核心业务交互 |
-| `test/` | Repository 与 Widget 测试 |
-| `worker/dry_run_worker.py` | 字段映射、队列领取、幂等和失败隔离演示 |
-| `worker/README.md` | Worker 生产接入边界 |
-| `docs/implementation-notes.md` | 规格映射、当前边界和生产接入清单 |
-| `docs/preview-checks.md` | Web 预览检查记录 |
+| `lib/main.dart` | Flutter 界面、客户维护、上传和 OCR 审核交互 |
+| `lib/supabase_gateway.dart` | Supabase Auth、客户 CRUD、Storage、OCR 批次和结果网关 |
+| `test/` | Repository 与 Widget 回归测试 |
+| `worker/azure_ocr_worker.py` | 真实 Azure 护照 OCR Worker |
+| `worker/dry_run_worker.py` | 安全演示 Worker |
+| `worker/README.md` | Worker 运行和 Railway 配置边界 |
+| `Dockerfile` | Railway Python Worker 镜像入口 |
+| `railway.toml` | Railway 构建、启动和重启策略 |
+| `supabase/migrations/` | 数据库、RLS、Storage 元数据和去重迁移 |
+| `docs/implementation-notes.md` | 规格映射、当前边界和实施记录 |
 
-## 后续接入顺序
+## 当前未包含
 
-拿到 Supabase 项目后，先接 Auth、RLS、私有 Storage 和任务表；然后确定商业 OCR 供应商及置信度规则；最后在经过授权的办公室环境中替换 dry-run 网页适配器，并单独接入 Gmail IMAP 的 Message-ID 去重、护照号优先匹配和有限重试。真实执行必须保留“提交结果未知”状态，禁止在结果不明时立即重复提交。
+Gmail IMAP PIN、MDAC 真实网页自动化、Check Registration、Visit Pass 查询、数据库租约超时恢复、生产级告警和正式 Android Release 签名仍属于后续阶段。真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。
