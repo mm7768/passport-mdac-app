@@ -21,3 +21,8 @@ Railway business defaults are no longer required. Only runtime/safety variables 
 ## Next manual step
 
 When Railway Variables is usable, the user must paste the Supabase Service Role Key into the protected Secret field and click Update Variables. Then inspect the build and runtime logs. Do not paste the key into chat, GitHub, or the APK. Do not add the business default variables to Railway; they belong in the App settings page.
+
+
+## 2026-08-26 13:06 deployment observation
+
+After the user confirmed deployment, Railway applied 23 changes. The `wholesome-rebirth` fill-preview Service entered `Building` with the 15 variables present, including the masked Service Role Key. The separate `glorious-wonder` dry-run Service showed `Build failed just now`; it is unrelated to the fill-preview deployment and was not modified. The fill-preview build had not finished at the time of observation.
