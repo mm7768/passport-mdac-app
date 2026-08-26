@@ -31,3 +31,8 @@ After the user confirmed deployment, Railway applied 23 changes. The `wholesome-
 ## 2026-08-26 13:15 runtime observation
 
 The service-specific `services/mdac-fill-preview/railway.toml` was added and pushed in commit `cdff417` to override the repository-root Azure OCR start command. Railway created deployment `016e6954` and marked `wholesome-rebirth` Online with Deployment successful. The deployment log now shows only `Starting Container`; the previous `/app/worker/azure_ocr_worker.py` error is no longer present, but the application log viewer has not yet shown the expected Worker startup/heartbeat lines.
+
+
+## 2026-08-26 13:18 console follow-up
+
+The Railway browser session briefly returned to a blank Service page while checking the successful deployment. No configuration or deployment action was performed during this follow-up. The last confirmed state remains `wholesome-rebirth` Online with deployment `016e6954` successful; the last visible application log was `Starting Container`, with no prior Azure OCR path error after the entrypoint fix.
