@@ -476,6 +476,9 @@ async def fill_and_verify_page(
 
     invalid_count = await page.locator("input:invalid, select:invalid").count()
     submit_disabled = await page.locator("#submit").is_disabled()
+    captcha_canvas_count = await page.locator("#captcha canvas").count()
+    slider_container_present = await page.locator("#captcha .sliderContainer").count() > 0
+    captcha_present = captcha_canvas_count >= 2 and slider_container_present
     current_url = page.url
     if "/mdac/register" in current_url and not current_url.endswith("registerMain"):
         raise ManualReviewRequired(f"填写期间页面发生非预期跳转：{current_url}")
@@ -487,7 +490,11 @@ async def fill_and_verify_page(
         "field_count": len(selectors),
         "invalid_control_count": invalid_count,
         "submit_disabled_before_captcha": submit_disabled,
-        "captcha_present": await page.locator("#captcha canvas").count() >= 2,
+        "captcha_present": captcha_present,
+        "captcha_canvas_count": captcha_canvas_count,
+        "slider_container_present": slider_container_present,
+        "manual_review_required": captcha_present,
+        "challenge_type": "CAPTCHA_SLIDER" if captcha_present else None,
         "verification": "DOM values matched expected mapping; no submit action invoked",
     }
 
@@ -541,6 +548,11 @@ async def process_item(
         client.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
         page_summary = await fill_and_verify_page(page, fields, config, settings)
         summary.update(page_summary)
+        if page_summary.get("manual_review_required"):
+            error_code = "NEEDS_HUMAN_INTERVENTION"
+            error_message = (
+                "检测到 MDAC CAPTCHA/滑块；Worker 未拖动、未破解、未提交，等待人工审核"
+            )
     except ManualReviewRequired as exc:
         error_code = "NEEDS_HUMAN_INTERVENTION"
         error_message = _safe_text(exc)
