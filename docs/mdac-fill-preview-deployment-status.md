@@ -4,7 +4,7 @@
 
 ## Current state
 
-The real MDAC headless Worker source is in `services/mdac-fill-preview/` and is pushed to the private GitHub repository `mm7768/passport-mdac-app`. The latest commit is `35aa9bc` (`Detect MDAC slider and route to manual review`). The Flutter Debug APK containing the editable MDAC defaults page was built successfully at `build/app/outputs/flutter-apk/app-debug.apk`.
+The real MDAC headless Worker source is in `services/mdac-fill-preview/` and is pushed to the private GitHub repository `mm7768/passport-mdac-app`. The latest code commit is `35aa9bc` (`Detect MDAC slider and route to manual review`). Subsequent repository-only status records are in commits `22384b5` and `a0b32bf`. The Flutter Debug APK containing the editable MDAC defaults page was built successfully at `build/app/outputs/flutter-apk/app-debug.apk`.
 
 Supabase production has the following relevant migrations applied: `mdac_worker_leases`, `mdac_batch_enqueue`, `mdac_settings`, `mdac_settings_snapshot`, and `mdac_settings_write_lock`. The App stores editable business defaults in `mdac_settings`; the enqueue RPC copies them into `automation_batches.mdac_settings_snapshot`.
 
