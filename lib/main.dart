@@ -1499,6 +1499,7 @@ class DemoRepository extends ChangeNotifier {
         currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
       }
       await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
       notifyListeners();
       return null;
     } catch (exception) {
