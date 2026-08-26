@@ -22,3 +22,7 @@
 
 
 外部核查来源：Railway 官方状态页 https://status.railway.com/。读取时间：2026-08-26。页面显示 Fully Operational；Dashboard — railway.com、API — backboard.railway.com、Authentication、Builds、Deployments，以及 EU West (Amsterdam, Netherlands) 的 Builds/Deployments/Compute 均报告 100.00% uptime/Operational。该状态页同时说明小范围或孤立问题可能不会显示，因此不能排除当前账户/前端会话问题。
+
+## 2026-08-26 11:13 follow-up
+
+After confirming the fill-preview Service still had an unsaved Raw Editor draft with a blank Service Role Key, navigating to both the Service deployment route and Variables route again returned a mostly blank Railway page. No deployment action was taken and no secret was entered. The non-secret draft therefore remains uncommitted in the Railway UI; the repository and local APK remain healthy.
