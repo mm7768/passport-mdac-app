@@ -243,6 +243,42 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 MDAC 批次。');
   }
 
+  static Future<Map<String, dynamic>> createGmailPinBatch({
+    required List<Map<String, dynamic>> customers,
+    String? note,
+  }) async {
+    if (customers.isEmpty) {
+      throw const FormatException('Gmail PIN 批次至少需要一位客户。');
+    }
+    final items = <Map<String, dynamic>>[
+      for (final customer in customers)
+        {
+          'customer_id': customer['id'],
+          'customer_snapshot': {
+            'full_name': customer['full_name']?.toString().trim() ?? '',
+            'passport_number':
+                customer['passport_number']?.toString().trim() ?? '',
+            'date_of_birth': _toIsoDate(
+              customer['date_of_birth']?.toString() ?? '',
+            ),
+            'place_of_birth':
+                customer['place_of_birth']?.toString().trim() ?? '',
+            'nationality': customer['nationality']?.toString().trim() ?? '',
+            'gender': customer['gender']?.toString().trim() ?? '',
+            'passport_expiry_date': _toIsoDate(
+              customer['passport_expiry_date']?.toString() ?? '',
+            ),
+          },
+        },
+    ];
+    final result = await _requiredClient.rpc(
+      'create_gmail_pin_batch',
+      params: {'p_items': items, 'p_note': note},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 Gmail PIN 批次。');
+  }
+
   static Future<Map<String, dynamic>> fetchMdacSettings() async {
     final row = await _requiredClient
         .from('mdac_settings')
@@ -302,7 +338,6 @@ class SupabaseGateway {
           'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
           'created_at, updated_at',
         )
-        .eq('task_type', 'MDAC_REGISTRATION')
         .order('created_at', ascending: false)
         .limit(100);
     final batches = batchRows

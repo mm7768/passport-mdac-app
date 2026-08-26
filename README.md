@@ -59,6 +59,14 @@ MDAC 邮箱、手机、交通方式、出发国家、航班/车辆/船号、住�
 
 当前 Supabase 已增加 `claim_mdac_batch`、`claim_mdac_item`、`heartbeat_mdac`、`finish_mdac_fill_preview`、`create_mdac_registration_batch` 和 `update_mdac_settings`，包含原子领取、租约、心跳、尝试次数、设置审计和 `RESULT_UNKNOWN/NEEDS_REVIEW` 边界。Flutter 远程模式创建 MDAC 任务时保存客户/设置快照，并在任务页面提供 Supabase 状态刷新。
 
+### Gmail PIN Worker
+
+`services/gmail-pin-worker/` 是独立的 Gmail PIN 获取服务。它使用只读 IMAP App Password 方案作为第一版，扫描最近邮件中来自 `mdac@imi.gov.my` 的消息，按任务快照中的护照号进行唯一匹配，并将 PIN 结果写入 `email_pin_records`。服务不会删除、移动或标记邮件为已读，不保存邮件正文，也不会把 PIN 写入日志。
+
+Gmail 地址和 App Password 只能由用户在 Railway Secret Variables 中填写；不要把它们放入 Flutter、GitHub、聊天或测试代码。当前 Supabase 已增加 `create_gmail_pin_batch`、`claim_gmail_pin_batch`、`claim_gmail_pin_item`、`heartbeat_gmail_pin` 和 `finish_gmail_pin_item`。唯一匹配并成功解析 PIN 时，任务项才标为 `SUCCEEDED`、客户状态改为 `PIN_RECEIVED`；未找到、解析失败、匹配不唯一或认证异常不会伪装成成功。
+
+该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前必须在受保护变量中配置 Gmail 地址、App Password、Supabase Service Role Key 和 Worker 参数，并使用一封脱敏测试邮件完成端到端验收。
+
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
 ```bash
@@ -111,11 +119,15 @@ python worker/azure_ocr_worker.py --poll
 | `test/` | Repository 与 Widget 回归测试 |
 | `worker/azure_ocr_worker.py` | 真实 Azure 护照 OCR Worker |
 | `services/mdac-fill-preview/` | 真实 MDAC headless 填表预览 Worker，零 Submit |
+| `services/gmail-pin-worker/` | Gmail PIN 只读获取 Worker，不发送/删除邮件 |
+| `services/gmail-pin-worker/README.md` | Gmail PIN 认证、部署、状态和验收说明 |
 | `services/mdac-fill-preview-legacy-audit.md` | 旧 MDAC 选择器与安全边界审查记录 |
 | `supabase/migrations/20260826_mdac_worker_leases.sql` | MDAC Worker 租约、原子领取和预览回写函数 |
 | `supabase/migrations/20260826_mdac_batch_enqueue.sql` | Flutter MDAC 批次原子入队和客户快照函数 |
 | `supabase/migrations/20260826_mdac_settings.sql` | App 可编辑 MDAC 默认配置、RLS 与审计 RPC |
 | `supabase/migrations/20260826_mdac_settings_snapshot.sql` | 入队时复制 MDAC 业务配置快照 |
+| `supabase/migrations/20260826_gmail_pin_worker.sql` | Gmail PIN 队列、租约和原子结果回写 |
+| `docs/gmail-pin-auth-notes.md` | Gmail 官方认证资料与安全设计依据 |
 | `worker/dry_run_worker.py` | 安全演示 Worker |
 | `worker/README.md` | Worker 运行和 Railway 配置边界 |
 | `Dockerfile` | Railway Python Worker 镜像入口 |
@@ -125,5 +137,5 @@ python worker/azure_ocr_worker.py --poll
 
 ## 当前未包含
 
-Gmail IMAP PIN、真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。
+真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。Gmail PIN Worker 已完成代码和数据库契约，但仍需 Railway 独立服务部署以及一次受控端到端测试。
 真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。

@@ -696,7 +696,7 @@ class DemoRepository extends ChangeNotifier {
         remoteTasks.add(
           AutomationTask(
             id: row['id']?.toString() ?? 'remote-batch',
-            type: TaskType.mdacRegistration,
+            type: _taskTypeFromRemote(row['task_type']?.toString()),
             customerIds: [
               for (final item in items)
                 if (item['customer_id'] != null) item['customer_id'].toString(),
@@ -722,7 +722,21 @@ class DemoRepository extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (exception) {
-      return 'MDAC 任务同步失败：$exception';
+      return '自动化任务同步失败：$exception';
+    }
+  }
+
+  TaskType _taskTypeFromRemote(String? value) {
+    switch (value) {
+      case 'GMAIL_PIN':
+        return TaskType.gmailPin;
+      case 'REGISTRATION_CHECK':
+        return TaskType.registrationCheck;
+      case 'VISIT_PASS_CHECK':
+        return TaskType.visitPassCheck;
+      case 'MDAC_REGISTRATION':
+      default:
+        return TaskType.mdacRegistration;
     }
   }
 
@@ -1419,14 +1433,15 @@ class DemoRepository extends ChangeNotifier {
         exitDate: exitDate,
       );
     }
-    if (type != TaskType.mdacRegistration) {
-      return '当前只有 MDAC fill-preview Worker 已部署，其他自动化脚本尚未接入云端。';
+    if (type != TaskType.mdacRegistration && type != TaskType.gmailPin) {
+      return '当前只有 MDAC fill-preview 和 Gmail PIN Worker 已部署。';
     }
     if (customerIds.isEmpty) return '请先选择客户。';
-    if (entryDate == null || exitDate == null) {
+    if (type == TaskType.mdacRegistration &&
+        (entryDate == null || exitDate == null)) {
       return 'MDAC 注册必须提供入境和出境日期。';
     }
-    if (exitDate.isBefore(entryDate)) {
+    if (type == TaskType.mdacRegistration && exitDate!.isBefore(entryDate!)) {
       return '出境日期不能早于入境日期。';
     }
 
@@ -1445,35 +1460,49 @@ class DemoRepository extends ChangeNotifier {
       selected.add(customer);
     }
 
+    final customerPayloads = [
+      for (final customer in selected)
+        {
+          'id': customer.id,
+          'full_name': customer.fullName,
+          'passport_number': customer.passportNumber,
+          'date_of_birth': customer.dateOfBirth,
+          'place_of_birth': customer.placeOfBirth,
+          'nationality': customer.nationality,
+          'gender': customer.gender,
+          'passport_expiry_date': customer.passportExpiryDate,
+        },
+    ];
+
     try {
-      await SupabaseGateway.createMdacRegistrationBatch(
-        entryDate: entryDate,
-        exitDate: exitDate,
-        customers: [
-          for (final customer in selected)
-            {
-              'id': customer.id,
-              'full_name': customer.fullName,
-              'passport_number': customer.passportNumber,
-              'date_of_birth': customer.dateOfBirth,
-              'place_of_birth': customer.placeOfBirth,
-              'nationality': customer.nationality,
-              'gender': customer.gender,
-              'passport_expiry_date': customer.passportExpiryDate,
-            },
-        ],
-        note: '$actor 创建 MDAC fill-preview 批次；真实页面只填写不提交',
-      );
-      auditEvents.insert(
-        0,
-        '$actor 创建 MDAC fill-preview 批次，共 ${selected.length} 位客户；未提交',
-      );
-      currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
+      if (type == TaskType.gmailPin) {
+        await SupabaseGateway.createGmailPinBatch(
+          customers: customerPayloads,
+          note: '$actor 创建 Gmail PIN 获取批次；PIN 不写入日志',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Gmail PIN 获取批次，共 ${selected.length} 位客户',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
+      } else {
+        await SupabaseGateway.createMdacRegistrationBatch(
+          entryDate: entryDate!,
+          exitDate: exitDate!,
+          customers: customerPayloads,
+          note: '$actor 创建 MDAC fill-preview 批次；真实页面只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 MDAC fill-preview 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
+      }
       await syncAutomationTasksFromSupabase();
       notifyListeners();
       return null;
     } catch (exception) {
-      return 'MDAC 批次创建失败：$exception';
+      return '${taskTypeLabel(type)} 批次创建失败：$exception';
     }
   }
 
