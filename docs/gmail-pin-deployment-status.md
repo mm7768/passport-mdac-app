@@ -24,3 +24,7 @@ Railway Dashboard 曾恢复并显示项目列表，但点击进入 Passport MDAC
 Railway Service `pleasing-acceptance` 的活动部署 `c5168283` 已成功启动。运行日志显示：`Gmail PIN Worker ONLINE`，轮询间隔 30 秒，发件人过滤为 `mdac@imi.gov.my`，并声明不删除、移动或标记邮件。当前尚未创建 Gmail PIN 测试任务，因此尚未执行真实邮箱读取；下一步是从 Flutter App 保存 Gmail 地址和 App Password 到 Supabase Vault，再用脱敏客户快照与脱敏测试邮件完成一次端到端测试。
 
 Gmail App Password 不在 Railway Variables 中；Railway 仅保存 Supabase Service Role Key 和 Worker 运行参数。
+
+## 2026-08-27 03:05（GMT+8）
+
+复核 Railway 项目失败服务，确认失败对象为遗留 `glorious-wonder`（MDAC dry-run），不是 `pleasing-acceptance` Gmail PIN、`wholesome-rebirth` MDAC fill-preview 或 `passport-mdac-app` Azure OCR。构建日志为 `COPY services/mdac-dry-run/worker.py ./worker.py` 后报 `/services/mdac-dry-run/worker.py: not found`，说明旧 Service 的构建上下文/Root Directory 配置不匹配。该 dry-run 服务没有配置密钥，不参与生产队列；应保持停止或删除。
