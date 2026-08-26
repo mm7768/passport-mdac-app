@@ -282,7 +282,9 @@ class SupabaseGateway {
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
-        .select('id, gmail_address, updated_by, updated_at')
+        .select(
+          'id, gmail_address, credential_configured, updated_by, updated_at',
+        )
         .eq('id', true)
         .single();
     return Map<String, dynamic>.from(row);
@@ -297,6 +299,18 @@ class SupabaseGateway {
     );
     if (result is Map) return Map<String, dynamic>.from(result);
     throw const FormatException('Supabase 未返回 Gmail 设置。');
+  }
+
+  static Future<Map<String, dynamic>> saveGmailCredentials({
+    required String gmailAddress,
+    required String appPassword,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'save_gmail_credentials',
+      params: {'p_gmail_address': gmailAddress, 'p_app_password': appPassword},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 Gmail 凭证状态。');
   }
 
   static Future<Map<String, dynamic>> fetchMdacSettings() async {

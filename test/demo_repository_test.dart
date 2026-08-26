@@ -192,9 +192,16 @@ void main() {
 
       final settings = GmailSettings.fromMap({
         'gmail_address': 'MDAC.Company@GMAIL.COM',
+        'credential_configured': true,
       });
       expect(settings.isComplete, isTrue);
       expect(settings.gmailAddress, 'mdac.company@gmail.com');
+      expect(settings.credentialConfigured, isTrue);
+      expect(
+        GmailSettings.fromMap({'gmail_address': 'mdac.company@gmail.com'})
+            .isComplete,
+        isFalse,
+      );
     });
 
     test('manual creation rejects free-text gender and invalid status', () {

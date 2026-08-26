@@ -501,21 +501,27 @@ class MdacSettings {
 }
 
 class GmailSettings {
-  const GmailSettings({required this.gmailAddress, this.updatedAt});
+  const GmailSettings({
+    required this.gmailAddress,
+    this.credentialConfigured = false,
+    this.updatedAt,
+  });
 
   factory GmailSettings.defaults() => const GmailSettings(gmailAddress: '');
 
   factory GmailSettings.fromMap(Map<String, dynamic> row) {
     return GmailSettings(
       gmailAddress: row['gmail_address']?.toString().trim().toLowerCase() ?? '',
+      credentialConfigured: row['credential_configured'] == true,
       updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? ''),
     );
   }
 
   final String gmailAddress;
+  final bool credentialConfigured;
   final DateTime? updatedAt;
 
-  bool get isComplete => gmailAddress.trim().isNotEmpty;
+  bool get isComplete => gmailAddress.trim().isNotEmpty && credentialConfigured;
 }
 
 class DemoRepository extends ChangeNotifier {
@@ -691,24 +697,41 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
-  Future<String?> saveGmailSettings(GmailSettings value) async {
+  Future<String?> saveGmailSettings(
+    GmailSettings value, {
+    String appPassword = '',
+  }) async {
+    final password = appPassword.trim();
     if (!remoteMode) {
-      gmailSettings = value;
-      auditEvents.insert(0, '已保存本地 Gmail 地址配置');
+      gmailSettings = GmailSettings(
+        gmailAddress: value.gmailAddress,
+        credentialConfigured: password.isNotEmpty || value.credentialConfigured,
+      );
+      auditEvents.insert(0, '已保存本地 Gmail 地址和凭证状态');
       notifyListeners();
       return null;
     }
     gmailSettingsLoading = true;
     notifyListeners();
     try {
-      final row = await SupabaseGateway.updateGmailSettings(
-        gmailAddress: value.gmailAddress,
-      );
+      final row = password.isNotEmpty
+          ? await SupabaseGateway.saveGmailCredentials(
+              gmailAddress: value.gmailAddress,
+              appPassword: password,
+            )
+          : await SupabaseGateway.updateGmailSettings(
+              gmailAddress: value.gmailAddress,
+            );
       gmailSettings = GmailSettings.fromMap(row);
-      auditEvents.insert(0, '已保存 Gmail 地址配置，并写入审计日志');
+      auditEvents.insert(
+        0,
+        password.isNotEmpty
+            ? '已保存 Gmail 地址和加密凭证，并写入审计日志'
+            : '已保存 Gmail 地址，并写入审计日志',
+      );
       return null;
     } catch (exception) {
-      return 'Gmail 地址配置保存失败：$exception';
+      return 'Gmail 设置保存失败：$exception';
     } finally {
       gmailSettingsLoading = false;
       notifyListeners();
@@ -3922,6 +3945,7 @@ class GmailSettingsEditor extends StatefulWidget {
 class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _saving = false;
   bool _dirty = false;
 
@@ -3936,6 +3960,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
   void dispose() {
     widget.repository.removeListener(_onRepositoryChanged);
     _emailController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -3949,6 +3974,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
 
   void _applySettings(GmailSettings settings) {
     _emailController.text = settings.gmailAddress;
+    _passwordController.clear();
     _dirty = false;
   }
 
@@ -3970,18 +3996,40 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
       showToast(context, '请先输入有效的 Gmail 地址。', error: true);
       return;
     }
+    final current = widget.repository.gmailSettings ?? GmailSettings.defaults();
+    final address = _emailController.text.trim().toLowerCase();
+    final password = _passwordController.text;
+    final addressChanged = address != current.gmailAddress;
+    if (password.trim().isEmpty &&
+        (!current.credentialConfigured || addressChanged)) {
+      showToast(
+        context,
+        addressChanged
+            ? '更换 Gmail 地址时必须同时输入新的 App Password。'
+            : '首次配置必须输入 Gmail App Password。',
+        error: true,
+      );
+      return;
+    }
     setState(() => _saving = true);
     final error = await widget.repository.saveGmailSettings(
-      GmailSettings(gmailAddress: _emailController.text),
+      GmailSettings(
+        gmailAddress: address,
+        credentialConfigured: current.credentialConfigured,
+      ),
+      appPassword: password,
     );
     if (!mounted) return;
     setState(() {
       _saving = false;
-      if (error == null) _dirty = false;
+      if (error == null) {
+        _dirty = false;
+        _passwordController.clear();
+      }
     });
     showToast(
       context,
-      error ?? 'Gmail 地址已保存；新建 PIN 任务时会锁定这份地址快照。',
+      error ?? 'Gmail 地址和凭证状态已保存；App 不会回读密码。',
       error: error != null,
     );
   }
@@ -4005,7 +4053,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Gmail 地址可以在 App 修改，并在创建 PIN 任务时复制到批次快照。Gmail App Password 不会进入 App 或 Supabase，继续只放在 Railway Secret。',
+                  'Gmail 地址和 App Password 可在 App 输入；密码只在保存时提交到加密 Vault，App 不保存、不回读，Worker 运行时才使用。',
                   style: TextStyle(
                     color: AppTheme.muted,
                     fontSize: 12,
@@ -4013,18 +4061,38 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                SizedBox(
-                  width: fieldWidth,
-                  child: TextFormField(
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    onChanged: _markDirty,
-                    validator: _email,
-                    decoration: const InputDecoration(
-                      labelText: '用于接收 MDAC PIN 的 Gmail 地址',
-                      hintText: '例如 mdac.company@gmail.com',
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 12,
+                  children: [
+                    SizedBox(
+                      width: fieldWidth,
+                      child: TextFormField(
+                        controller: _emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        onChanged: _markDirty,
+                        validator: _email,
+                        decoration: const InputDecoration(
+                          labelText: '用于接收 MDAC PIN 的 Gmail 地址',
+                          hintText: '例如 mdac.company@gmail.com',
+                        ),
+                      ),
                     ),
-                  ),
+                    SizedBox(
+                      width: fieldWidth,
+                      child: TextFormField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        enableSuggestions: false,
+                        autocorrect: false,
+                        onChanged: _markDirty,
+                        decoration: const InputDecoration(
+                          labelText: 'Gmail App Password（只在保存时提交）',
+                          hintText: '已配置时可留空；更换邮箱必须重新输入',
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 Wrap(
@@ -4041,7 +4109,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.save_outlined),
-                      label: Text(_saving ? '保存中…' : '保存 Gmail 地址'),
+                      label: Text(_saving ? '保存中…' : '保存 Gmail 凭证'),
                     ),
                     if (_dirty)
                       const Text(

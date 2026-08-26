@@ -63,9 +63,9 @@ MDAC 邮箱、手机、交通方式、出发国家、航班/车辆/船号、住�
 
 `services/gmail-pin-worker/` 是独立的 Gmail PIN 获取服务。它使用只读 IMAP App Password 方案作为第一版，扫描最近邮件中来自 `mdac@imi.gov.my` 的消息，按任务快照中的护照号进行唯一匹配，并将 PIN 结果写入 `email_pin_records`。服务不会删除、移动或标记邮件为已读，不保存邮件正文，也不会把 PIN 写入日志。
 
-Gmail 地址由 Flutter 设置页管理，并在创建 PIN 任务时复制到 `automation_batches.gmail_settings_snapshot`；Gmail App Password 只能由用户在 Railway Secret Variables 中填写。不要把 App Password 或 Service Role Key 放入 Flutter、GitHub、聊天或测试代码。当前 Supabase 已增加 `create_gmail_pin_batch`、`claim_gmail_pin_batch`、`claim_gmail_pin_item`、`heartbeat_gmail_pin` 和 `finish_gmail_pin_item`。唯一匹配并成功解析 PIN 时，任务项才标为 `SUCCEEDED`、客户状态改为 `PIN_RECEIVED`；未找到、解析失败、匹配不唯一或认证异常不会伪装成成功。
+Gmail 地址由 Flutter 设置页管理，并在创建 PIN 任务时复制到 `automation_batches.gmail_settings_snapshot`；Gmail App Password 由 App 通过受保护 RPC 写入 Supabase Vault，Worker 运行时读取，App 不会回读密码。不要把 App Password 或 Service Role Key 放入 Flutter 客户端文件、GitHub、聊天或测试代码。当前 Supabase 已增加 `create_gmail_pin_batch`、`claim_gmail_pin_batch`、`claim_gmail_pin_item`、`heartbeat_gmail_pin`、`finish_gmail_pin_item`、`save_gmail_credentials` 和 `get_gmail_runtime_credentials`。唯一匹配并成功解析 PIN 时，任务项才标为 `SUCCEEDED`、客户状态改为 `PIN_RECEIVED`；未找到、解析失败、匹配不唯一或认证异常不会伪装成成功。
 
-该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前必须在受保护变量中配置 Gmail App Password、Supabase Service Role Key 和 Worker 参数；Gmail 地址由 App 配置并随任务快照传入。之后使用一封脱敏测试邮件完成端到端验收。
+该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前只需在受保护变量中配置 Supabase Service Role Key 和 Worker 参数；Gmail 地址由 App 配置并随任务快照传入，Gmail App Password 由 App 加密写入 Vault。之后使用一封脱敏测试邮件完成端到端验收。
 
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
@@ -138,5 +138,5 @@ python worker/azure_ocr_worker.py --poll
 
 ## 当前未包含
 
-真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。Gmail PIN Worker 已完成代码和数据库契约，但仍需 Railway 独立服务部署以及一次受控端到端测试。
+真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。Gmail PIN Worker 已完成代码和数据库契约，但仍需 Railway 独立服务部署、App 内 Vault 凭证配置以及一次受控端到端测试。
 真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。
