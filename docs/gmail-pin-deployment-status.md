@@ -14,3 +14,7 @@ Railway Architecture 页可显示项目导航，但画布持续 `Canvas loading 
 
 ## 2026-08-26 latest
 Railway Dashboard 曾恢复并显示项目列表，但点击进入 Passport MDAC Desk 项目时浏览器返回 `Browser not available`。未创建 Gmail PIN Service，未输入 Gmail 地址或 App Password。Gmail PIN 代码已在 GitHub main，Supabase 迁移已成功应用，离线测试通过。
+
+
+## 2026-08-26 13:54
+启用 My Browser 后，Railway 项目 URL 可以建立会话，但画布仍为空白/加载不完整，只显示项目顶栏和 Agent 导航，未出现服务卡片或 Add/Create Service 控件。Gmail PIN Service 仍未创建，未输入 Gmail 凭证。

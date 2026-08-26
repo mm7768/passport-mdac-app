@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from email.message import EmailMessage
 
-from worker import decide_for_item, normalize_pin, parse_message
+from worker import (
+    decide_for_item,
+    normalize_pin,
+    parse_message,
+    resolve_gmail_address,
+)
 
 
 class GMailPinParsingTests(unittest.TestCase):
@@ -11,6 +16,14 @@ class GMailPinParsingTests(unittest.TestCase):
         self.assertEqual(normalize_pin("  A  B   C  "), "A  B   C")
         self.assertIsNone(normalize_pin("   "))
         self.assertIsNone(normalize_pin(None))
+
+    def test_resolve_gmail_address_from_batch_snapshot(self) -> None:
+        self.assertEqual(
+            resolve_gmail_address({'gmail_address': ' MDAC.Company@GMAIL.COM '}),
+            'mdac.company@gmail.com',
+        )
+        self.assertIsNone(resolve_gmail_address({}))
+        self.assertIsNone(resolve_gmail_address({'gmail_address': 'not-an-email'}))
 
     def test_parse_plain_text_message(self) -> None:
         message = EmailMessage()

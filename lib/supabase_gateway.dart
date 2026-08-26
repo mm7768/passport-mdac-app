@@ -279,6 +279,26 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 Gmail PIN 批次。');
   }
 
+  static Future<Map<String, dynamic>> fetchGmailSettings() async {
+    final row = await _requiredClient
+        .from('gmail_settings')
+        .select('id, gmail_address, updated_by, updated_at')
+        .eq('id', true)
+        .single();
+    return Map<String, dynamic>.from(row);
+  }
+
+  static Future<Map<String, dynamic>> updateGmailSettings({
+    required String gmailAddress,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'update_gmail_settings',
+      params: {'p_gmail_address': gmailAddress},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 Gmail 设置。');
+  }
+
   static Future<Map<String, dynamic>> fetchMdacSettings() async {
     final row = await _requiredClient
         .from('mdac_settings')

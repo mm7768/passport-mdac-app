@@ -63,9 +63,9 @@ MDAC 邮箱、手机、交通方式、出发国家、航班/车辆/船号、住�
 
 `services/gmail-pin-worker/` 是独立的 Gmail PIN 获取服务。它使用只读 IMAP App Password 方案作为第一版，扫描最近邮件中来自 `mdac@imi.gov.my` 的消息，按任务快照中的护照号进行唯一匹配，并将 PIN 结果写入 `email_pin_records`。服务不会删除、移动或标记邮件为已读，不保存邮件正文，也不会把 PIN 写入日志。
 
-Gmail 地址和 App Password 只能由用户在 Railway Secret Variables 中填写；不要把它们放入 Flutter、GitHub、聊天或测试代码。当前 Supabase 已增加 `create_gmail_pin_batch`、`claim_gmail_pin_batch`、`claim_gmail_pin_item`、`heartbeat_gmail_pin` 和 `finish_gmail_pin_item`。唯一匹配并成功解析 PIN 时，任务项才标为 `SUCCEEDED`、客户状态改为 `PIN_RECEIVED`；未找到、解析失败、匹配不唯一或认证异常不会伪装成成功。
+Gmail 地址由 Flutter 设置页管理，并在创建 PIN 任务时复制到 `automation_batches.gmail_settings_snapshot`；Gmail App Password 只能由用户在 Railway Secret Variables 中填写。不要把 App Password 或 Service Role Key 放入 Flutter、GitHub、聊天或测试代码。当前 Supabase 已增加 `create_gmail_pin_batch`、`claim_gmail_pin_batch`、`claim_gmail_pin_item`、`heartbeat_gmail_pin` 和 `finish_gmail_pin_item`。唯一匹配并成功解析 PIN 时，任务项才标为 `SUCCEEDED`、客户状态改为 `PIN_RECEIVED`；未找到、解析失败、匹配不唯一或认证异常不会伪装成成功。
 
-该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前必须在受保护变量中配置 Gmail 地址、App Password、Supabase Service Role Key 和 Worker 参数，并使用一封脱敏测试邮件完成端到端验收。
+该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前必须在受保护变量中配置 Gmail App Password、Supabase Service Role Key 和 Worker 参数；Gmail 地址由 App 配置并随任务快照传入。之后使用一封脱敏测试邮件完成端到端验收。
 
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
@@ -127,6 +127,7 @@ python worker/azure_ocr_worker.py --poll
 | `supabase/migrations/20260826_mdac_settings.sql` | App 可编辑 MDAC 默认配置、RLS 与审计 RPC |
 | `supabase/migrations/20260826_mdac_settings_snapshot.sql` | 入队时复制 MDAC 业务配置快照 |
 | `supabase/migrations/20260826_gmail_pin_worker.sql` | Gmail PIN 队列、租约和原子结果回写 |
+| `supabase/migrations/20260826_gmail_address_settings.sql` | App Gmail 地址设置、审计与批次地址快照 |
 | `docs/gmail-pin-auth-notes.md` | Gmail 官方认证资料与安全设计依据 |
 | `worker/dry_run_worker.py` | 安全演示 Worker |
 | `worker/README.md` | Worker 运行和 Railway 配置边界 |

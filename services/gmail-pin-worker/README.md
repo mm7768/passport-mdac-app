@@ -4,18 +4,19 @@
 
 ## 当前 MVP 边界
 
-Worker 使用 IMAP App Password 方案作为第一版认证方式。Gmail 地址和 App Password 只能保存到 Railway Secret Variables，不能写入 GitHub、APK、聊天或日志。服务使用 `INBOX` 的只读打开方式和 `BODY.PEEK`，不会发送、删除、移动或标记邮件为已读；同一邮箱建议只用于 MDAC PIN，并由公司管理员控制访问权限。
+Worker 使用 IMAP App Password 方案作为第一版认证方式。Gmail 地址由 Flutter App 管理，保存到受 RLS 保护的 Supabase 设置表，并在创建任务时复制到批次快照；Gmail App Password 只能保存到 Railway Secret Variables，不能写入 GitHub、APK、聊天或日志。服务使用 `INBOX` 的只读打开方式和 `BODY.PEEK`，不会发送、删除、移动或标记邮件为已读；同一邮箱建议只用于 MDAC PIN，并由公司管理员控制访问权限。
 
 Google 官方更推荐对私人 Gmail 数据使用 OAuth 2.0；后续可以将认证层替换为 Gmail API 只读 OAuth，而不改变 Supabase 任务契约。当前为了复用旧版 IMAP 流程和尽快完成 MVP，必须明确设置 `GMAIL_AUTH_MODE=IMAP_APP_PASSWORD`。
 
 ## 任务流程
 
 ```text
-Flutter 选择客户
+Flutter 设置 Gmail 地址并选择客户
+  → App 地址写入批次快照
   → create_gmail_pin_batch RPC
-  → 客户快照保存到 automation_items
+  → 客户快照与 Gmail 地址快照保存到 automation_batches / automation_items
   → Worker 原子领取批次/项目
-  → 只读扫描最近邮件
+  → 使用 Railway Secret 中的 App Password 只读扫描最近邮件
   → 护照号唯一匹配 Name / Passport No. / PIN
   → finish_gmail_pin_item RPC
   → email_pin_records + 客户状态 + 审计日志
@@ -40,7 +41,6 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GMAIL_WORKER_ID
 GMAIL_AUTH_MODE=IMAP_APP_PASSWORD
-GMAIL_ADDRESS
 GMAIL_APP_PASSWORD
 GMAIL_SENDER_FILTER=mdac@imi.gov.my
 GMAIL_IMAP_HOST=imap.gmail.com
@@ -54,7 +54,7 @@ SUPABASE_REQUEST_TIMEOUT_SECONDS=30
 LOG_LEVEL=INFO
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY`、`GMAIL_ADDRESS` 和 `GMAIL_APP_PASSWORD` 只能由用户在 Railway 的受保护界面输入。不要把它们复制到 App；Flutter 只创建 Gmail PIN 任务和读取结果。
+`SUPABASE_SERVICE_ROLE_KEY` 和 `GMAIL_APP_PASSWORD` 只能由用户在 Railway 的受保护界面输入。`GMAIL_ADDRESS` 不再是 Railway 变量，由 Flutter App 设置并在任务快照中传给 Worker；App 不保存或读取 App Password。
 
 ## 本地离线测试
 

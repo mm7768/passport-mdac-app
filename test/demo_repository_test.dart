@@ -186,6 +186,17 @@ void main() {
       expect(complete.toRpcParams()['regionCode'], '60');
     });
 
+    test('Gmail settings require a valid App-managed address', () {
+      final empty = GmailSettings.defaults();
+      expect(empty.isComplete, isFalse);
+
+      final settings = GmailSettings.fromMap({
+        'gmail_address': 'MDAC.Company@GMAIL.COM',
+      });
+      expect(settings.isComplete, isTrue);
+      expect(settings.gmailAddress, 'mdac.company@gmail.com');
+    });
+
     test('manual creation rejects free-text gender and invalid status', () {
       final repository = DemoRepository();
       final values = <String, String>{

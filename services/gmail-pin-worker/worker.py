@@ -43,7 +43,6 @@ class WorkerConfig:
     supabase_url: str
     service_role_key: str
     worker_id: str
-    gmail_address: str
     gmail_app_password: str
     gmail_sender_filter: str
     gmail_imap_host: str
@@ -98,7 +97,6 @@ class WorkerConfig:
             supabase_url=required("SUPABASE_URL").rstrip("/"),
             service_role_key=required("SUPABASE_SERVICE_ROLE_KEY"),
             worker_id=required("GMAIL_WORKER_ID"),
-            gmail_address=required("GMAIL_ADDRESS"),
             gmail_app_password=required("GMAIL_APP_PASSWORD"),
             gmail_sender_filter=(
                 os.getenv("GMAIL_SENDER_FILTER", DEFAULT_SENDER).strip().lower()
@@ -273,6 +271,15 @@ def normalize_passport(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def resolve_gmail_address(snapshot: Any) -> str | None:
+    if not isinstance(snapshot, dict):
+        return None
+    value = str(snapshot.get("gmail_address") or "").strip().lower()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        return None
+    return value
+
+
 def decode_header_value(value: str | None) -> str | None:
     if not value:
         return None
@@ -435,7 +442,7 @@ class GmailReader:
     def __init__(self, config: WorkerConfig) -> None:
         self.config = config
 
-    def fetch_recent(self) -> list[ParsedEmail]:
+    def fetch_recent(self, gmail_address: str) -> list[ParsedEmail]:
         threshold = datetime.now(timezone.utc).date() - timedelta(
             days=self.config.gmail_lookback_days
         )
@@ -446,7 +453,7 @@ class GmailReader:
                 self.config.gmail_imap_host,
                 timeout=max(10, int(self.config.request_timeout_seconds)),
             )
-            mailbox.login(self.config.gmail_address, self.config.gmail_app_password)
+            mailbox.login(gmail_address, self.config.gmail_app_password)
             status, _ = mailbox.select(self.config.gmail_imap_folder, readonly=True)
             if status != "OK":
                 raise WorkerError("Gmail INBOX 无法以只读模式打开")
@@ -497,8 +504,19 @@ class GmailPinWorker:
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
         self.supabase.heartbeat(status="BUSY", batch_id=batch_id)
-        messages = self.gmail.fetch_recent()
-        LOG.info("Gmail PIN 检查完成：获取 %d 封候选邮件；PIN 值不写入日志", len(messages))
+        gmail_settings = batch.get("gmail_settings_snapshot")
+        gmail_address = resolve_gmail_address(gmail_settings)
+        messages: list[ParsedEmail] = []
+        if gmail_address is not None:
+            messages = self.gmail.fetch_recent(gmail_address)
+            LOG.info(
+                "Gmail PIN 检查完成：获取 %d 封候选邮件；PIN 值不写入日志",
+                len(messages),
+            )
+        else:
+            LOG.error(
+                "Gmail 地址快照缺失或无效；不会连接邮箱，也不会伪造 PIN 成功"
+            )
         processed = 0
         while True:
             item = self.supabase.claim_item(batch_id)
@@ -520,6 +538,20 @@ class GmailPinWorker:
                     },
                     error_code="SNAPSHOT_INVALID",
                     error_message="Customer snapshot is not a JSON object",
+                )
+            elif gmail_address is None:
+                decision = PinDecision(
+                    status="PARSE_FAILED",
+                    email=None,
+                    confidence=None,
+                    summary={
+                        "source": "GMAIL_IMAP",
+                        "reason": "gmail_address_snapshot_missing_or_invalid",
+                        "email_body_stored": False,
+                        "pin_value_logged": False,
+                    },
+                    error_code="GMAIL_ADDRESS_SNAPSHOT_INVALID",
+                    error_message="Gmail address snapshot is missing or invalid",
                 )
             else:
                 decision = decide_for_item(
