@@ -42,6 +42,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
       final ocrResultSyncError = await repository.syncOcrResultsFromSupabase();
       final automationSyncError = await repository
           .syncAutomationTasksFromSupabase();
+      final mdacSettingsSyncError = await repository
+          .syncMdacSettingsFromSupabase();
       if (syncError != null) repository.auditEvents.insert(0, syncError);
       if (batchSyncError != null)
         repository.auditEvents.insert(0, batchSyncError);
@@ -49,6 +51,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
         repository.auditEvents.insert(0, ocrResultSyncError);
       if (automationSyncError != null)
         repository.auditEvents.insert(0, automationSyncError);
+      if (mdacSettingsSyncError != null)
+        repository.auditEvents.insert(0, mdacSettingsSyncError);
       if (!mounted) return;
       signedIn = true;
       signedInName = session.name;
@@ -86,6 +90,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                     .syncOcrResultsFromSupabase();
                 final automationSyncError = await repository
                     .syncAutomationTasksFromSupabase();
+                final mdacSettingsSyncError = await repository
+                    .syncMdacSettingsFromSupabase();
                 if (syncError != null) {
                   repository.auditEvents.insert(0, syncError);
                 }
@@ -97,6 +103,9 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                 }
                 if (automationSyncError != null) {
                   repository.auditEvents.insert(0, automationSyncError);
+                }
+                if (mdacSettingsSyncError != null) {
+                  repository.auditEvents.insert(0, mdacSettingsSyncError);
                 }
                 if (!mounted) return;
                 setState(() {
@@ -380,8 +389,111 @@ class AutomationTask {
   double get progress => totalCount == 0 ? 0 : completedCount / totalCount;
 }
 
+class MdacSettings {
+  const MdacSettings({
+    required this.mdacEmail,
+    required this.mdacPhone,
+    required this.regionCode,
+    required this.travelMode,
+    required this.embarkCountry,
+    required this.vessel,
+    required this.accommodationStay,
+    required this.address1,
+    required this.address2,
+    required this.stateCode,
+    required this.cityCode,
+    required this.postcode,
+    required this.pobMode,
+    this.updatedAt,
+  });
+
+  factory MdacSettings.defaults() => const MdacSettings(
+    mdacEmail: '',
+    mdacPhone: '',
+    regionCode: '60',
+    travelMode: '2',
+    embarkCountry: '',
+    vessel: '',
+    accommodationStay: '02',
+    address1: '',
+    address2: '',
+    stateCode: '',
+    cityCode: '',
+    postcode: '',
+    pobMode: 'NATIONALITY',
+  );
+
+  factory MdacSettings.fromMap(Map<String, dynamic> row) {
+    String read(String key, [String fallback = '']) =>
+        row[key]?.toString() ?? fallback;
+    return MdacSettings(
+      mdacEmail: read('mdac_email'),
+      mdacPhone: read('mdac_phone'),
+      regionCode: read('region_code', '60'),
+      travelMode: read('travel_mode', '2'),
+      embarkCountry: read('embark_country').toUpperCase(),
+      vessel: read('vessel'),
+      accommodationStay: read('accommodation_stay', '02'),
+      address1: read('address1'),
+      address2: read('address2'),
+      stateCode: read('state_code'),
+      cityCode: read('city_code'),
+      postcode: read('postcode'),
+      pobMode: read('pob_mode', 'NATIONALITY'),
+      updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? ''),
+    );
+  }
+
+  final String mdacEmail;
+  final String mdacPhone;
+  final String regionCode;
+  final String travelMode;
+  final String embarkCountry;
+  final String vessel;
+  final String accommodationStay;
+  final String address1;
+  final String address2;
+  final String stateCode;
+  final String cityCode;
+  final String postcode;
+  final String pobMode;
+  final DateTime? updatedAt;
+
+  bool get isComplete => [
+    mdacEmail,
+    mdacPhone,
+    regionCode,
+    travelMode,
+    embarkCountry,
+    vessel,
+    accommodationStay,
+    address1,
+    stateCode,
+    cityCode,
+    postcode,
+    pobMode,
+  ].every((value) => value.trim().isNotEmpty);
+
+  Map<String, dynamic> toRpcParams() => {
+    'mdacEmail': mdacEmail.trim(),
+    'mdacPhone': mdacPhone.trim(),
+    'regionCode': regionCode.trim(),
+    'travelMode': travelMode.trim(),
+    'embarkCountry': embarkCountry.trim().toUpperCase(),
+    'vessel': vessel.trim(),
+    'accommodationStay': accommodationStay.trim(),
+    'address1': address1.trim(),
+    'address2': address2.trim(),
+    'stateCode': stateCode.trim(),
+    'cityCode': cityCode.trim(),
+    'postcode': postcode.trim(),
+    'pobMode': pobMode.trim().toUpperCase(),
+  };
+}
+
 class DemoRepository extends ChangeNotifier {
   DemoRepository() {
+    mdacSettings = MdacSettings.defaults();
     _seed();
   }
 
@@ -394,6 +506,8 @@ class DemoRepository extends ChangeNotifier {
   bool workerOnline = true;
   String workerVersion = 'fill-preview 0.1.0';
   String currentWorkerActivity = '空闲，等待任务';
+  MdacSettings? mdacSettings;
+  bool mdacSettingsLoading = false;
 
   void _seed() {
     final now = DateTime.now();
@@ -510,6 +624,59 @@ class DemoRepository extends ChangeNotifier {
       return null;
     } catch (exception) {
       return '客户云端同步失败：$exception';
+    }
+  }
+
+  Future<String?> syncMdacSettingsFromSupabase() async {
+    if (!remoteMode) return null;
+    mdacSettingsLoading = true;
+    notifyListeners();
+    try {
+      final row = await SupabaseGateway.fetchMdacSettings();
+      mdacSettings = MdacSettings.fromMap(row);
+      auditEvents.insert(0, '已从 Supabase 同步 MDAC 默认配置');
+      return null;
+    } catch (exception) {
+      return 'MDAC 设置同步失败：$exception';
+    } finally {
+      mdacSettingsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<String?> saveMdacSettings(MdacSettings value) async {
+    if (!remoteMode) {
+      mdacSettings = value;
+      auditEvents.insert(0, '已保存本地 MDAC 默认配置');
+      notifyListeners();
+      return null;
+    }
+    mdacSettingsLoading = true;
+    notifyListeners();
+    try {
+      final row = await SupabaseGateway.updateMdacSettings(
+        mdacEmail: value.mdacEmail,
+        mdacPhone: value.mdacPhone,
+        regionCode: value.regionCode,
+        travelMode: value.travelMode,
+        embarkCountry: value.embarkCountry,
+        vessel: value.vessel,
+        accommodationStay: value.accommodationStay,
+        address1: value.address1,
+        address2: value.address2,
+        stateCode: value.stateCode,
+        cityCode: value.cityCode,
+        postcode: value.postcode,
+        pobMode: value.pobMode,
+      );
+      mdacSettings = MdacSettings.fromMap(row);
+      auditEvents.insert(0, '已保存 MDAC 默认配置，并写入审计日志');
+      return null;
+    } catch (exception) {
+      return 'MDAC 设置保存失败：$exception';
+    } finally {
+      mdacSettingsLoading = false;
+      notifyListeners();
     }
   }
 
@@ -3230,6 +3397,418 @@ class TasksScreen extends StatelessWidget {
   }
 }
 
+class MdacSettingsEditor extends StatefulWidget {
+  const MdacSettingsEditor({required this.repository, super.key});
+
+  final DemoRepository repository;
+
+  @override
+  State<MdacSettingsEditor> createState() => _MdacSettingsEditorState();
+}
+
+class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _regionController = TextEditingController();
+  final _embarkController = TextEditingController();
+  final _vesselController = TextEditingController();
+  final _address1Controller = TextEditingController();
+  final _address2Controller = TextEditingController();
+  final _stateController = TextEditingController();
+  final _cityController = TextEditingController();
+  final _postcodeController = TextEditingController();
+
+  String _travelMode = '2';
+  String _accommodationStay = '02';
+  String _pobMode = 'NATIONALITY';
+  bool _saving = false;
+  bool _dirty = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _applySettings(widget.repository.mdacSettings ?? MdacSettings.defaults());
+    widget.repository.addListener(_onRepositoryChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.repository.removeListener(_onRepositoryChanged);
+    for (final controller in [
+      _emailController,
+      _phoneController,
+      _regionController,
+      _embarkController,
+      _vesselController,
+      _address1Controller,
+      _address2Controller,
+      _stateController,
+      _cityController,
+      _postcodeController,
+    ]) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _onRepositoryChanged() {
+    if (!mounted) return;
+    if (!_dirty && !_saving && widget.repository.mdacSettings != null) {
+      _applySettings(widget.repository.mdacSettings!);
+    }
+    setState(() {});
+  }
+
+  void _applySettings(MdacSettings settings) {
+    _emailController.text = settings.mdacEmail;
+    _phoneController.text = settings.mdacPhone;
+    _regionController.text = settings.regionCode;
+    _embarkController.text = settings.embarkCountry;
+    _vesselController.text = settings.vessel;
+    _address1Controller.text = settings.address1;
+    _address2Controller.text = settings.address2;
+    _stateController.text = settings.stateCode;
+    _cityController.text = settings.cityCode;
+    _postcodeController.text = settings.postcode;
+    _travelMode = settings.travelMode;
+    _accommodationStay = settings.accommodationStay;
+    _pobMode = settings.pobMode;
+    _dirty = false;
+  }
+
+  void _markDirty(String _) {
+    if (!_dirty) setState(() => _dirty = true);
+  }
+
+  String? _required(String? value, String label) {
+    if (value == null || value.trim().isEmpty) return '$label不能为空';
+    return null;
+  }
+
+  String? _email(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) return 'MDAC 联系邮箱不能为空';
+    if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(text)) {
+      return '请输入有效的邮箱地址';
+    }
+    return null;
+  }
+
+  String? _code(String? value, String label, int length) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) return '$label不能为空';
+    if (!RegExp('^[0-9]{${length}}\$').hasMatch(text)) {
+      return '$label必须是 $length 位数字代码';
+    }
+    return null;
+  }
+
+  MdacSettings _settingsFromForm() => MdacSettings(
+    mdacEmail: _emailController.text,
+    mdacPhone: _phoneController.text,
+    regionCode: _regionController.text,
+    travelMode: _travelMode,
+    embarkCountry: _embarkController.text,
+    vessel: _vesselController.text,
+    accommodationStay: _accommodationStay,
+    address1: _address1Controller.text,
+    address2: _address2Controller.text,
+    stateCode: _stateController.text,
+    cityCode: _cityController.text,
+    postcode: _postcodeController.text,
+    pobMode: _pobMode,
+  );
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      showToast(context, '请先修正 MDAC 默认配置中的必填项。', error: true);
+      return;
+    }
+    setState(() => _saving = true);
+    final error = await widget.repository.saveMdacSettings(_settingsFromForm());
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      if (error == null) _dirty = false;
+    });
+    showToast(
+      context,
+      error ?? 'MDAC 默认配置已保存；之后新建的批次会使用这份配置快照。',
+      error: error != null,
+    );
+  }
+
+  Widget _textField({
+    required String label,
+    required TextEditingController controller,
+    String? hint,
+    String? Function(String?)? validator,
+    TextInputType? keyboardType,
+    int maxLines = 1,
+    bool readOnly = false,
+  }) {
+    return TextFormField(
+      controller: controller,
+      readOnly: readOnly,
+      keyboardType: keyboardType,
+      maxLines: maxLines,
+      onChanged: _markDirty,
+      validator: validator,
+      decoration: InputDecoration(labelText: label, hintText: hint),
+    );
+  }
+
+  Widget _wideField(double width, Widget child) =>
+      SizedBox(width: width, child: child);
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = widget.repository.mdacSettings ?? MdacSettings.defaults();
+    return SectionCard(
+      title: 'MDAC 默认业务配置',
+      actionLabel: settings.isComplete ? '已配置' : '待完善',
+      onAction: null,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final oneColumn = constraints.maxWidth < 720;
+          final fieldWidth = oneColumn
+              ? constraints.maxWidth
+              : (constraints.maxWidth - 16) / 2;
+          return Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '这些是新 MDAC 批次使用的固定业务默认值，可在 App 修改。保存批次时会复制快照；已排队批次不会因之后修改设置而改变。',
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    fontSize: 12,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 12,
+                  children: [
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: 'MDAC 联系邮箱',
+                        controller: _emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        validator: _email,
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: 'MDAC 手机号码',
+                        controller: _phoneController,
+                        keyboardType: TextInputType.phone,
+                        validator: (value) => _required(value, 'MDAC 手机号码'),
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '地区代码（当前规则固定为 60）',
+                        controller: _regionController,
+                        keyboardType: TextInputType.number,
+                        readOnly: true,
+                        validator: (value) =>
+                            value?.trim() == '60' ? null : '地区代码必须是 60',
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: _travelMode,
+                        decoration: const InputDecoration(labelText: '交通方式'),
+                        items: const [
+                          DropdownMenuItem(value: '1', child: Text('AIR · 空运')),
+                          DropdownMenuItem(
+                            value: '2',
+                            child: Text('LAND · 陆路'),
+                          ),
+                          DropdownMenuItem(value: '3', child: Text('SEA · 海运')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _travelMode = value;
+                              _dirty = true;
+                            });
+                          }
+                        },
+                        validator: (value) => value == null ? '请选择交通方式' : null,
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '最后出发国家（三字码）',
+                        controller: _embarkController,
+                        hint: '例如 CHN',
+                        validator: (value) {
+                          final text = value?.trim().toUpperCase() ?? '';
+                          if (!RegExp(r'^[A-Z]{3}$').hasMatch(text)) {
+                            return '请输入 3 位大写国家代码';
+                          }
+                          return null;
+                        },
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '航班 / 车辆 / 船只编号',
+                        controller: _vesselController,
+                        validator: (value) => _required(value, '交通编号'),
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: _accommodationStay,
+                        decoration: const InputDecoration(labelText: '住宿类型'),
+                        items: const [
+                          DropdownMenuItem(
+                            value: '01',
+                            child: Text('HOTEL / MOTEL / REST HOUSE'),
+                          ),
+                          DropdownMenuItem(value: '02', child: Text('朋友或亲属住所')),
+                          DropdownMenuItem(value: '99', child: Text('其他')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _accommodationStay = value;
+                              _dirty = true;
+                            });
+                          }
+                        },
+                        validator: (value) => value == null ? '请选择住宿类型' : null,
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: _pobMode,
+                        decoration: const InputDecoration(
+                          labelText: 'Place of Birth 映射',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'NATIONALITY',
+                            child: Text('使用国籍代码（旧版规则）'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'CUSTOMER',
+                            child: Text('使用客户出生地点'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _pobMode = value;
+                              _dirty = true;
+                            });
+                          }
+                        },
+                        validator: (value) =>
+                            value == null ? '请选择 POB 映射' : null,
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '马来西亚住宿地址第一行',
+                        controller: _address1Controller,
+                        validator: (value) => _required(value, '住宿地址第一行'),
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '马来西亚住宿地址第二行（可空）',
+                        controller: _address2Controller,
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '马来西亚州代码',
+                        controller: _stateController,
+                        hint: '例如 14 = WP KUALA LUMPUR',
+                        keyboardType: TextInputType.number,
+                        validator: (value) => _code(value, '州代码', 2),
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '马来西亚城市代码',
+                        controller: _cityController,
+                        hint: '请使用官方下拉选项的 value',
+                        keyboardType: TextInputType.number,
+                        validator: (value) => _code(value, '城市代码', 4),
+                      ),
+                    ),
+                    _wideField(
+                      fieldWidth,
+                      _textField(
+                        label: '住宿邮编',
+                        controller: _postcodeController,
+                        keyboardType: TextInputType.number,
+                        validator: (value) => _code(value, '邮编', 5),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _saving ? null : _save,
+                      icon: _saving
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.save_outlined),
+                      label: Text(_saving ? '保存中…' : '保存 MDAC 默认配置'),
+                    ),
+                    if (_dirty)
+                      const Text(
+                        '有未保存修改',
+                        style: TextStyle(color: AppTheme.orange, fontSize: 12),
+                      ),
+                    if (widget.repository.remoteMode)
+                      const Text(
+                        '保存到 Supabase，并写入审计日志',
+                        style: TextStyle(color: AppTheme.muted, fontSize: 12),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
     required this.repository,
@@ -3379,6 +3958,8 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 18),
+            MdacSettingsEditor(repository: repository),
             const SizedBox(height: 18),
             SectionCard(
               title: '账号管理',

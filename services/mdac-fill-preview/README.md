@@ -19,7 +19,7 @@ Playwright 新 BrowserContext
         ↓
 打开官方 MDAC 表单
         ↓
-填写固定资料与 customer_snapshot
+读取批次的 App 配置快照与 customer_snapshot
         ↓
 回读 DOM，检查字段值、invalid 控件和页面 URL
         ↓
@@ -34,9 +34,9 @@ item=NEEDS_REVIEW、mdac_registrations=NEEDS_REVIEW、submitted=false
 
 ## 旧版规则的迁移
 
-首版沿用旧 `mdac-auto-v2` 的确定性映射：区域代码默认为 `60`；国籍大写；`#pob` 默认跟随国籍；男/女转换为 `1/2`；姓名去首尾空格；护照号去首尾空格并转大写；日期写为 `DD/MM/YYYY`。`MDAC_POB_MODE=CUSTOMER` 可使用任务快照中的 `place_of_birth`，但应在业务确认后再启用。
+首版沿用旧 `mdac-auto-v2` 的确定性映射：区域代码为 `60`；国籍大写；`#pob` 根据 App 中的 POB 映射设置选择国籍或客户出生地点；男/女转换为 `1/2`；姓名去首尾空格；护照号去首尾空格并转大写；日期写为 `DD/MM/YYYY`。这些业务默认值由 Flutter App 的“MDAC 默认业务配置”页面编辑，保存到受 RLS 保护的 `mdac_settings`，创建批次时复制到 `automation_batches.mdac_settings_snapshot`。
 
-客户资料不从 Excel 读取，而是使用创建任务时写入的 `automation_items.customer_snapshot`。批次的入境/出境日期作为回退值，并且会再次校验出境日期不能早于入境日期。
+客户资料不从 Excel 读取，而是使用创建任务时写入的 `automation_items.customer_snapshot`。批次的入境/出境日期作为回退值，并且会再次校验出境日期不能早于入境日期。设置或客户资料缺失时，Worker 不猜测，直接写回 `NEEDS_REVIEW`。
 
 ## Railway 设置
 
@@ -48,7 +48,7 @@ Dockerfile: Dockerfile
 Start Command: Dockerfile 内的 CMD
 ```
 
-必须把下列变量放在 Railway Variables/Secrets 中，不要放进 GitHub 或 APK：`SUPABASE_SERVICE_ROLE_KEY`、`MDAC_EMAIL`、`MDAC_PHONE`、`MDAC_VESSEL`、`MDAC_ADDRESS1`、`MDAC_ADDRESS2`、`MDAC_POSTCODE`。`MDAC_STATE` 与 `MDAC_CITY` 也应根据真实住宿资料在 Railway 中填写，不要假定示例值适用于生产。
+必须把下列运行和安全变量放在 Railway Variables/Secrets 中，不要放进 GitHub 或 APK：`SUPABASE_SERVICE_ROLE_KEY`、`MDAC_EXECUTION_MODE=FILL_PREVIEW`、`ALLOW_REAL_SUBMIT=false`、`MDAC_WORKER_ID`、`MDAC_URL`、轮询/租约/超时变量，以及私有截图 bucket 配置。邮箱、手机、交通、出发国家、航班/车辆/船号、住宿、地址、州、城市、邮编和 POB 映射不再配置在 Railway，而是由 App 管理。
 
 最低运行变量如下：
 
@@ -58,12 +58,15 @@ SUPABASE_SERVICE_ROLE_KEY
 MDAC_EXECUTION_MODE=FILL_PREVIEW
 ALLOW_REAL_SUBMIT=false
 MDAC_WORKER_ID
-MDAC_EMAIL
-MDAC_PHONE
-MDAC_VESSEL
-MDAC_ADDRESS1
-MDAC_ADDRESS2
-MDAC_POSTCODE
+MDAC_URL
+MDAC_POLL_SECONDS
+MDAC_LEASE_SECONDS
+MDAC_MAX_ATTEMPTS
+SUPABASE_REQUEST_TIMEOUT_SECONDS
+MDAC_PAGE_TIMEOUT_MS
+MDAC_HEADLESS=true
+MDAC_SCREENSHOT_BUCKET
+MDAC_SCREENSHOT_PREFIX
 ```
 
 其他变量可直接参考 `.env.example`。不要配置任何 `MDAC_USERNAME`、`MDAC_PASSWORD` 并期待 Worker 自动登录；当前代码遇到密码输入框会转人工审核。
@@ -78,4 +81,4 @@ python -m unittest discover -s services/mdac-fill-preview -p 'test_*.py'
 
 ## 已知限制
 
-当前 Railway Worker 尚未连接 Flutter 的真实 automation batch 创建和任务同步界面；这需要客户端后续改动，尤其要移除本地演示 Worker 产生的乐观 `MDAC_REGISTERED` 状态。当前服务也不处理 Gmail PIN、不查询注册结果、不重试结果未知的真实提交。未来若要开启真实提交，应另建明确的 Submit Worker，并要求独立授权、单独凭证/策略、人工确认和 `RESULT_UNKNOWN` 防重复提交设计，不能通过修改本服务的一个环境变量实现。
+当前服务已经连接 Flutter 的真实 automation batch 创建和任务同步界面：App 保存 MDAC 设置后，入队 RPC 会原子复制客户与业务设置快照；Worker 完成页面回读后写回 `NEEDS_REVIEW`，不会把预览标为 `MDAC_REGISTERED`。当前服务也不处理 Gmail PIN、不查询注册结果、不重试结果未知的真实提交。未来若要开启真实提交，应另建明确的 Submit Worker，并要求独立授权、单独凭证/策略、人工确认和 `RESULT_UNKNOWN` 防重复提交设计，不能通过修改本服务的一个环境变量实现。

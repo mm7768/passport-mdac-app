@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from worker import WorkerConfig, WorkerError, map_gender, map_mdac_fields, parse_date
+from worker import (
+    WorkerConfig,
+    WorkerError,
+    map_gender,
+    map_mdac_fields,
+    normalize_mdac_settings,
+    parse_date,
+)
 
 
 class FillPreviewWorkerTests(unittest.TestCase):
@@ -28,21 +35,27 @@ class FillPreviewWorkerTests(unittest.TestCase):
             page_timeout_ms=60000,
             screenshot_bucket="passport-documents",
             screenshot_prefix="mdac-previews",
-            mdac_email="operator@example.test",
-            mdac_phone="60123456789",
-            mdac_region_code="60",
-            mdac_travel_mode="2",
-            mdac_embark_country="CHN",
-            mdac_vessel="TEST FLIGHT",
-            mdac_accommodation_stay="02",
-            mdac_address1="TEST ADDRESS 1",
-            mdac_address2="TEST ADDRESS 2",
-            mdac_state="01",
-            mdac_city="0100",
-            mdac_postcode="50000",
-            mdac_pob_mode="NATIONALITY",
             headless=True,
             log_level="INFO",
+        )
+
+    def settings_snapshot(self, pob_mode: str = "NATIONALITY") -> dict[str, str]:
+        return normalize_mdac_settings(
+            {
+                "mdac_email": "operator@example.test",
+                "mdac_phone": "60123456789",
+                "region_code": "60",
+                "travel_mode": "2",
+                "embark_country": "CHN",
+                "vessel": "TEST FLIGHT",
+                "accommodation_stay": "02",
+                "address1": "TEST ADDRESS 1",
+                "address2": "TEST ADDRESS 2",
+                "state_code": "01",
+                "city_code": "0100",
+                "postcode": "50000",
+                "pob_mode": pob_mode,
+            }
         )
 
     def test_maps_snapshot_to_official_selectors(self) -> None:
@@ -56,7 +69,7 @@ class FillPreviewWorkerTests(unittest.TestCase):
             "passport_expiry_date": "2030-03-04",
         }
         batch = {"entry_date": "2026-09-01", "exit_date": "2026-09-10"}
-        fields = map_mdac_fields(snapshot, batch, self.base_config())
+        fields = map_mdac_fields(snapshot, batch, self.settings_snapshot())
         self.assertEqual(fields["#region"], "60")
         self.assertEqual(fields["#nationality"], "CHN")
         self.assertEqual(fields["#pob"], "CHN")
@@ -79,8 +92,7 @@ class FillPreviewWorkerTests(unittest.TestCase):
             "passport_expiry_date": "2030-03-04",
         }
         batch = {"entry_date": "2026-09-01", "exit_date": "2026-09-10"}
-        config = replace(self.base_config(), mdac_pob_mode="CUSTOMER")
-        fields = map_mdac_fields(snapshot, batch, config)
+        fields = map_mdac_fields(snapshot, batch, self.settings_snapshot("CUSTOMER"))
         self.assertEqual(fields["#pob"], "MYS")
 
     def test_exit_date_must_not_precede_entry_date(self) -> None:
@@ -94,7 +106,7 @@ class FillPreviewWorkerTests(unittest.TestCase):
         }
         batch = {"entry_date": "2026-09-10", "exit_date": "2026-09-01"}
         with self.assertRaisesRegex(ValueError, "出境日期不能早于入境日期"):
-            map_mdac_fields(snapshot, batch, self.base_config())
+            map_mdac_fields(snapshot, batch, self.settings_snapshot())
 
     def test_invalid_date_and_gender_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -107,11 +119,6 @@ class FillPreviewWorkerTests(unittest.TestCase):
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-only",
             "MDAC_WORKER_ID": "test-worker",
-            "MDAC_EMAIL": "operator@example.test",
-            "MDAC_PHONE": "60123456789",
-            "MDAC_VESSEL": "TEST FLIGHT",
-            "MDAC_ADDRESS1": "TEST ADDRESS",
-            "MDAC_POSTCODE": "50000",
             "MDAC_EXECUTION_MODE": "FILL_PREVIEW",
             "ALLOW_REAL_SUBMIT": "false",
         }
@@ -131,11 +138,6 @@ class FillPreviewWorkerTests(unittest.TestCase):
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-only",
             "MDAC_WORKER_ID": "test-worker",
-            "MDAC_EMAIL": "operator@example.test",
-            "MDAC_PHONE": "60123456789",
-            "MDAC_VESSEL": "TEST FLIGHT",
-            "MDAC_ADDRESS1": "TEST ADDRESS",
-            "MDAC_POSTCODE": "50000",
             "MDAC_EXECUTION_MODE": "DRY_RUN",
             "ALLOW_REAL_SUBMIT": "false",
         }

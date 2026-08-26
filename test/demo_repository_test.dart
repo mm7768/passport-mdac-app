@@ -160,6 +160,32 @@ void main() {
       expect(isMdacDate('09-08-1990'), isFalse);
     });
 
+    test('MDAC settings require a complete business default set', () {
+      final empty = MdacSettings.defaults();
+      expect(empty.isComplete, isFalse);
+
+      final complete = MdacSettings.fromMap({
+        'mdac_email': 'desk@example.com',
+        'mdac_phone': '+60123456789',
+        'region_code': '60',
+        'travel_mode': '1',
+        'embark_country': 'chn',
+        'vessel': 'MH123',
+        'accommodation_stay': '01',
+        'address1': '12 Jalan Test',
+        'address2': '',
+        'state_code': '14',
+        'city_code': '0100',
+        'postcode': '50000',
+        'pob_mode': 'NATIONALITY',
+      });
+
+      expect(complete.isComplete, isTrue);
+      expect(complete.embarkCountry, 'CHN');
+      expect(complete.toRpcParams()['embarkCountry'], 'CHN');
+      expect(complete.toRpcParams()['regionCode'], '60');
+    });
+
     test('manual creation rejects free-text gender and invalid status', () {
       final repository = DemoRepository();
       final values = <String, String>{

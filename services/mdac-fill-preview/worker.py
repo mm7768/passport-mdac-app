@@ -48,19 +48,6 @@ class WorkerConfig:
     page_timeout_ms: int
     screenshot_bucket: str
     screenshot_prefix: str
-    mdac_email: str
-    mdac_phone: str
-    mdac_region_code: str
-    mdac_travel_mode: str
-    mdac_embark_country: str
-    mdac_vessel: str
-    mdac_accommodation_stay: str
-    mdac_address1: str
-    mdac_address2: str
-    mdac_state: str
-    mdac_city: str
-    mdac_postcode: str
-    mdac_pob_mode: str
     headless: bool
     log_level: str
 
@@ -92,10 +79,6 @@ class WorkerConfig:
         if allow_submit != "false":
             raise WorkerError("ALLOW_REAL_SUBMIT 必须严格为 false；本服务禁止真实提交")
 
-        pob_mode = os.getenv("MDAC_POB_MODE", "NATIONALITY").strip().upper()
-        if pob_mode not in {"NATIONALITY", "CUSTOMER"}:
-            raise WorkerError("MDAC_POB_MODE 只能是 NATIONALITY 或 CUSTOMER")
-
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
             service_role_key=required("SUPABASE_SERVICE_ROLE_KEY"),
@@ -110,19 +93,6 @@ class WorkerConfig:
             page_timeout_ms=bounded_int("MDAC_PAGE_TIMEOUT_MS", "60000", 10000, 180000),
             screenshot_bucket=os.getenv("MDAC_SCREENSHOT_BUCKET", "passport-documents").strip() or "passport-documents",
             screenshot_prefix=os.getenv("MDAC_SCREENSHOT_PREFIX", "mdac-previews").strip("/ ") or "mdac-previews",
-            mdac_email=required("MDAC_EMAIL"),
-            mdac_phone=required("MDAC_PHONE"),
-            mdac_region_code=os.getenv("MDAC_REGION_CODE", "60").strip() or "60",
-            mdac_travel_mode=os.getenv("MDAC_TRAVEL_MODE", "2").strip() or "2",
-            mdac_embark_country=os.getenv("MDAC_EMBARK_COUNTRY", "CHN").strip().upper() or "CHN",
-            mdac_vessel=required("MDAC_VESSEL"),
-            mdac_accommodation_stay=os.getenv("MDAC_ACCOMMODATION_STAY", "02").strip() or "02",
-            mdac_address1=required("MDAC_ADDRESS1"),
-            mdac_address2=os.getenv("MDAC_ADDRESS2", "").strip(),
-            mdac_state=os.getenv("MDAC_STATE", "01").strip() or "01",
-            mdac_city=os.getenv("MDAC_CITY", "0100").strip() or "0100",
-            mdac_postcode=required("MDAC_POSTCODE"),
-            mdac_pob_mode=pob_mode,
             headless=os.getenv("MDAC_HEADLESS", "true").strip().lower() == "true",
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         )
@@ -278,18 +248,77 @@ def _required_snapshot(snapshot: dict[str, Any], key: str) -> str:
     return value
 
 
+def normalize_mdac_settings(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise WorkerError("批次缺少 mdac_settings_snapshot")
+
+    def value(key: str, *, required: bool = True) -> str:
+        text = str(raw.get(key) or "").strip()
+        if required and not text:
+            raise WorkerError(f"MDAC 设置快照缺少必填字段：{key}")
+        return text
+
+    email = value("mdac_email")
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise WorkerError("MDAC 设置快照的邮箱格式不正确")
+    phone = value("mdac_phone")
+    region_code = value("region_code")
+    if region_code != "60":
+        raise WorkerError("MDAC 设置快照的地区代码必须是 60")
+    travel_mode = value("travel_mode")
+    if travel_mode not in {"1", "2", "3"}:
+        raise WorkerError("MDAC 设置快照的交通方式无效")
+    embark_country = value("embark_country").upper()
+    if not re.fullmatch(r"[A-Z]{3}", embark_country):
+        raise WorkerError("MDAC 设置快照的出发国家代码无效")
+    vessel = value("vessel")
+    accommodation_stay = value("accommodation_stay")
+    if accommodation_stay not in {"01", "02", "99"}:
+        raise WorkerError("MDAC 设置快照的住宿类型无效")
+    address1 = value("address1")
+    address2 = value("address2", required=False)
+    state_code = value("state_code")
+    city_code = value("city_code")
+    postcode = value("postcode")
+    if not re.fullmatch(r"[0-9]{2}", state_code):
+        raise WorkerError("MDAC 设置快照的州代码无效")
+    if not re.fullmatch(r"[0-9]{4}", city_code):
+        raise WorkerError("MDAC 设置快照的城市代码无效")
+    if not re.fullmatch(r"[0-9]{5}", postcode):
+        raise WorkerError("MDAC 设置快照的邮编无效")
+    pob_mode = value("pob_mode").upper()
+    if pob_mode not in {"NATIONALITY", "CUSTOMER"}:
+        raise WorkerError("MDAC 设置快照的 POB 映射无效")
+
+    return {
+        "mdac_email": email,
+        "mdac_phone": phone,
+        "region_code": region_code,
+        "travel_mode": travel_mode,
+        "embark_country": embark_country,
+        "vessel": vessel,
+        "accommodation_stay": accommodation_stay,
+        "address1": address1,
+        "address2": address2,
+        "state_code": state_code,
+        "city_code": city_code,
+        "postcode": postcode,
+        "pob_mode": pob_mode,
+    }
+
+
 def map_mdac_fields(
     snapshot: dict[str, Any],
     batch: dict[str, Any],
-    config: WorkerConfig,
+    settings: dict[str, str],
 ) -> dict[str, str]:
     full_name = _required_snapshot(snapshot, "full_name")
     passport_number = _required_snapshot(snapshot, "passport_number")
     nationality = _required_snapshot(snapshot, "nationality").upper()
     place_of_birth = str(snapshot.get("place_of_birth") or "").strip().upper()
-    pob = nationality if config.mdac_pob_mode == "NATIONALITY" else place_of_birth
+    pob = nationality if settings["pob_mode"] == "NATIONALITY" else place_of_birth
     if not pob:
-        raise ValueError("MDAC_POB_MODE=CUSTOMER 时缺少 place_of_birth")
+        raise ValueError("POB 映射为 CUSTOMER 时缺少 place_of_birth")
 
     date_of_birth = _required_snapshot(snapshot, "date_of_birth")
     passport_expiry_date = _required_snapshot(snapshot, "passport_expiry_date")
@@ -304,7 +333,7 @@ def map_mdac_fields(
         raise ValueError("出境日期不能早于入境日期")
 
     return {
-        "#region": config.mdac_region_code,
+        "#region": settings["region_code"],
         "#nationality": nationality,
         "#pob": pob,
         "#sex": map_gender(snapshot.get("gender")),
@@ -376,6 +405,7 @@ async def fill_and_verify_page(
     page: Page,
     fields: dict[str, str],
     config: WorkerConfig,
+    settings: dict[str, str],
 ) -> dict[str, Any]:
     timeout_ms = config.page_timeout_ms
     await page.goto(config.mdac_url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -391,19 +421,19 @@ async def fill_and_verify_page(
     await page.wait_for_timeout(500)
     await _select_value(page, "#pob", fields["#pob"], timeout_ms)
 
-    await page.locator("#email").fill(config.mdac_email)
-    await page.locator("#confirmEmail").fill(config.mdac_email)
-    await page.locator("#mobile").fill(config.mdac_phone)
-    await _select_value(page, "#trvlMode", config.mdac_travel_mode, timeout_ms)
-    await _select_value(page, "#embark", config.mdac_embark_country, timeout_ms)
-    await page.locator("#vesselNm").fill(config.mdac_vessel)
+    await page.locator("#email").fill(settings["mdac_email"])
+    await page.locator("#confirmEmail").fill(settings["mdac_email"])
+    await page.locator("#mobile").fill(settings["mdac_phone"])
+    await _select_value(page, "#trvlMode", settings["travel_mode"], timeout_ms)
+    await _select_value(page, "#embark", settings["embark_country"], timeout_ms)
+    await page.locator("#vesselNm").fill(settings["vessel"])
 
-    await _select_value(page, "#accommodationStay", config.mdac_accommodation_stay, timeout_ms)
-    await page.locator("#accommodationAddress1").fill(config.mdac_address1)
-    await page.locator("#accommodationAddress2").fill(config.mdac_address2)
-    await _select_value(page, "#accommodationState", config.mdac_state, timeout_ms)
-    await _select_value(page, "#accommodationCity", config.mdac_city, timeout_ms)
-    await page.locator("#accommodationPostcode").fill(config.mdac_postcode)
+    await _select_value(page, "#accommodationStay", settings["accommodation_stay"], timeout_ms)
+    await page.locator("#accommodationAddress1").fill(settings["address1"])
+    await page.locator("#accommodationAddress2").fill(settings["address2"])
+    await _select_value(page, "#accommodationState", settings["state_code"], timeout_ms)
+    await _select_value(page, "#accommodationCity", settings["city_code"], timeout_ms)
+    await page.locator("#accommodationPostcode").fill(settings["postcode"])
 
     await page.locator("#sex").select_option(value=fields["#sex"])
     await page.locator("#name").fill(fields["#name"])
@@ -425,18 +455,18 @@ async def fill_and_verify_page(
         "#passExpDte": fields["#passExpDte"],
         "#arrDt": fields["#arrDt"],
         "#depDt": fields["#depDt"],
-        "#email": config.mdac_email,
-        "#confirmEmail": config.mdac_email,
-        "#mobile": config.mdac_phone,
-        "#trvlMode": config.mdac_travel_mode,
-        "#embark": config.mdac_embark_country,
-        "#vesselNm": config.mdac_vessel,
-        "#accommodationStay": config.mdac_accommodation_stay,
-        "#accommodationAddress1": config.mdac_address1,
-        "#accommodationAddress2": config.mdac_address2,
-        "#accommodationState": config.mdac_state,
-        "#accommodationCity": config.mdac_city,
-        "#accommodationPostcode": config.mdac_postcode,
+        "#email": settings["mdac_email"],
+        "#confirmEmail": settings["mdac_email"],
+        "#mobile": settings["mdac_phone"],
+        "#trvlMode": settings["travel_mode"],
+        "#embark": settings["embark_country"],
+        "#vesselNm": settings["vessel"],
+        "#accommodationStay": settings["accommodation_stay"],
+        "#accommodationAddress1": settings["address1"],
+        "#accommodationAddress2": settings["address2"],
+        "#accommodationState": settings["state_code"],
+        "#accommodationCity": settings["city_code"],
+        "#accommodationPostcode": settings["postcode"],
     }
     mismatches: dict[str, dict[str, str]] = {}
     for selector, expected in selectors.items():
@@ -501,13 +531,15 @@ async def process_item(
         snapshot = item.get("customer_snapshot")
         if not isinstance(snapshot, dict):
             raise ValueError("customer_snapshot 格式不正确")
-        fields = map_mdac_fields(snapshot, batch, config)
+        settings = normalize_mdac_settings(batch.get("mdac_settings_snapshot"))
+        fields = map_mdac_fields(snapshot, batch, settings)
+        summary["settings_snapshot_present"] = True
         summary["passport_masked"] = mask_passport(fields["#passNo"])
         summary["mapped_fields"] = {
             key: value for key, value in fields.items() if key != "#passNo"
         }
         client.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
-        page_summary = await fill_and_verify_page(page, fields, config)
+        page_summary = await fill_and_verify_page(page, fields, config, settings)
         summary.update(page_summary)
     except ManualReviewRequired as exc:
         error_code = "NEEDS_HUMAN_INTERVENTION"

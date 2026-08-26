@@ -243,13 +243,64 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 MDAC 批次。');
   }
 
+  static Future<Map<String, dynamic>> fetchMdacSettings() async {
+    final row = await _requiredClient
+        .from('mdac_settings')
+        .select(
+          'id, mdac_email, mdac_phone, region_code, travel_mode, '
+          'embark_country, vessel, accommodation_stay, address1, address2, '
+          'state_code, city_code, postcode, pob_mode, updated_by, updated_at',
+        )
+        .eq('id', true)
+        .single();
+    return Map<String, dynamic>.from(row);
+  }
+
+  static Future<Map<String, dynamic>> updateMdacSettings({
+    required String mdacEmail,
+    required String mdacPhone,
+    required String regionCode,
+    required String travelMode,
+    required String embarkCountry,
+    required String vessel,
+    required String accommodationStay,
+    required String address1,
+    required String address2,
+    required String stateCode,
+    required String cityCode,
+    required String postcode,
+    required String pobMode,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'update_mdac_settings',
+      params: {
+        'p_mdac_email': mdacEmail,
+        'p_mdac_phone': mdacPhone,
+        'p_region_code': regionCode,
+        'p_travel_mode': travelMode,
+        'p_embark_country': embarkCountry,
+        'p_vessel': vessel,
+        'p_accommodation_stay': accommodationStay,
+        'p_address1': address1,
+        'p_address2': address2,
+        'p_state_code': stateCode,
+        'p_city_code': cityCode,
+        'p_postcode': postcode,
+        'p_pob_mode': pobMode,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 MDAC 设置。');
+  }
+
   static Future<List<Map<String, dynamic>>> fetchAutomationBatches() async {
     final client = _requiredClient;
     final batchRows = await client
         .from('automation_batches')
         .select(
           'id, task_type, status, total_count, success_count, failed_count, '
-          'entry_date, exit_date, note, created_by, created_at, updated_at',
+          'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
+          'created_at, updated_at',
         )
         .eq('task_type', 'MDAC_REGISTRATION')
         .order('created_at', ascending: false)

@@ -55,7 +55,9 @@ Flutter 人工审核并确认建档
 
 该服务启动时强制要求 `MDAC_EXECUTION_MODE=FILL_PREVIEW` 与 `ALLOW_REAL_SUBMIT=false`。Railway 根目录应设为 `services/mdac-fill-preview`，使用该目录的 `Dockerfile`。账号登录、密码、MFA、滑块或其他人工挑战不会由服务自动绕过；遇到这些情况必须转人工审核。
 
-当前 Supabase 已增加 `claim_mdac_batch`、`claim_mdac_item`、`heartbeat_mdac`、`finish_mdac_fill_preview` 和 `create_mdac_registration_batch`，包含原子领取、租约、心跳、尝试次数和 `RESULT_UNKNOWN/NEEDS_REVIEW` 边界。Flutter 远程模式创建 MDAC 任务时保存客户快照，并在任务页面提供 Supabase 状态刷新。
+MDAC 邮箱、手机、交通方式、出发国家、航班/车辆/船号、住宿类型、地址、州、城市、邮编和 POB 映射现在由 Flutter 设置页编辑，保存到受 RLS 保护的 `mdac_settings` 表。创建任务时，Supabase 会把这份业务配置复制到 `automation_batches.mdac_settings_snapshot`；之后修改默认设置不会影响已经排队的批次。Service Role Key、Worker 安全模式和真实 Submit 禁止开关仍只存在 Railway 受保护变量中。
+
+当前 Supabase 已增加 `claim_mdac_batch`、`claim_mdac_item`、`heartbeat_mdac`、`finish_mdac_fill_preview`、`create_mdac_registration_batch` 和 `update_mdac_settings`，包含原子领取、租约、心跳、尝试次数、设置审计和 `RESULT_UNKNOWN/NEEDS_REVIEW` 边界。Flutter 远程模式创建 MDAC 任务时保存客户/设置快照，并在任务页面提供 Supabase 状态刷新。
 
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
@@ -104,7 +106,7 @@ python worker/azure_ocr_worker.py --poll
 
 | 路径 | 用途 |
 |---|---|
-| `lib/main.dart` | Flutter 界面、客户维护、上传和 OCR 审核交互 |
+| `lib/main.dart` | Flutter 界面、客户维护、MDAC 设置、上传和 OCR 审核交互 |
 | `lib/supabase_gateway.dart` | Supabase Auth、客户 CRUD、Storage、OCR 和 MDAC 任务网关 |
 | `test/` | Repository 与 Widget 回归测试 |
 | `worker/azure_ocr_worker.py` | 真实 Azure 护照 OCR Worker |
@@ -112,6 +114,8 @@ python worker/azure_ocr_worker.py --poll
 | `services/mdac-fill-preview-legacy-audit.md` | 旧 MDAC 选择器与安全边界审查记录 |
 | `supabase/migrations/20260826_mdac_worker_leases.sql` | MDAC Worker 租约、原子领取和预览回写函数 |
 | `supabase/migrations/20260826_mdac_batch_enqueue.sql` | Flutter MDAC 批次原子入队和客户快照函数 |
+| `supabase/migrations/20260826_mdac_settings.sql` | App 可编辑 MDAC 默认配置、RLS 与审计 RPC |
+| `supabase/migrations/20260826_mdac_settings_snapshot.sql` | 入队时复制 MDAC 业务配置快照 |
 | `worker/dry_run_worker.py` | 安全演示 Worker |
 | `worker/README.md` | Worker 运行和 Railway 配置边界 |
 | `Dockerfile` | Railway Python Worker 镜像入口 |
