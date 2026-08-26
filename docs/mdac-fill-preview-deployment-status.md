@@ -26,3 +26,8 @@ When Railway Variables is usable, the user must paste the Supabase Service Role 
 ## 2026-08-26 13:06 deployment observation
 
 After the user confirmed deployment, Railway applied 23 changes. The `wholesome-rebirth` fill-preview Service entered `Building` with the 15 variables present, including the masked Service Role Key. The separate `glorious-wonder` dry-run Service showed `Build failed just now`; it is unrelated to the fill-preview deployment and was not modified. The fill-preview build had not finished at the time of observation.
+
+
+## 2026-08-26 13:15 runtime observation
+
+The service-specific `services/mdac-fill-preview/railway.toml` was added and pushed in commit `cdff417` to override the repository-root Azure OCR start command. Railway created deployment `016e6954` and marked `wholesome-rebirth` Online with Deployment successful. The deployment log now shows only `Starting Container`; the previous `/app/worker/azure_ocr_worker.py` error is no longer present, but the application log viewer has not yet shown the expected Worker startup/heartbeat lines.
