@@ -40,11 +40,15 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
       final syncError = await repository.syncCustomersFromSupabase();
       final batchSyncError = await repository.syncOcrBatchesFromSupabase();
       final ocrResultSyncError = await repository.syncOcrResultsFromSupabase();
+      final automationSyncError = await repository
+          .syncAutomationTasksFromSupabase();
       if (syncError != null) repository.auditEvents.insert(0, syncError);
       if (batchSyncError != null)
         repository.auditEvents.insert(0, batchSyncError);
       if (ocrResultSyncError != null)
         repository.auditEvents.insert(0, ocrResultSyncError);
+      if (automationSyncError != null)
+        repository.auditEvents.insert(0, automationSyncError);
       if (!mounted) return;
       signedIn = true;
       signedInName = session.name;
@@ -80,6 +84,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                     .syncOcrBatchesFromSupabase();
                 final ocrResultSyncError = await repository
                     .syncOcrResultsFromSupabase();
+                final automationSyncError = await repository
+                    .syncAutomationTasksFromSupabase();
                 if (syncError != null) {
                   repository.auditEvents.insert(0, syncError);
                 }
@@ -88,6 +94,9 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                 }
                 if (ocrResultSyncError != null) {
                   repository.auditEvents.insert(0, ocrResultSyncError);
+                }
+                if (automationSyncError != null) {
+                  repository.auditEvents.insert(0, automationSyncError);
                 }
                 if (!mounted) return;
                 setState(() {
@@ -383,7 +392,7 @@ class DemoRepository extends ChangeNotifier {
   final List<UploadRecord> uploadRecords = [];
   final Set<String> _successfulUploadFingerprints = {};
   bool workerOnline = true;
-  String workerVersion = 'dry-run 0.1.0';
+  String workerVersion = 'fill-preview 0.1.0';
   String currentWorkerActivity = '空闲，等待任务';
 
   void _seed() {
@@ -496,13 +505,84 @@ class DemoRepository extends ChangeNotifier {
       customers
         ..clear()
         ..addAll(rows.map(_customerFromRemote));
-      tasks.clear();
       auditEvents.insert(0, '已从 Supabase 同步 ${customers.length} 个客户档案');
       notifyListeners();
       return null;
     } catch (exception) {
       return '客户云端同步失败：$exception';
     }
+  }
+
+  Future<String?> syncAutomationTasksFromSupabase() async {
+    if (!remoteMode) return null;
+    try {
+      final rows = await SupabaseGateway.fetchAutomationBatches();
+      final remoteTasks = <AutomationTask>[];
+      for (final row in rows) {
+        final items = row['items'] is List
+            ? (row['items'] as List)
+                  .whereType<Map>()
+                  .map((item) => Map<String, dynamic>.from(item))
+                  .toList()
+            : <Map<String, dynamic>>[];
+        final status = _taskStatusFromRemote(row['status']?.toString());
+        remoteTasks.add(
+          AutomationTask(
+            id: row['id']?.toString() ?? 'remote-batch',
+            type: TaskType.mdacRegistration,
+            customerIds: [
+              for (final item in items)
+                if (item['customer_id'] != null) item['customer_id'].toString(),
+            ],
+            createdAt:
+                DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                DateTime.now(),
+            createdBy: row['created_by']?.toString() ?? 'Supabase',
+            entryDate: _parseRemoteDate(row['entry_date']),
+            exitDate: _parseRemoteDate(row['exit_date']),
+            status: status,
+            successCount:
+                int.tryParse(row['success_count']?.toString() ?? '') ?? 0,
+            failedCount:
+                int.tryParse(row['failed_count']?.toString() ?? '') ?? 0,
+            note: row['note']?.toString() ?? '',
+          ),
+        );
+      }
+      tasks
+        ..clear()
+        ..addAll(remoteTasks);
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return 'MDAC 任务同步失败：$exception';
+    }
+  }
+
+  TaskStatus _taskStatusFromRemote(String? value) {
+    switch (value) {
+      case 'RUNNING':
+      case 'CLAIMED':
+        return TaskStatus.running;
+      case 'SUCCEEDED':
+        return TaskStatus.succeeded;
+      case 'PARTIAL_SUCCESS':
+        return TaskStatus.partialSuccess;
+      case 'FAILED':
+      case 'CANCELLED':
+        return TaskStatus.failed;
+      case 'NEEDS_REVIEW':
+        return TaskStatus.needsReview;
+      case 'QUEUED':
+      default:
+        return TaskStatus.queued;
+    }
+  }
+
+  DateTime? _parseRemoteDate(dynamic value) {
+    final raw = value?.toString();
+    if (raw == null || raw.isEmpty) return null;
+    return DateTime.tryParse(raw);
   }
 
   Future<String?> syncOcrBatchesFromSupabase() async {
@@ -747,7 +827,8 @@ class DemoRepository extends ChangeNotifier {
       return tasks.any(
         (task) =>
             (task.status == TaskStatus.queued ||
-                task.status == TaskStatus.running) &&
+                task.status == TaskStatus.running ||
+                task.status == TaskStatus.needsReview) &&
             task.customerIds.contains(id),
       );
     }).toList();
@@ -1122,7 +1203,8 @@ class DemoRepository extends ChangeNotifier {
       final hasRunningTask = tasks.any(
         (task) =>
             (task.status == TaskStatus.queued ||
-                task.status == TaskStatus.running) &&
+                task.status == TaskStatus.running ||
+                task.status == TaskStatus.needsReview) &&
             task.customerIds.contains(id),
       );
       final customer = findCustomer(id);
@@ -1145,12 +1227,87 @@ class DemoRepository extends ChangeNotifier {
   AutomationTask? activeTaskForCustomer(String customerId) {
     for (final task in tasks) {
       if ((task.status == TaskStatus.queued ||
-              task.status == TaskStatus.running) &&
+              task.status == TaskStatus.running ||
+              task.status == TaskStatus.needsReview) &&
           task.customerIds.contains(customerId)) {
         return task;
       }
     }
     return null;
+  }
+
+  Future<String?> createTaskAsync({
+    required TaskType type,
+    required List<String> customerIds,
+    required String actor,
+    DateTime? entryDate,
+    DateTime? exitDate,
+  }) async {
+    if (!remoteMode) {
+      return createTask(
+        type: type,
+        customerIds: customerIds,
+        actor: actor,
+        entryDate: entryDate,
+        exitDate: exitDate,
+      );
+    }
+    if (type != TaskType.mdacRegistration) {
+      return '当前只有 MDAC fill-preview Worker 已部署，其他自动化脚本尚未接入云端。';
+    }
+    if (customerIds.isEmpty) return '请先选择客户。';
+    if (entryDate == null || exitDate == null) {
+      return 'MDAC 注册必须提供入境和出境日期。';
+    }
+    if (exitDate.isBefore(entryDate)) {
+      return '出境日期不能早于入境日期。';
+    }
+
+    final selected = <Customer>[];
+    for (final id in customerIds) {
+      final customer = findCustomer(id);
+      if (customer == null || customer.isDeleted) {
+        return '选中的客户已不存在或已被删除，请刷新后重试。';
+      }
+      if (!customer.hasMdacFields) {
+        return '${customer.fullName} 缺少 MDAC 必填资料，不能启动任务。';
+      }
+      if (activeTaskForCustomer(id) != null) {
+        return '${customer.fullName} 已有运行中的任务，系统阻止重复创建。';
+      }
+      selected.add(customer);
+    }
+
+    try {
+      await SupabaseGateway.createMdacRegistrationBatch(
+        entryDate: entryDate,
+        exitDate: exitDate,
+        customers: [
+          for (final customer in selected)
+            {
+              'id': customer.id,
+              'full_name': customer.fullName,
+              'passport_number': customer.passportNumber,
+              'date_of_birth': customer.dateOfBirth,
+              'place_of_birth': customer.placeOfBirth,
+              'nationality': customer.nationality,
+              'gender': customer.gender,
+              'passport_expiry_date': customer.passportExpiryDate,
+            },
+        ],
+        note: '$actor 创建 MDAC fill-preview 批次；真实页面只填写不提交',
+      );
+      auditEvents.insert(
+        0,
+        '$actor 创建 MDAC fill-preview 批次，共 ${selected.length} 位客户；未提交',
+      );
+      currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
+      await syncAutomationTasksFromSupabase();
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return 'MDAC 批次创建失败：$exception';
+    }
   }
 
   String? createTask({
@@ -1191,7 +1348,7 @@ class DemoRepository extends ChangeNotifier {
       createdBy: actor,
       entryDate: entryDate,
       exitDate: exitDate,
-      note: '已写入客户快照，等待 dry-run Worker 领取',
+      note: '已写入客户快照，等待离线测试 Worker 领取',
     );
     tasks.insert(0, task);
     auditEvents.insert(
@@ -1688,7 +1845,7 @@ class SideRail extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        'dry-run 0.1.0',
+                        'fill-preview 0.1.0 · 只填写不提交',
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: .55),
                           fontSize: 11,
@@ -1890,7 +2047,8 @@ class OverviewScreen extends StatelessWidget {
                       QuickAction(
                         icon: Icons.mark_email_read_outlined,
                         title: '获取 Gmail PIN',
-                        caption: 'dry-run IMAP 匹配 · 护照号优先',
+                        caption: '未部署云端邮箱 Worker',
+
                         color: const Color(0xFF6B78D6),
                         onTap: () => onNavigate(AppSection.customers),
                       ),
@@ -1944,7 +2102,7 @@ class OverviewScreen extends StatelessWidget {
                   Principle(
                     icon: Icons.shield_outlined,
                     title: '不冒险',
-                    body: 'dry-run、失败和不确定结果不会写成真实成功。',
+                    body: 'fill-preview、失败和不确定结果不会写成真实成功。',
                   ),
                 ];
                 final content = constraints.maxWidth < 680
@@ -2181,7 +2339,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  '任务建立后会保存日期快照；演示 Worker 将按客户逐项处理。',
+                  '任务建立后会保存日期快照；远程模式由 Railway Worker 真实填写但不提交。',
                   style: TextStyle(color: AppTheme.muted, fontSize: 12),
                 ),
               ],
@@ -2203,7 +2361,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       ),
     );
     if (!mounted || entry == null || exit == null) return;
-    final error = widget.repository.createTask(
+    final error = await widget.repository.createTaskAsync(
       type: TaskType.mdacRegistration,
       customerIds: selected.toList(),
       actor: widget.actor,
@@ -2223,7 +2381,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       showToast(context, '请先选择客户。');
       return;
     }
-    final error = widget.repository.createTask(
+    final error = await widget.repository.createTaskAsync(
       type: type,
       customerIds: selected.toList(),
       actor: widget.actor,
@@ -3010,7 +3168,27 @@ class TasksScreen extends StatelessWidget {
       eyebrow: 'AUTOMATION QUEUE · ${repository.tasks.length} BATCHES',
       title: '任务队列',
       subtitle: '手机负责创建任务，Worker 负责领取、逐项执行和写回结果。',
-      trailing: WorkerStatus(repository: repository),
+      trailing: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        alignment: WrapAlignment.end,
+        children: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              final error = await repository.syncAutomationTasksFromSupabase();
+              if (!context.mounted) return;
+              if (error != null) {
+                showToast(context, error, error: true);
+              } else {
+                showToast(context, '已刷新 Supabase MDAC 任务状态。');
+              }
+            },
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('刷新'),
+          ),
+          WorkerStatus(repository: repository),
+        ],
+      ),
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(28, 0, 28, 40),
         child: Column(
@@ -3041,6 +3219,7 @@ class TasksScreen extends StatelessWidget {
                     label: '失败 / 待处理',
                     color: const Color(0xFFFFE2E0),
                   ),
+                  StatusLegend(label: '待人工确认', color: const Color(0xFFECE6FA)),
                 ],
               ),
             ),
@@ -3155,7 +3334,8 @@ class SettingsScreen extends StatelessWidget {
     return AppPage(
       eyebrow: 'SYSTEM · SECURITY & INTEGRATIONS',
       title: '系统设置',
-      subtitle: '当前是演示数据层。真实 Supabase、OCR 与 Worker 凭证将在接入阶段配置。',
+      subtitle: 'Supabase 与 Railway Worker 已接入；真实 MDAC 仍保持只填写、不提交。',
+
       trailing: OutlinedButton.icon(
         onPressed: onSignOut,
         icon: const Icon(Icons.logout_rounded),
@@ -3220,20 +3400,20 @@ class SettingsScreen extends StatelessWidget {
                   IntegrationRow(
                     icon: Icons.storage_outlined,
                     title: '数据平台',
-                    status: '演示数据层',
-                    detail: '待接 Supabase Auth / PostgreSQL / 私有 Storage',
+                    status: 'Supabase 已接入',
+                    detail: 'Auth、PostgreSQL 与私有 Storage 已启用；服务端密钥不进入 APK。',
                   ),
                   IntegrationRow(
                     icon: Icons.document_scanner_outlined,
                     title: '护照 OCR',
-                    status: 'Adapter ready',
-                    detail: '待选择商业 OCR 供应商与字段响应格式',
+                    status: 'Azure Worker Online',
+                    detail: 'Azure Document Intelligence 已部署；端到端脱敏文件验收待完成。',
                   ),
                   IntegrationRow(
                     icon: Icons.computer_outlined,
                     title: '办公室 Worker',
-                    status: 'dry-run online',
-                    detail: '真实网页自动化和凭证尚未启用',
+                    status: 'fill-preview deployed',
+                    detail: '真实 MDAC 页面只填写、回读和截图；禁止 Submit，遇挑战转人工审核。',
                   ),
                   IntegrationRow(
                     icon: Icons.mail_outline_rounded,
@@ -4168,12 +4348,16 @@ class IntegrationRow extends StatelessWidget {
               ],
             ),
           ),
-          Text(
-            status,
-            style: const TextStyle(
-              color: AppTheme.teal,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
+          Flexible(
+            child: Text(
+              status,
+              textAlign: TextAlign.end,
+              softWrap: true,
+              style: const TextStyle(
+                color: AppTheme.teal,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
             ),
           ),
         ],

@@ -196,6 +196,121 @@ class SupabaseGateway {
     }
   }
 
+  static Future<Map<String, dynamic>> createMdacRegistrationBatch({
+    required DateTime entryDate,
+    required DateTime exitDate,
+    required List<Map<String, dynamic>> customers,
+    String? note,
+  }) async {
+    if (customers.isEmpty) {
+      throw const FormatException('MDAC 批次至少需要一位客户。');
+    }
+    final entry = _dateOnly(entryDate);
+    final exit = _dateOnly(exitDate);
+    final items = <Map<String, dynamic>>[
+      for (final customer in customers)
+        {
+          'customer_id': customer['id'],
+          'customer_snapshot': {
+            'full_name': customer['full_name']?.toString().trim() ?? '',
+            'passport_number':
+                customer['passport_number']?.toString().trim() ?? '',
+            'date_of_birth': _toIsoDate(
+              customer['date_of_birth']?.toString() ?? '',
+            ),
+            'place_of_birth':
+                customer['place_of_birth']?.toString().trim() ?? '',
+            'nationality': customer['nationality']?.toString().trim() ?? '',
+            'gender': customer['gender']?.toString().trim() ?? '',
+            'passport_expiry_date': _toIsoDate(
+              customer['passport_expiry_date']?.toString() ?? '',
+            ),
+            'entry_date': entry,
+            'exit_date': exit,
+          },
+        },
+    ];
+    final result = await _requiredClient.rpc(
+      'create_mdac_registration_batch',
+      params: {
+        'p_entry_date': entry,
+        'p_exit_date': exit,
+        'p_items': items,
+        'p_note': note,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 MDAC 批次。');
+  }
+
+  static Future<List<Map<String, dynamic>>> fetchAutomationBatches() async {
+    final client = _requiredClient;
+    final batchRows = await client
+        .from('automation_batches')
+        .select(
+          'id, task_type, status, total_count, success_count, failed_count, '
+          'entry_date, exit_date, note, created_by, created_at, updated_at',
+        )
+        .eq('task_type', 'MDAC_REGISTRATION')
+        .order('created_at', ascending: false)
+        .limit(100);
+    final batches = batchRows
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+    if (batches.isEmpty) return batches;
+
+    final batchIds = batches
+        .map((row) => row['id'])
+        .whereType<String>()
+        .toList();
+    final itemRows = await client
+        .from('automation_items')
+        .select(
+          'id, batch_id, customer_id, status, attempt_count, error_code, '
+          'error_message, result_unknown, created_at, updated_at',
+        )
+        .inFilter('batch_id', batchIds)
+        .order('created_at', ascending: true)
+        .limit(500);
+    final items = itemRows
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+    final itemIds = items.map((row) => row['id']).whereType<String>().toList();
+    final registrationRows = itemIds.isEmpty
+        ? <dynamic>[]
+        : await client
+              .from('mdac_registrations')
+              .select(
+                'batch_item_id, registration_no, registration_status, '
+                'raw_summary, screenshot_path, submitted_at, '
+                'result_confirmed_at, updated_at',
+              )
+              .inFilter('batch_item_id', itemIds)
+              .limit(500);
+    final registrationByItem = <String, Map<String, dynamic>>{
+      for (final row in registrationRows)
+        if (row['batch_item_id'] != null)
+          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
+    };
+    final itemsByBatch = <String, List<Map<String, dynamic>>>{};
+    for (final item in items) {
+      final batchId = item['batch_id']?.toString();
+      if (batchId == null) continue;
+      itemsByBatch.putIfAbsent(batchId, () => <Map<String, dynamic>>[]).add({
+        ...item,
+        'registration': registrationByItem[item['id']?.toString()],
+      });
+    }
+    return [
+      for (final batch in batches)
+        {
+          ...batch,
+          'items':
+              itemsByBatch[batch['id']?.toString()] ?? <Map<String, dynamic>>[],
+        },
+    ];
+  }
+
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
     final rows = await client
@@ -375,6 +490,12 @@ class SupabaseGateway {
 
   static String get _requiredUserId =>
       currentUserId ?? (throw const AuthException('当前没有登录用户。'));
+
+  static String _dateOnly(DateTime value) {
+    return '${value.year.toString().padLeft(4, '0')}-'
+        '${value.month.toString().padLeft(2, '0')}-'
+        '${value.day.toString().padLeft(2, '0')}';
+  }
 
   static String _toIsoDate(String value) {
     final parts = value.trim().split('/');

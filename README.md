@@ -47,6 +47,16 @@ Flutter 人工审核并确认建档
 
 ## Railway Worker 部署
 
+仓库现在分为两个独立的后台服务：Azure OCR Worker 负责护照 OCR，MDAC fill-preview Worker 负责真实页面填表预览。两个服务不共享提交路径，避免 OCR 服务或旧 dry-run 服务的配置变化影响 MDAC 页面操作。
+
+### MDAC Headless Fill Preview
+
+`services/mdac-fill-preview/` 是当前新增的真实 headless 服务。它从 Supabase 原子领取 `MDAC_REGISTRATION` 批次和任务项，使用 Playwright Chromium 打开官方 MDAC 登记页，填写客户快照和固定资料，回读页面字段并上传私有预览截图。它只写回 `NEEDS_REVIEW`，不会点击 Submit、不会绕过滑块/CAPTCHA，也不会把未确认结果标记为成功。
+
+该服务启动时强制要求 `MDAC_EXECUTION_MODE=FILL_PREVIEW` 与 `ALLOW_REAL_SUBMIT=false`。Railway 根目录应设为 `services/mdac-fill-preview`，使用该目录的 `Dockerfile`。账号登录、密码、MFA、滑块或其他人工挑战不会由服务自动绕过；遇到这些情况必须转人工审核。
+
+当前 Supabase 已增加 `claim_mdac_batch`、`claim_mdac_item`、`heartbeat_mdac`、`finish_mdac_fill_preview` 和 `create_mdac_registration_batch`，包含原子领取、租约、心跳、尝试次数和 `RESULT_UNKNOWN/NEEDS_REVIEW` 边界。Flutter 远程模式创建 MDAC 任务时保存客户快照，并在任务页面提供 Supabase 状态刷新。
+
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
 ```bash
@@ -95,9 +105,13 @@ python worker/azure_ocr_worker.py --poll
 | 路径 | 用途 |
 |---|---|
 | `lib/main.dart` | Flutter 界面、客户维护、上传和 OCR 审核交互 |
-| `lib/supabase_gateway.dart` | Supabase Auth、客户 CRUD、Storage、OCR 批次和结果网关 |
+| `lib/supabase_gateway.dart` | Supabase Auth、客户 CRUD、Storage、OCR 和 MDAC 任务网关 |
 | `test/` | Repository 与 Widget 回归测试 |
 | `worker/azure_ocr_worker.py` | 真实 Azure 护照 OCR Worker |
+| `services/mdac-fill-preview/` | 真实 MDAC headless 填表预览 Worker，零 Submit |
+| `services/mdac-fill-preview-legacy-audit.md` | 旧 MDAC 选择器与安全边界审查记录 |
+| `supabase/migrations/20260826_mdac_worker_leases.sql` | MDAC Worker 租约、原子领取和预览回写函数 |
+| `supabase/migrations/20260826_mdac_batch_enqueue.sql` | Flutter MDAC 批次原子入队和客户快照函数 |
 | `worker/dry_run_worker.py` | 安全演示 Worker |
 | `worker/README.md` | Worker 运行和 Railway 配置边界 |
 | `Dockerfile` | Railway Python Worker 镜像入口 |
@@ -107,4 +121,5 @@ python worker/azure_ocr_worker.py --poll
 
 ## 当前未包含
 
-Gmail IMAP PIN、MDAC 真实网页自动化、Check Registration、Visit Pass 查询、数据库租约超时恢复、生产级告警和正式 Android Release 签名仍属于后续阶段。真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。
+Gmail IMAP PIN、真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。
+真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。
