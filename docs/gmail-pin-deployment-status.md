@@ -18,3 +18,9 @@ Railway Dashboard 曾恢复并显示项目列表，但点击进入 Passport MDAC
 
 ## 2026-08-26 13:54
 启用 My Browser 后，Railway 项目 URL 可以建立会话，但画布仍为空白/加载不完整，只显示项目顶栏和 Agent 导航，未出现服务卡片或 Add/Create Service 控件。Gmail PIN Service 仍未创建，未输入 Gmail 凭证。
+
+## 2026-08-27 03:01（GMT+8）
+
+Railway Service `pleasing-acceptance` 的活动部署 `c5168283` 已成功启动。运行日志显示：`Gmail PIN Worker ONLINE`，轮询间隔 30 秒，发件人过滤为 `mdac@imi.gov.my`，并声明不删除、移动或标记邮件。当前尚未创建 Gmail PIN 测试任务，因此尚未执行真实邮箱读取；下一步是从 Flutter App 保存 Gmail 地址和 App Password 到 Supabase Vault，再用脱敏客户快照与脱敏测试邮件完成一次端到端测试。
+
+Gmail App Password 不在 Railway Variables 中；Railway 仅保存 Supabase Service Role Key 和 Worker 运行参数。
