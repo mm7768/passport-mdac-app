@@ -291,6 +291,9 @@ class Customer {
     gender,
     passportExpiryDate,
   ].every((value) => value.trim().isNotEmpty);
+
+  bool get hasQueryFields =>
+      [passportNumber, nationality].every((value) => value.trim().isNotEmpty);
 }
 
 class OcrDraft {
@@ -1529,8 +1532,9 @@ class DemoRepository extends ChangeNotifier {
     }
     if (type != TaskType.mdacRegistration &&
         type != TaskType.gmailPin &&
-        type != TaskType.registrationCheck) {
-      return '当前只有 MDAC、Gmail PIN 和 Check Registration Worker 已接入。';
+        type != TaskType.registrationCheck &&
+        type != TaskType.visitPassCheck) {
+      return '当前只有 MDAC、Gmail PIN、Check Registration 和 Check Visit Pass Worker 已接入。';
     }
     if (customerIds.isEmpty) return '请先选择客户。';
     if (type == TaskType.mdacRegistration &&
@@ -1547,8 +1551,11 @@ class DemoRepository extends ChangeNotifier {
       if (customer == null || customer.isDeleted) {
         return '选中的客户已不存在或已被删除，请刷新后重试。';
       }
-      if (!customer.hasMdacFields) {
+      if (type == TaskType.mdacRegistration && !customer.hasMdacFields) {
         return '${customer.fullName} 缺少 MDAC 必填资料，不能启动任务。';
+      }
+      if (type != TaskType.mdacRegistration && !customer.hasQueryFields) {
+        return '${customer.fullName} 缺少护照号或国籍，不能启动查询任务。';
       }
       if (activeTaskForCustomer(id) != null) {
         return '${customer.fullName} 已有运行中的任务，系统阻止重复创建。';
@@ -1591,6 +1598,26 @@ class DemoRepository extends ChangeNotifier {
           '$actor 创建 Check Registration 批次，共 ${selected.length} 位客户；未提交',
         );
         currentWorkerActivity = '已排队，等待 Railway Check Registration Worker';
+      } else if (type == TaskType.visitPassCheck) {
+        final settings = mdacSettings;
+        if (settings == null ||
+            settings.mdacEmail.trim().isEmpty ||
+            settings.mdacPhone.trim().isEmpty ||
+            settings.regionCode.trim().isEmpty) {
+          return '请先在 MDAC 默认业务配置中填写邮箱、手机号和国家/地区代码。';
+        }
+        await SupabaseGateway.createVisitPassCheckBatch(
+          customers: customerPayloads,
+          email: settings.mdacEmail,
+          regionCode: settings.regionCode,
+          mobile: settings.mdacPhone,
+          note: '$actor 创建 Check Visit Pass 批次；只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Check Visit Pass 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Visit Pass Worker';
       } else {
         await SupabaseGateway.createMdacRegistrationBatch(
           entryDate: entryDate!,

@@ -67,6 +67,14 @@ Gmail 地址由 Flutter 设置页管理，并在创建 PIN 任务时复制到 `a
 
 该服务的 Railway Root Directory 应设为 `services/gmail-pin-worker`，使用目录内的 Dockerfile 和 `railway.toml`。首轮部署前只需在受保护变量中配置 Supabase Service Role Key 和 Worker 参数；Gmail 地址由 App 配置并随任务快照传入，Gmail App Password 由 App 加密写入 Vault。之后使用一封脱敏测试邮件完成端到端验收。
 
+### Check Registration 与 Check Visit Pass Worker
+
+`services/registration-check-worker/` 和 `services/visit-pass-check-worker/` 是两个独立的查询预览服务，均从官方公开页面契约重新设计。它们只领取 Supabase 任务、读取服务端 PIN、填写普通查询字段、回读 DOM、检测 CAPTCHA/滑块、保存必要的私有截图并写回 `NEEDS_REVIEW/RESULT_UNKNOWN`。它们不点击 Search/Submit、不发起官方查询 POST、不读取结果页，也不自动解决 CAPTCHA。
+
+Check Visit Pass 使用官方页面 `https://imigresen-online.imi.gov.my/mdac/register?viewVisitPass`，查询快照只保存客户 ID、护照号、国籍，以及从 App MDAC 设置复制的邮箱、国家/地区代码和手机号；PIN 只通过服务端受限 RPC 在持有任务租约时读取，不进入客户端快照。两个 Worker 都必须保持各自的 `FILL_REVIEW`、`ALLOW_REAL_SUBMIT=false` 和 headless 安全开关。
+
+Railway 中应为两个目录分别创建独立 Service，Root Directory 分别为 `services/registration-check-worker` 与 `services/visit-pass-check-worker`，避免继承仓库根 Azure OCR 入口。当前 Check Registration Service 已 Online；Check Visit Pass 代码和迁移已完成，等待独立 Service 创建与部署。
+
 仓库根目录的 `Dockerfile` 和 `railway.toml` 已配置为 Python Worker 服务，默认启动：
 
 ```bash
@@ -123,7 +131,10 @@ python worker/azure_ocr_worker.py --poll
 | `services/gmail-pin-worker/README.md` | Gmail PIN 认证、部署、状态和验收说明 |
 | `services/registration-check-worker/` | 从零实现的 Check Registration fill-and-review Worker，零提交 |
 | `services/registration-check-worker/README.md` | Check Registration 页面契约、部署、状态和验收说明 |
+| `services/visit-pass-check-worker/` | 从零实现的 Check Visit Pass fill-and-review Worker，零提交 |
+| `services/visit-pass-check-worker/README.md` | Check Visit Pass 页面契约、部署、状态和验收说明 |
 | `docs/check-registration-design.md` | Check Registration 官方页面静态契约和从零设计记录 |
+| `docs/check-visit-pass-design.md` | Check Visit Pass 官方页面静态契约和从零设计记录 |
 | `services/mdac-fill-preview-legacy-audit.md` | 旧 MDAC 选择器与安全边界审查记录 |
 | `supabase/migrations/20260826_mdac_worker_leases.sql` | MDAC Worker 租约、原子领取和预览回写函数 |
 | `supabase/migrations/20260826_mdac_batch_enqueue.sql` | Flutter MDAC 批次原子入队和客户快照函数 |

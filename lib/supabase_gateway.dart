@@ -306,6 +306,52 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 Check Registration 批次。');
   }
 
+  static Future<Map<String, dynamic>> createVisitPassCheckBatch({
+    required List<Map<String, dynamic>> customers,
+    required String email,
+    required String regionCode,
+    required String mobile,
+    String? note,
+  }) async {
+    if (customers.isEmpty) {
+      throw const FormatException('Check Visit Pass 批次至少需要一位客户。');
+    }
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedRegionCode = regionCode.trim();
+    final normalizedMobile = mobile.trim();
+    if (normalizedEmail.isEmpty ||
+        normalizedRegionCode.isEmpty ||
+        normalizedMobile.isEmpty) {
+      throw const FormatException('Check Visit Pass 需要邮箱、国家/地区代码和手机号。');
+    }
+    final items = <Map<String, dynamic>>[
+      for (final customer in customers)
+        {
+          'customer_id': customer['id'],
+          'customer_snapshot': {
+            'full_name': customer['full_name']?.toString().trim() ?? '',
+            'passport_number':
+                customer['passport_number']?.toString().trim() ?? '',
+            'nationality': customer['nationality']?.toString().trim() ?? '',
+          },
+        },
+    ];
+    final result = await _requiredClient.rpc(
+      'create_visit_pass_check_batch',
+      params: {
+        'p_items': items,
+        'p_settings_snapshot': {
+          'email': normalizedEmail,
+          'region_code': normalizedRegionCode,
+          'mobile': normalizedMobile,
+        },
+        'p_note': note,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 Check Visit Pass 批次。');
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
