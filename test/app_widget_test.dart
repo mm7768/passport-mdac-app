@@ -70,6 +70,27 @@ void main() {
     expect(find.text('保存修改'), findsOneWidget);
   });
 
+  testWidgets('owner sees bulk created_at action after selecting customers', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+
+    final checkboxes = find.byType(Checkbox);
+    expect(checkboxes, findsNWidgets(5));
+    await tester.tap(checkboxes.at(1));
+    await tester.tap(checkboxes.at(2));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已选 2 位'), findsOneWidget);
+    expect(find.text('修改创建时间'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('manual customer submission closes cleanly', (tester) async {
     await tester.pumpWidget(const MdacPilotApp());
     await tester.pumpAndSettle();
@@ -142,6 +163,29 @@ void main() {
     await tester.tap(find.text('取消').last);
     await tester.pumpAndSettle();
     expect(find.text('人工确认 OCR 结果'), findsNothing);
+  });
+
+  testWidgets('passport document card handles private image and PDF states', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              PassportDocumentCard(path: 'owner/ocr/passport.jpg'),
+              PassportDocumentCard(path: 'owner/ocr/passport.pdf'),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('护照原图 · 低分辨率预览'), findsOneWidget);
+    expect(find.text('护照 PDF 已录入'), findsOneWidget);
+    expect(find.text('护照图片暂时无法加载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('phone width keeps primary pages free of layout exceptions', (

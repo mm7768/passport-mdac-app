@@ -33,6 +33,8 @@ docs/supabase-dashboard-check.md
 docs/preview-checks.md
 worker/__pycache__/
 android/local.properties
+android/key.properties
+android/signing/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/

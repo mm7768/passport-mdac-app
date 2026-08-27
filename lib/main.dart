@@ -246,6 +246,43 @@ const customerBusinessStatusOptions = <String>[
   'ARCHIVED',
 ];
 
+const customerCreatedDateFilters = <String>[
+  '全部日期',
+  '今天',
+  '最近 7 天',
+  '最近 30 天',
+  '自定义范围',
+];
+
+DateTime _dateOnly(DateTime value) =>
+    DateTime(value.toLocal().year, value.toLocal().month, value.toLocal().day);
+
+bool matchesCustomerCreatedDateFilter(
+  DateTime createdAt,
+  String filter, {
+  DateTime? today,
+  DateTimeRange? customRange,
+}) {
+  if (filter == '全部日期') return true;
+  final currentDay = _dateOnly(today ?? DateTime.now());
+  final createdDay = _dateOnly(createdAt);
+  if (filter == '今天') return createdDay == currentDay;
+  if (filter == '最近 7 天') {
+    final firstDay = currentDay.subtract(const Duration(days: 6));
+    return !createdDay.isBefore(firstDay) && !createdDay.isAfter(currentDay);
+  }
+  if (filter == '最近 30 天') {
+    final firstDay = currentDay.subtract(const Duration(days: 29));
+    return !createdDay.isBefore(firstDay) && !createdDay.isAfter(currentDay);
+  }
+  if (filter == '自定义范围' && customRange != null) {
+    final start = _dateOnly(customRange.start);
+    final end = _dateOnly(customRange.end);
+    return !createdDay.isBefore(start) && !createdDay.isAfter(end);
+  }
+  return true;
+}
+
 class Customer {
   Customer({
     required this.id,
@@ -263,6 +300,7 @@ class Customer {
     this.pin,
     this.registrationNumber,
     this.lastSummary,
+    this.passportImagePath,
   });
 
   final String id;
@@ -280,6 +318,7 @@ class Customer {
   String? pin;
   String? registrationNumber;
   String? lastSummary;
+  String? passportImagePath;
 
   bool get isDeleted => deletedAt != null;
   bool get hasMdacFields => [
@@ -309,6 +348,7 @@ class OcrDraft {
     required this.gender,
     required this.passportExpiryDate,
     required this.confidence,
+    this.passportImagePath,
   });
 
   final String id;
@@ -322,6 +362,7 @@ class OcrDraft {
   String gender;
   String passportExpiryDate;
   double confidence;
+  final String? passportImagePath;
 
   bool get isLowConfidence => confidence < 0.9;
   bool get isComplete => [
@@ -916,6 +957,11 @@ class DemoRepository extends ChangeNotifier {
         for (final upload in uploadRecords)
           if (upload.batchId != null) upload.batchId!: upload.fileName,
       };
+      final filePaths = <String, String>{
+        for (final upload in uploadRecords)
+          if (upload.batchId != null && upload.filePath != null)
+            upload.batchId!: upload.filePath!,
+      };
       final drafts = <OcrDraft>[];
       for (final row in rows) {
         final status = row['status']?.toString() ?? 'REVIEW_REQUIRED';
@@ -950,6 +996,7 @@ class DemoRepository extends ChangeNotifier {
                   extracted['display_passport_expiry_date'],
             ),
             confidence: confidence,
+            passportImagePath: filePaths[batchId],
           ),
         );
       }
@@ -984,6 +1031,7 @@ class DemoRepository extends ChangeNotifier {
       createdAt: createdAt,
       createdBy:
           row['created_by_name']?.toString() ?? row['created_by'].toString(),
+      passportImagePath: row['passport_image_path']?.toString(),
       deletedAt: row['deleted_at'] == null
           ? null
           : DateTime.tryParse(row['deleted_at'].toString()),
@@ -1095,6 +1143,66 @@ class DemoRepository extends ChangeNotifier {
     } catch (exception) {
       return '客户修改失败，云端未保存：$exception';
     }
+  }
+
+  Future<String?> updateCustomersCreatedAtWithSync(
+    List<String> ids,
+    DateTime createdAt,
+    String actor,
+  ) async {
+    final uniqueIds = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    if (uniqueIds.isEmpty) return '请先选择客户。';
+    if (uniqueIds.length > 200) return '一次最多修改 200 位客户。';
+    if (!isValidCustomerCreatedAt(createdAt)) {
+      return '创建时间必须在 01/01/2000 至当前时间之间。';
+    }
+
+    final selected = <Customer>[];
+    for (final id in uniqueIds) {
+      final customer = findCustomer(id);
+      if (customer == null || customer.isDeleted) {
+        return '选中的客户已不存在或已被删除，请刷新后重试。';
+      }
+      selected.add(customer);
+    }
+
+    if (remoteMode) {
+      if (selected.any((customer) => customer.id.startsWith('c-'))) {
+        return '远程模式不能修改尚未同步的本地演示客户。';
+      }
+      try {
+        final result = await SupabaseGateway.bulkUpdateCustomerCreatedAt(
+          customerIds: selected.map((customer) => customer.id).toList(),
+          createdAt: createdAt,
+        );
+        if (result.length != selected.length) {
+          return 'Supabase 返回的更新数量不一致，已阻止本地状态更新。';
+        }
+        await syncCustomersFromSupabase();
+        auditEvents.insert(
+          0,
+          '$actor 批量修改 ${selected.length} 位客户的系统创建时间为 ${formatDateTime(createdAt.toLocal())}',
+        );
+        notifyListeners();
+        return null;
+      } catch (exception) {
+        return '客户创建时间批量修改失败，云端未确认：$exception';
+      }
+    }
+
+    for (final customer in selected) {
+      customer.createdAt = createdAt;
+    }
+    auditEvents.insert(
+      0,
+      '$actor 批量修改 ${selected.length} 位客户的系统创建时间为 ${formatDateTime(createdAt.toLocal())}',
+    );
+    notifyListeners();
+    return null;
   }
 
   Future<({List<String> blocked, String? error})> deleteCustomersWithSync(
@@ -1309,6 +1417,7 @@ class DemoRepository extends ChangeNotifier {
       businessStatus: values['businessStatus'] ?? 'PENDING',
       createdAt: DateTime.now(),
       createdBy: actor,
+      passportImagePath: draft.passportImagePath,
     );
     customers.insert(0, customer);
     ocrDrafts.removeWhere((item) => item.id == draft.id);
@@ -1335,6 +1444,7 @@ class DemoRepository extends ChangeNotifier {
         gender: values['gender']!,
         passportExpiryDate: values['passportExpiryDate']!,
         businessStatus: values['businessStatus'] ?? 'PENDING',
+        passportImagePath: draft.passportImagePath,
       );
       final customer = _customerFromRemote(row);
       final resultId = draft.id.startsWith('remote-ocr-')
@@ -2065,6 +2175,7 @@ class _MdacShellState extends State<MdacShell> {
         return CustomersScreen(
           repository: widget.repository,
           actor: widget.userName,
+          role: widget.role,
         );
       case AppSection.tasks:
         return TasksScreen(repository: widget.repository);
@@ -2476,11 +2587,13 @@ class CustomersScreen extends StatefulWidget {
   const CustomersScreen({
     required this.repository,
     required this.actor,
+    required this.role,
     super.key,
   });
 
   final DemoRepository repository;
   final String actor;
+  final UserRole role;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -2489,7 +2602,10 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
-  String filter = '全部';
+  String businessStatusFilter = '全部';
+  String createdDateFilter = '全部日期';
+  String nationalityFilter = '全部国家';
+  DateTimeRange? createdDateRange;
 
   @override
   void dispose() {
@@ -2497,18 +2613,86 @@ class _CustomersScreenState extends State<CustomersScreen> {
     super.dispose();
   }
 
+  List<String> get availableNationalities {
+    final values =
+        widget.repository.activeCustomers
+            .map((customer) => customer.nationality.trim().toUpperCase())
+            .where((value) => value.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    return ['全部国家', ...values];
+  }
+
   List<Customer> get filtered {
     final query = searchController.text.trim().toLowerCase();
-    return widget.repository.activeCustomers.where((customer) {
+    final result = widget.repository.activeCustomers.where((customer) {
       final matchesQuery =
           query.isEmpty ||
           customer.fullName.toLowerCase().contains(query) ||
           customer.passportNumber.toLowerCase().contains(query);
-      final matchesFilter =
-          filter == '全部' ||
-          businessStatusLabel(customer.businessStatus) == filter;
-      return matchesQuery && matchesFilter;
+      final matchesStatus =
+          businessStatusFilter == '全部' ||
+          businessStatusLabel(customer.businessStatus) == businessStatusFilter;
+      final matchesDate = matchesCustomerCreatedDateFilter(
+        customer.createdAt,
+        createdDateFilter,
+        customRange: createdDateRange,
+      );
+      final matchesNationality =
+          nationalityFilter == '全部国家' ||
+          customer.nationality.trim().toUpperCase() == nationalityFilter;
+      return matchesQuery && matchesStatus && matchesDate && matchesNationality;
     }).toList();
+    result.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    return result;
+  }
+
+  Future<void> selectCreatedDateFilter(String value) async {
+    if (value != '自定义范围') {
+      setState(() {
+        createdDateFilter = value;
+        createdDateRange = null;
+      });
+      return;
+    }
+    final today = _dateOnly(DateTime.now());
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: today,
+      initialDateRange:
+          createdDateRange ??
+          DateTimeRange(
+            start: today.subtract(const Duration(days: 29)),
+            end: today,
+          ),
+      helpText: '选择客户录入日期范围',
+      cancelText: '取消',
+      confirmText: '确定',
+    );
+    if (!mounted || range == null) return;
+    setState(() {
+      createdDateFilter = value;
+      createdDateRange = range;
+    });
+  }
+
+  String get createdDateFilterLabel {
+    if (createdDateFilter == '自定义范围' && createdDateRange != null) {
+      return '录入：${formatShortDate(createdDateRange!.start)} - '
+          '${formatShortDate(createdDateRange!.end)}';
+    }
+    return createdDateFilter == '全部日期' ? '录入日期' : '录入：$createdDateFilter';
+  }
+
+  void clearCustomerFilters() {
+    setState(() {
+      businessStatusFilter = '全部';
+      createdDateFilter = '全部日期';
+      nationalityFilter = '全部国家';
+      createdDateRange = null;
+    });
   }
 
   void toggleAll(List<Customer> list) {
@@ -2724,6 +2908,87 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
   }
 
+  Future<void> updateSelectedCreatedAt() async {
+    if (widget.role != UserRole.owner) {
+      showToast(context, '只有 OWNER 可以批量修改系统创建时间。', error: true);
+      return;
+    }
+    if (selected.isEmpty) {
+      showToast(context, '请先选择客户。');
+      return;
+    }
+
+    final today = _dateOnly(DateTime.now());
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(2000),
+      lastDate: today,
+      initialDate: today,
+      helpText: '选择新的创建日期',
+      cancelText: '取消',
+      confirmText: '下一步',
+    );
+    if (!mounted || date == null) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(DateTime.now()),
+      helpText: '选择新的创建时间',
+      cancelText: '取消',
+      confirmText: '下一步',
+    );
+    if (!mounted || time == null) return;
+
+    final createdAt = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!isValidCustomerCreatedAt(createdAt)) {
+      showToast(context, '创建时间必须在 01/01/2000 至当前时间之后一天以内。', error: true);
+      return;
+    }
+
+    final count = selected.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认批量修改系统创建时间？'),
+        content: Text(
+          '将直接修改 $count 位客户的 customers.created_at：\n\n'
+          '${formatDateTime(createdAt)}\n\n'
+          '原始创建时间会写入审计记录。此操作会影响录入日期筛选和列表排序。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认修改'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final error = await widget.repository.updateCustomersCreatedAtWithSync(
+      selected.toList(),
+      createdAt,
+      widget.actor,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+      return;
+    }
+    setState(() => selected.clear());
+    showToast(context, '$count 位客户的系统创建时间已更新并写入审计记录。');
+  }
+
   Future<void> deleteSelected() async {
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
@@ -2919,9 +3184,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       isDense: true,
                     ),
                   );
-                  final filterMenu = PopupMenuButton<String>(
-                    initialValue: filter,
-                    onSelected: (value) => setState(() => filter = value),
+                  final statusMenu = PopupMenuButton<String>(
+                    initialValue: businessStatusFilter,
+                    onSelected: (value) =>
+                        setState(() => businessStatusFilter = value),
                     itemBuilder: (context) =>
                         ['全部', '待处理', '已注册', '已收 PIN', '需关注']
                             .map(
@@ -2931,28 +3197,77 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             .toList(),
                     child: OutlinedButton.icon(
                       onPressed: null,
-                      icon: const Icon(Icons.filter_list_rounded),
-                      label: Text(filter),
+                      icon: const Icon(Icons.flag_outlined),
+                      label: Text(
+                        businessStatusFilter == '全部'
+                            ? '业务状态'
+                            : '状态：$businessStatusFilter',
+                      ),
                     ),
                   );
-                  if (constraints.maxWidth < 560) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        search,
-                        const SizedBox(height: 10),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: filterMenu,
-                        ),
-                      ],
-                    );
-                  }
-                  return Row(
+                  final dateMenu = PopupMenuButton<String>(
+                    initialValue: createdDateFilter,
+                    onSelected: selectCreatedDateFilter,
+                    itemBuilder: (context) => customerCreatedDateFilters
+                        .map(
+                          (item) =>
+                              PopupMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.calendar_month_outlined),
+                      label: Text(createdDateFilterLabel),
+                    ),
+                  );
+                  final countryMenu = PopupMenuButton<String>(
+                    initialValue: nationalityFilter,
+                    onSelected: (value) =>
+                        setState(() => nationalityFilter = value),
+                    itemBuilder: (context) => availableNationalities
+                        .map(
+                          (item) =>
+                              PopupMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.public_outlined),
+                      label: Text(
+                        nationalityFilter == '全部国家'
+                            ? '国家'
+                            : '国家：$nationalityFilter',
+                      ),
+                    ),
+                  );
+                  final hasCategoryFilters =
+                      businessStatusFilter != '全部' ||
+                      createdDateFilter != '全部日期' ||
+                      nationalityFilter != '全部国家';
+                  final categoryFilters = Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      Expanded(child: search),
-                      const SizedBox(width: 12),
-                      filterMenu,
+                      statusMenu,
+                      dateMenu,
+                      countryMenu,
+                      if (hasCategoryFilters)
+                        TextButton.icon(
+                          onPressed: clearCustomerFilters,
+                          icon: const Icon(Icons.clear_rounded, size: 17),
+                          label: const Text('清除分类'),
+                        ),
+                    ],
+                  );
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      search,
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: categoryFilters,
+                      ),
                     ],
                   );
                 },
@@ -3026,7 +3341,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             const SizedBox(
                               width: 100,
                               child: Text(
-                                '创建时间',
+                                '录入日期',
                                 style: TextStyle(
                                   color: AppTheme.muted,
                                   fontSize: 12,
@@ -3075,6 +3390,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 onRegistration: () =>
                     startSimpleTask(TaskType.registrationCheck),
                 onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                onCreatedAt: widget.role == UserRole.owner
+                    ? updateSelectedCreatedAt
+                    : null,
                 onExport: exportSelected,
                 onDelete: deleteSelected,
               ),
@@ -4779,7 +5097,7 @@ class CustomerRow extends StatelessWidget {
               ),
               const SizedBox(height: 7),
               Text(
-                '创建于 ${formatShortDate(customer.createdAt)} · ${customer.createdBy}',
+                '录入于 ${formatShortDate(customer.createdAt)} · ${customer.createdBy}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: AppTheme.muted, fontSize: 10),
@@ -4869,6 +5187,7 @@ class SelectionBar extends StatelessWidget {
     required this.onPin,
     required this.onRegistration,
     required this.onVisitPass,
+    this.onCreatedAt,
     required this.onExport,
     required this.onDelete,
     super.key,
@@ -4879,6 +5198,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onPin;
   final VoidCallback onRegistration;
   final VoidCallback onVisitPass;
+  final VoidCallback? onCreatedAt;
   final VoidCallback onExport;
   final VoidCallback onDelete;
 
@@ -4931,6 +5251,12 @@ class SelectionBar extends StatelessWidget {
             label: const Text('查 Visit Pass'),
             onPressed: onVisitPass,
           ),
+          if (onCreatedAt != null)
+            ActionChip(
+              avatar: const Icon(Icons.edit_calendar_outlined, size: 16),
+              label: const Text('修改创建时间'),
+              onPressed: onCreatedAt,
+            ),
           ActionChip(
             avatar: const Icon(Icons.file_download_outlined, size: 16),
             label: const Text('导出 Excel'),
@@ -5776,6 +6102,13 @@ bool isMdacDate(String value) {
   return date.year == year && date.month == month && date.day == day;
 }
 
+bool isValidCustomerCreatedAt(DateTime value) {
+  final utc = value.toUtc();
+  final minimum = DateTime.utc(2000, 1, 1);
+  final maximum = DateTime.now().toUtc().add(const Duration(days: 1));
+  return !utc.isBefore(minimum) && !utc.isAfter(maximum);
+}
+
 Future<DateTime?> pickDate(BuildContext context, DateTime? initial) =>
     showDatePicker(
       context: context,
@@ -6027,6 +6360,10 @@ Future<void> showCustomerDetail(
                   DetailChip(label: 'Gmail PIN', value: customer.pin ?? '未获取'),
                 ],
               ),
+              if (customer.passportImagePath?.trim().isNotEmpty == true) ...[
+                const SizedBox(height: 18),
+                PassportDocumentCard(path: customer.passportImagePath!),
+              ],
               if (customer.lastSummary != null) ...[
                 const SizedBox(height: 18),
                 Container(
@@ -6044,7 +6381,7 @@ Future<void> showCustomerDetail(
               ],
               const SizedBox(height: 18),
               Text(
-                '创建于 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
+                '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
               if (onEdit != null) ...[
@@ -6067,6 +6404,194 @@ Future<void> showCustomerDetail(
       ),
     ),
   );
+}
+
+class PassportDocumentCard extends StatefulWidget {
+  const PassportDocumentCard({required this.path, super.key});
+
+  final String path;
+
+  @override
+  State<PassportDocumentCard> createState() => _PassportDocumentCardState();
+}
+
+class _PassportDocumentCardState extends State<PassportDocumentCard> {
+  Future<String>? _signedUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareSignedUrl();
+  }
+
+  @override
+  void didUpdateWidget(covariant PassportDocumentCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path) _prepareSignedUrl();
+  }
+
+  void _prepareSignedUrl() {
+    _signedUrl = SupabaseGateway.isConfigured && SupabaseGateway.client != null
+        ? _createSignedUrl()
+        : null;
+  }
+
+  Future<String> _createSignedUrl() =>
+      SupabaseGateway.createSignedPassportImageUrl(widget.path);
+
+  void _retry() {
+    setState(_prepareSignedUrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isImage = isPassportImagePath(widget.path);
+    if (!isImage) {
+      return _card(
+        icon: Icons.picture_as_pdf_outlined,
+        title: '护照 PDF 已录入',
+        body: '原始文件保存在私有 Storage；当前详情页显示文件卡片。',
+        child: const Text(
+          'PDF 文件不会被公开，也不会在列表中直接下载。',
+          style: TextStyle(color: AppTheme.muted, fontSize: 12),
+        ),
+      );
+    }
+
+    return _card(
+      icon: Icons.badge_outlined,
+      title: '护照原图 · 低分辨率预览',
+      body: '完整页面比例保留；签名预览链接 5 分钟后自动失效。',
+      child: _signedUrl == null
+          ? _unavailableState()
+          : FutureBuilder<String>(
+              future: _signedUrl,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const SizedBox(
+                    height: 280,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (snapshot.hasError || !snapshot.hasData) {
+                  return SizedBox(
+                    height: 180,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            '护照图片暂时无法加载',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            '请确认登录状态后重试。',
+                            style: TextStyle(
+                              color: AppTheme.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          OutlinedButton.icon(
+                            onPressed: _retry,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('重新加载'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+                return ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: 300,
+                      child: Image.network(
+                        snapshot.data!,
+                        fit: BoxFit.contain,
+                        filterQuality: FilterQuality.low,
+                        cacheWidth: 900,
+                        cacheHeight: 1200,
+                        errorBuilder: (context, error, stackTrace) => Center(
+                          child: TextButton.icon(
+                            onPressed: _retry,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('图片加载失败，重试'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _unavailableState() {
+    return const SizedBox(
+      height: 180,
+      child: Center(
+        child: Text(
+          '护照图片暂时无法加载',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+
+  Widget _card({
+    required IconData icon,
+    required String title,
+    required String body,
+    required Widget child,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.canvas,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            body,
+            style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+bool isPassportImagePath(String path) {
+  final normalized = path.toLowerCase().split('?').first;
+  return normalized.endsWith('.jpg') ||
+      normalized.endsWith('.jpeg') ||
+      normalized.endsWith('.png') ||
+      normalized.endsWith('.webp');
 }
 
 class DetailChip extends StatelessWidget {

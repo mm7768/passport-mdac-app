@@ -527,8 +527,8 @@ class SupabaseGateway {
         .from('customers')
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .isFilter('deleted_at', null)
         .order('created_at', ascending: false)
@@ -575,6 +575,7 @@ class SupabaseGateway {
     required String gender,
     required String passportExpiryDate,
     String businessStatus = 'PENDING',
+    String? passportImagePath,
   }) async {
     final client = _requiredClient;
     final userId = _requiredUserId;
@@ -588,13 +589,14 @@ class SupabaseGateway {
           'nationality': nationality.trim().toUpperCase(),
           'gender': gender.trim(),
           'passport_expiry_date': _toIsoDate(passportExpiryDate),
+          'passport_image_path': passportImagePath,
           'business_status': businessStatus,
           'created_by': userId,
         })
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .single();
     return Map<String, dynamic>.from(row);
@@ -632,11 +634,41 @@ class SupabaseGateway {
         .eq('id', id)
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .single();
     return Map<String, dynamic>.from(row);
+  }
+
+  static Future<List<Map<String, dynamic>>> bulkUpdateCustomerCreatedAt({
+    required List<String> customerIds,
+    required DateTime createdAt,
+  }) async {
+    if (customerIds.isEmpty) {
+      throw const FormatException('至少需要选择一位客户。');
+    }
+    final normalizedIds = customerIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    if (normalizedIds.length != customerIds.length) {
+      throw const FormatException('客户 ID 无效。');
+    }
+    final result = await _requiredClient.rpc(
+      'bulk_update_customer_created_at',
+      params: {
+        'p_customer_ids': normalizedIds,
+        'p_created_at': createdAt.toUtc().toIso8601String(),
+      },
+    );
+    if (result is! List) {
+      throw const FormatException('Supabase 未返回批量修改结果。');
+    }
+    return result
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
   }
 
   static Future<void> softDeleteCustomer(String id) async {
@@ -648,6 +680,25 @@ class SupabaseGateway {
           'updated_by': _requiredUserId,
         })
         .eq('id', id);
+  }
+
+  static Future<String> createSignedPassportImageUrl(String path) async {
+    final normalizedPath = path.trim();
+    if (normalizedPath.isEmpty) {
+      throw const FormatException('护照图片路径为空。');
+    }
+    return _requiredClient.storage
+        .from('passport-documents')
+        .createSignedUrl(
+          normalizedPath,
+          300,
+          transform: const TransformOptions(
+            width: 900,
+            height: 1200,
+            resize: ResizeMode.contain,
+            quality: 72,
+          ),
+        );
   }
 
   static Future<void> clearLatestPinRecord(String customerId) async {

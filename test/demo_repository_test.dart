@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:passport_mdac_app/main.dart';
 
@@ -158,6 +159,152 @@ void main() {
       expect(isMdacDate('31/02/1990'), isFalse);
       expect(isMdacDate('9/8/1990'), isFalse);
       expect(isMdacDate('09-08-1990'), isFalse);
+    });
+
+    test('customer archive filters creation date independently', () {
+      final today = DateTime(2026, 8, 27, 12);
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 8, 27, 23),
+          '今天',
+          today: today,
+        ),
+        isTrue,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 8, 21),
+          '最近 7 天',
+          today: today,
+        ),
+        isTrue,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 8, 20),
+          '最近 7 天',
+          today: today,
+        ),
+        isFalse,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 7, 29),
+          '最近 30 天',
+          today: today,
+        ),
+        isTrue,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 7, 28),
+          '最近 30 天',
+          today: today,
+        ),
+        isFalse,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 7, 15),
+          '自定义范围',
+          customRange: DateTimeRange(
+            start: DateTime(2026, 7, 1),
+            end: DateTime(2026, 7, 20),
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        matchesCustomerCreatedDateFilter(
+          DateTime(2026, 7, 21),
+          '自定义范围',
+          customRange: DateTimeRange(
+            start: DateTime(2026, 7, 1),
+            end: DateTime(2026, 7, 20),
+          ),
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'bulk created_at update changes selected active customers and audits it',
+      () async {
+        final repository = DemoRepository();
+        final target = DateTime(2026, 8, 1, 15, 30);
+
+        final error = await repository.updateCustomersCreatedAtWithSync(
+          ['c-004', 'c-002'],
+          target,
+          'Tester',
+        );
+
+        expect(error, isNull);
+        expect(repository.findCustomer('c-004')!.createdAt, target);
+        expect(repository.findCustomer('c-002')!.createdAt, target);
+        expect(repository.auditEvents.first, contains('批量修改 2 位客户'));
+      },
+    );
+
+    test(
+      'bulk created_at update rejects empty and soft-deleted selections',
+      () async {
+        final repository = DemoRepository();
+        final target = DateTime(2026, 8, 1, 15, 30);
+
+        expect(
+          await repository.updateCustomersCreatedAtWithSync(
+            [],
+            target,
+            'Tester',
+          ),
+          '请先选择客户。',
+        );
+        repository.deleteCustomers(['c-004'], 'Tester');
+        expect(
+          await repository.updateCustomersCreatedAtWithSync(
+            ['c-004'],
+            target,
+            'Tester',
+          ),
+          contains('已被删除'),
+        );
+      },
+    );
+
+    test(
+      'customer created_at validation rejects dates outside the safe range',
+      () {
+        expect(
+          isValidCustomerCreatedAt(DateTime(1999, 12, 31, 23, 59)),
+          isFalse,
+        );
+        expect(
+          isValidCustomerCreatedAt(DateTime.now().add(const Duration(days: 2))),
+          isFalse,
+        );
+        expect(isValidCustomerCreatedAt(DateTime(2026, 8, 1, 15, 30)), isTrue);
+      },
+    );
+
+    test('passport document paths distinguish image previews from PDFs', () {
+      expect(isPassportImagePath('owner/ocr/passport.jpg'), isTrue);
+      expect(isPassportImagePath('owner/ocr/passport.png?version=1'), isTrue);
+      expect(isPassportImagePath('owner/ocr/passport.pdf'), isFalse);
+    });
+
+    test('customer archive nationality filter values are normalized', () {
+      final repository = DemoRepository();
+      final nationalities = repository.activeCustomers
+          .map((customer) => customer.nationality.trim().toUpperCase())
+          .toSet();
+
+      expect(nationalities, contains('CHN'));
+      expect(nationalities, contains('MYS'));
+      expect(
+        nationalities.every((value) => value == value.toUpperCase()),
+        isTrue,
+      );
     });
 
     test('MDAC settings require a complete business default set', () {
