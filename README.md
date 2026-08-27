@@ -121,6 +121,9 @@ python worker/azure_ocr_worker.py --poll
 | `services/mdac-fill-preview/` | 真实 MDAC headless 填表预览 Worker，零 Submit |
 | `services/gmail-pin-worker/` | Gmail PIN 只读获取 Worker，不发送/删除邮件 |
 | `services/gmail-pin-worker/README.md` | Gmail PIN 认证、部署、状态和验收说明 |
+| `services/registration-check-worker/` | 从零实现的 Check Registration fill-and-review Worker，零提交 |
+| `services/registration-check-worker/README.md` | Check Registration 页面契约、部署、状态和验收说明 |
+| `docs/check-registration-design.md` | Check Registration 官方页面静态契约和从零设计记录 |
 | `services/mdac-fill-preview-legacy-audit.md` | 旧 MDAC 选择器与安全边界审查记录 |
 | `supabase/migrations/20260826_mdac_worker_leases.sql` | MDAC Worker 租约、原子领取和预览回写函数 |
 | `supabase/migrations/20260826_mdac_batch_enqueue.sql` | Flutter MDAC 批次原子入队和客户快照函数 |
@@ -128,6 +131,7 @@ python worker/azure_ocr_worker.py --poll
 | `supabase/migrations/20260826_mdac_settings_snapshot.sql` | 入队时复制 MDAC 业务配置快照 |
 | `supabase/migrations/20260826_gmail_pin_worker.sql` | Gmail PIN 队列、租约和原子结果回写 |
 | `supabase/migrations/20260826_gmail_address_settings.sql` | App Gmail 地址设置、审计与批次地址快照 |
+| `supabase/migrations/20260827_registration_check_worker.sql` | Check Registration 队列、运行时 PIN、人工审核和安全回写 |
 | `docs/gmail-pin-auth-notes.md` | Gmail 官方认证资料与安全设计依据 |
 | `worker/dry_run_worker.py` | 安全演示 Worker |
 | `worker/README.md` | Worker 运行和 Railway 配置边界 |
@@ -138,5 +142,8 @@ python worker/azure_ocr_worker.py --poll
 
 ## 当前未包含
 
-真实 MDAC Submit、Check Registration、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。Gmail PIN Worker 已完成代码和数据库契约，但仍需 Railway 独立服务部署、App 内 Vault 凭证配置以及一次受控端到端测试。
-真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。
+真实 MDAC Submit、Visit Pass 查询、生产级告警和正式 Android Release 签名仍属于后续阶段。当前 MDAC 网页自动化只完成真实填表预览；首次真实提交必须另行明确授权，并由独立的提交流程处理。CAPTCHA/滑块只检测并转人工审核，不自动破解。
+
+Check Registration 已完成从零代码、Supabase 契约、Flutter 真实入队和离线测试；当前版本只填写 `passNo`、`nationality`、`pinKeyId`，检测官方挑战后写入 `NEEDS_REVIEW/RESULT_UNKNOWN`，不查询结果、不提交。它仍需创建独立 Railway Service 和一次受控脱敏端到端验收。
+
+Gmail PIN Worker 已完成代码、数据库契约和 Railway Online 部署，但仍需用新版 App 保存 Gmail Vault 凭证后进行一次受控端到端测试。真实运行前应先使用完全脱敏样本完成 Azure OCR 验收，并设置护照资料、OCR 原文和日志的保留期限。

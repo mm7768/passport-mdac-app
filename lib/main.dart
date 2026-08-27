@@ -1527,8 +1527,10 @@ class DemoRepository extends ChangeNotifier {
         exitDate: exitDate,
       );
     }
-    if (type != TaskType.mdacRegistration && type != TaskType.gmailPin) {
-      return '当前只有 MDAC fill-preview 和 Gmail PIN Worker 已部署。';
+    if (type != TaskType.mdacRegistration &&
+        type != TaskType.gmailPin &&
+        type != TaskType.registrationCheck) {
+      return '当前只有 MDAC、Gmail PIN 和 Check Registration Worker 已接入。';
     }
     if (customerIds.isEmpty) return '请先选择客户。';
     if (type == TaskType.mdacRegistration &&
@@ -1579,6 +1581,16 @@ class DemoRepository extends ChangeNotifier {
           '$actor 创建 Gmail PIN 获取批次，共 ${selected.length} 位客户',
         );
         currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
+      } else if (type == TaskType.registrationCheck) {
+        await SupabaseGateway.createRegistrationCheckBatch(
+          customers: customerPayloads,
+          note: '$actor 创建 Check Registration 批次；只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Check Registration 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Registration Worker';
       } else {
         await SupabaseGateway.createMdacRegistrationBatch(
           entryDate: entryDate!,

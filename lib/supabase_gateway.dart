@@ -279,6 +279,33 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 Gmail PIN 批次。');
   }
 
+  static Future<Map<String, dynamic>> createRegistrationCheckBatch({
+    required List<Map<String, dynamic>> customers,
+    String? note,
+  }) async {
+    if (customers.isEmpty) {
+      throw const FormatException('Check Registration 批次至少需要一位客户。');
+    }
+    final items = <Map<String, dynamic>>[
+      for (final customer in customers)
+        {
+          'customer_id': customer['id'],
+          'customer_snapshot': {
+            'full_name': customer['full_name']?.toString().trim() ?? '',
+            'passport_number':
+                customer['passport_number']?.toString().trim() ?? '',
+            'nationality': customer['nationality']?.toString().trim() ?? '',
+          },
+        },
+    ];
+    final result = await _requiredClient.rpc(
+      'create_registration_check_batch',
+      params: {'p_items': items, 'p_note': note},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回 Check Registration 批次。');
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
@@ -412,6 +439,22 @@ class SupabaseGateway {
         if (row['batch_item_id'] != null)
           row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
     };
+    final registrationCheckRows = itemIds.isEmpty
+        ? <dynamic>[]
+        : await client
+              .from('registration_checks')
+              .select(
+                'batch_item_id, checked_at, result_status, raw_summary, '
+                'normalized_status, error_message, screenshot_path, '
+                'challenge_type, submitted, result_confirmed, updated_at',
+              )
+              .inFilter('batch_item_id', itemIds)
+              .limit(500);
+    final registrationCheckByItem = <String, Map<String, dynamic>>{
+      for (final row in registrationCheckRows)
+        if (row['batch_item_id'] != null)
+          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
+    };
     final itemsByBatch = <String, List<Map<String, dynamic>>>{};
     for (final item in items) {
       final batchId = item['batch_id']?.toString();
@@ -419,6 +462,7 @@ class SupabaseGateway {
       itemsByBatch.putIfAbsent(batchId, () => <Map<String, dynamic>>[]).add({
         ...item,
         'registration': registrationByItem[item['id']?.toString()],
+        'registration_check': registrationCheckByItem[item['id']?.toString()],
       });
     }
     return [
