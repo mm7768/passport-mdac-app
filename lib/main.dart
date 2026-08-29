@@ -233,6 +233,12 @@ enum TaskStatus {
   needsReview,
 }
 
+bool _isInProgressTaskStatus(TaskStatus status) {
+  return status == TaskStatus.queued ||
+      status == TaskStatus.running ||
+      status == TaskStatus.needsReview;
+}
+
 const customerGenderOptions = <String>['男', '女'];
 const customerBusinessStatusOptions = <String>[
   'PENDING',
@@ -245,6 +251,43 @@ const customerBusinessStatusOptions = <String>[
   'ACTION_REQUIRED',
   'ARCHIVED',
 ];
+
+const customerCreatedDateFilters = <String>[
+  '全部日期',
+  '今天',
+  '最近 7 天',
+  '最近 30 天',
+  '自定义范围',
+];
+
+DateTime _dateOnly(DateTime value) =>
+    DateTime(value.toLocal().year, value.toLocal().month, value.toLocal().day);
+
+bool matchesCustomerCreatedDateFilter(
+  DateTime createdAt,
+  String filter, {
+  DateTime? today,
+  DateTimeRange? customRange,
+}) {
+  if (filter == '全部日期') return true;
+  final currentDay = _dateOnly(today ?? DateTime.now());
+  final createdDay = _dateOnly(createdAt);
+  if (filter == '今天') return createdDay == currentDay;
+  if (filter == '最近 7 天') {
+    final firstDay = currentDay.subtract(const Duration(days: 6));
+    return !createdDay.isBefore(firstDay) && !createdDay.isAfter(currentDay);
+  }
+  if (filter == '最近 30 天') {
+    final firstDay = currentDay.subtract(const Duration(days: 29));
+    return !createdDay.isBefore(firstDay) && !createdDay.isAfter(currentDay);
+  }
+  if (filter == '自定义范围' && customRange != null) {
+    final start = _dateOnly(customRange.start);
+    final end = _dateOnly(customRange.end);
+    return !createdDay.isBefore(start) && !createdDay.isAfter(end);
+  }
+  return true;
+}
 
 class Customer {
   Customer({
@@ -263,6 +306,7 @@ class Customer {
     this.pin,
     this.registrationNumber,
     this.lastSummary,
+    this.passportImagePath,
   });
 
   final String id;
@@ -280,6 +324,7 @@ class Customer {
   String? pin;
   String? registrationNumber;
   String? lastSummary;
+  String? passportImagePath;
 
   bool get isDeleted => deletedAt != null;
   bool get hasMdacFields => [
@@ -309,6 +354,7 @@ class OcrDraft {
     required this.gender,
     required this.passportExpiryDate,
     required this.confidence,
+    this.passportImagePath,
   });
 
   final String id;
@@ -322,6 +368,7 @@ class OcrDraft {
   String gender;
   String passportExpiryDate;
   double confidence;
+  final String? passportImagePath;
 
   bool get isLowConfidence => confidence < 0.9;
   bool get isComplete => [
@@ -399,6 +446,78 @@ class AutomationTask {
   int get totalCount => customerIds.length;
   int get completedCount => successCount + failedCount;
   double get progress => totalCount == 0 ? 0 : completedCount / totalCount;
+}
+
+class CustomerHardDeletePreview {
+  const CustomerHardDeletePreview({
+    required this.customerId,
+    required this.exists,
+    required this.canDelete,
+    required this.blockedReasons,
+    required this.storageObjectCount,
+    required this.recordCounts,
+  });
+
+  final String customerId;
+  final bool exists;
+  final bool canDelete;
+  final List<String> blockedReasons;
+  final int storageObjectCount;
+  final Map<String, dynamic> recordCounts;
+
+  factory CustomerHardDeletePreview.fromJson(Map<String, dynamic> json) {
+    final reasons = json['blocked_reasons'];
+    final counts = json['record_counts'];
+    return CustomerHardDeletePreview(
+      customerId: json['customer_id']?.toString() ?? '',
+      exists: json['exists'] == true,
+      canDelete: json['can_delete'] == true,
+      blockedReasons: reasons is List
+          ? reasons.map((item) => item.toString()).toList(growable: false)
+          : const <String>[],
+      storageObjectCount:
+          int.tryParse(json['storage_object_count']?.toString() ?? '') ?? 0,
+      recordCounts: counts is Map
+          ? Map<String, dynamic>.from(counts)
+          : const <String, dynamic>{},
+    );
+  }
+}
+
+class CustomerHardDeleteBlocker {
+  const CustomerHardDeleteBlocker({
+    required this.customerId,
+    required this.reasons,
+  });
+
+  final String customerId;
+  final List<String> reasons;
+
+  factory CustomerHardDeleteBlocker.fromJson(Map<String, dynamic> json) {
+    final rawReasons = json['reasons'];
+    return CustomerHardDeleteBlocker(
+      customerId: json['customer_id']?.toString() ?? '',
+      reasons: rawReasons is List
+          ? rawReasons.map((item) => item.toString()).toList(growable: false)
+          : const <String>[],
+    );
+  }
+}
+
+class CustomerHardDeleteOutcome {
+  const CustomerHardDeleteOutcome({
+    required this.created,
+    this.jobId,
+    this.blocked = const <CustomerHardDeleteBlocker>[],
+    this.customerCount = 0,
+    this.storageObjectCount = 0,
+  });
+
+  final bool created;
+  final String? jobId;
+  final List<CustomerHardDeleteBlocker> blocked;
+  final int customerCount;
+  final int storageObjectCount;
 }
 
 class MdacSettings {
@@ -916,6 +1035,11 @@ class DemoRepository extends ChangeNotifier {
         for (final upload in uploadRecords)
           if (upload.batchId != null) upload.batchId!: upload.fileName,
       };
+      final filePaths = <String, String>{
+        for (final upload in uploadRecords)
+          if (upload.batchId != null && upload.filePath != null)
+            upload.batchId!: upload.filePath!,
+      };
       final drafts = <OcrDraft>[];
       for (final row in rows) {
         final status = row['status']?.toString() ?? 'REVIEW_REQUIRED';
@@ -950,6 +1074,7 @@ class DemoRepository extends ChangeNotifier {
                   extracted['display_passport_expiry_date'],
             ),
             confidence: confidence,
+            passportImagePath: filePaths[batchId],
           ),
         );
       }
@@ -984,6 +1109,7 @@ class DemoRepository extends ChangeNotifier {
       createdAt: createdAt,
       createdBy:
           row['created_by_name']?.toString() ?? row['created_by'].toString(),
+      passportImagePath: row['passport_image_path']?.toString(),
       deletedAt: row['deleted_at'] == null
           ? null
           : DateTime.tryParse(row['deleted_at'].toString()),
@@ -1097,33 +1223,287 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
-  Future<({List<String> blocked, String? error})> deleteCustomersWithSync(
+  Future<String?> updateCustomersCreatedAtWithSync(
+    List<String> ids,
+    DateTime createdAt,
+    String actor,
+  ) async {
+    final uniqueIds = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    if (uniqueIds.isEmpty) return '请先选择客户。';
+    if (uniqueIds.length > 200) return '一次最多修改 200 位客户。';
+    if (!isValidCustomerCreatedAt(createdAt)) {
+      return '创建时间必须在 01/01/2000 至当前时间之间。';
+    }
+
+    final selected = <Customer>[];
+    for (final id in uniqueIds) {
+      final customer = findCustomer(id);
+      if (customer == null || customer.isDeleted) {
+        return '选中的客户已不存在或已被删除，请刷新后重试。';
+      }
+      selected.add(customer);
+    }
+
+    if (remoteMode) {
+      if (selected.any((customer) => customer.id.startsWith('c-'))) {
+        return '远程模式不能修改尚未同步的本地演示客户。';
+      }
+      try {
+        final result = await SupabaseGateway.bulkUpdateCustomerCreatedAt(
+          customerIds: selected.map((customer) => customer.id).toList(),
+          createdAt: createdAt,
+        );
+        if (result.length != selected.length) {
+          return 'Supabase 返回的更新数量不一致，已阻止本地状态更新。';
+        }
+        await syncCustomersFromSupabase();
+        auditEvents.insert(
+          0,
+          '$actor 批量修改 ${selected.length} 位客户的系统创建时间为 ${formatDateTime(createdAt.toLocal())}',
+        );
+        notifyListeners();
+        return null;
+      } catch (exception) {
+        return '客户创建时间批量修改失败，云端未确认：$exception';
+      }
+    }
+
+    for (final customer in selected) {
+      customer.createdAt = createdAt;
+    }
+    auditEvents.insert(
+      0,
+      '$actor 批量修改 ${selected.length} 位客户的系统创建时间为 ${formatDateTime(createdAt.toLocal())}',
+    );
+    notifyListeners();
+    return null;
+  }
+
+  Future<List<CustomerHardDeletePreview>> previewHardDeleteWithSync(
+    List<String> ids,
+  ) async {
+    final uniqueIds = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (uniqueIds.isEmpty) return const <CustomerHardDeletePreview>[];
+    if (uniqueIds.length > 100) {
+      throw const FormatException('一次最多删除 100 位客户。');
+    }
+    if (remoteMode && uniqueIds.every((id) => !id.startsWith('c-'))) {
+      final response = await SupabaseGateway.previewCustomerHardDelete(
+        customerIds: uniqueIds,
+      );
+      final rows = response['rows'];
+      if (rows is! List) {
+        throw const FormatException('Supabase 未返回永久删除资格明细。');
+      }
+      return rows
+          .whereType<Map>()
+          .map(
+            (item) => CustomerHardDeletePreview.fromJson(
+              Map<String, dynamic>.from(item),
+            ),
+          )
+          .toList(growable: false);
+    }
+
+    return uniqueIds
+        .map((id) {
+          final customer = findCustomer(id);
+          if (customer == null) {
+            return CustomerHardDeletePreview(
+              customerId: id,
+              exists: false,
+              canDelete: false,
+              blockedReasons: const ['NOT_FOUND'],
+              storageObjectCount: 0,
+              recordCounts: const <String, dynamic>{},
+            );
+          }
+          final reasons = _localHardDeleteBlockers(id);
+          return CustomerHardDeletePreview(
+            customerId: id,
+            exists: true,
+            canDelete: reasons.isEmpty,
+            blockedReasons: reasons,
+            storageObjectCount:
+                customer.passportImagePath?.trim().isNotEmpty == true ? 1 : 0,
+            recordCounts: const <String, dynamic>{},
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Future<CustomerHardDeleteOutcome> hardDeleteCustomersWithSync(
     List<String> ids,
     String actor,
   ) async {
-    final blocked = ids.where((id) {
-      return tasks.any(
-        (task) =>
-            (task.status == TaskStatus.queued ||
-                task.status == TaskStatus.running ||
-                task.status == TaskStatus.needsReview) &&
-            task.customerIds.contains(id),
+    final uniqueIds = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (uniqueIds.isEmpty) {
+      return const CustomerHardDeleteOutcome(
+        created: false,
+        blocked: [
+          CustomerHardDeleteBlocker(customerId: '', reasons: ['NO_SELECTION']),
+        ],
       );
-    }).toList();
-    final allowed = ids.where((id) => !blocked.contains(id)).toList();
-    if (remoteMode) {
-      try {
-        for (final id in allowed) {
-          if (!id.startsWith('c-')) {
-            await SupabaseGateway.softDeleteCustomer(id);
-          }
+    }
+    if (uniqueIds.length > 100) {
+      return const CustomerHardDeleteOutcome(
+        created: false,
+        blocked: [
+          CustomerHardDeleteBlocker(
+            customerId: '',
+            reasons: ['MAXIMUM_100_CUSTOMERS'],
+          ),
+        ],
+      );
+    }
+
+    if (!remoteMode) {
+      return _hardDeleteLocally(uniqueIds, actor);
+    }
+    if (uniqueIds.any((id) => id.startsWith('c-'))) {
+      return const CustomerHardDeleteOutcome(
+        created: false,
+        blocked: [
+          CustomerHardDeleteBlocker(
+            customerId: '',
+            reasons: ['LOCAL_DEMO_CUSTOMER_NOT_SYNCED'],
+          ),
+        ],
+      );
+    }
+
+    String? jobId;
+    try {
+      final job = await SupabaseGateway.createCustomerHardDeleteJob(
+        customerIds: uniqueIds,
+      );
+      final created = job['created'] == true;
+      final blocked = _parseHardDeleteBlockers(job['blocked']);
+      if (!created) {
+        return CustomerHardDeleteOutcome(created: false, blocked: blocked);
+      }
+      jobId = job['job_id']?.toString();
+      if (jobId == null || jobId.isEmpty) {
+        throw const FormatException('Supabase 未返回永久删除任务 ID。');
+      }
+      final rawPaths = job['storage_paths'];
+      final paths = rawPaths is List
+          ? rawPaths
+                .whereType<Map>()
+                .map((item) => Map<String, dynamic>.from(item))
+                .toList(growable: false)
+          : const <Map<String, dynamic>>[];
+      await SupabaseGateway.removeCustomerStorageObjects(paths);
+      await SupabaseGateway.markCustomerHardDeleteStorageCleaned(jobId);
+      final completed = await SupabaseGateway.completeCustomerHardDelete(jobId);
+      await syncCustomersFromSupabase();
+      auditEvents.insert(
+        0,
+        '$actor 永久删除 ${uniqueIds.length} 位客户及其护照资料；Storage ${paths.length} 个对象已清理',
+      );
+      notifyListeners();
+      return CustomerHardDeleteOutcome(
+        created: true,
+        jobId: jobId,
+        customerCount:
+            int.tryParse(completed['customer_count']?.toString() ?? '') ??
+            uniqueIds.length,
+        storageObjectCount:
+            int.tryParse(completed['storage_object_count']?.toString() ?? '') ??
+            paths.length,
+      );
+    } catch (exception) {
+      if (jobId != null && jobId.isNotEmpty) {
+        try {
+          await SupabaseGateway.failCustomerHardDelete(
+            jobId: jobId,
+            errorMessage: exception.toString(),
+          );
+        } catch (_) {
+          // Preserve the original failure; the Owner can retry the job later.
         }
-      } catch (exception) {
-        return (blocked: blocked, error: '客户云端软删除失败：$exception');
+      }
+      return CustomerHardDeleteOutcome(
+        created: false,
+        jobId: jobId,
+        blocked: [
+          CustomerHardDeleteBlocker(
+            customerId: '',
+            reasons: ['PURGE_FAILED:$exception'],
+          ),
+        ],
+      );
+    }
+  }
+
+  CustomerHardDeleteOutcome _hardDeleteLocally(List<String> ids, String actor) {
+    final blocked = <CustomerHardDeleteBlocker>[];
+    for (final id in ids) {
+      final customer = findCustomer(id);
+      if (customer == null) {
+        blocked.add(
+          CustomerHardDeleteBlocker(
+            customerId: id,
+            reasons: const ['NOT_FOUND'],
+          ),
+        );
+        continue;
+      }
+      final reasons = _localHardDeleteBlockers(id);
+      if (reasons.isNotEmpty) {
+        blocked.add(
+          CustomerHardDeleteBlocker(customerId: id, reasons: reasons),
+        );
       }
     }
-    final localBlocked = deleteCustomers(ids, actor);
-    return (blocked: {...blocked, ...localBlocked}.toList(), error: null);
+    if (blocked.isNotEmpty) {
+      return CustomerHardDeleteOutcome(created: false, blocked: blocked);
+    }
+
+    final idSet = ids.toSet();
+    for (final task in tasks) {
+      task.customerIds.removeWhere(idSet.contains);
+    }
+    tasks.removeWhere((task) => task.customerIds.isEmpty);
+    customers.removeWhere((customer) => idSet.contains(customer.id));
+    auditEvents.insert(0, '$actor 永久删除 ${ids.length} 位客户及其本地演示资料');
+    notifyListeners();
+    return CustomerHardDeleteOutcome(created: true, customerCount: ids.length);
+  }
+
+  List<String> _localHardDeleteBlockers(String customerId) {
+    return tasks
+        .where(
+          (task) =>
+              task.customerIds.contains(customerId) &&
+              _isInProgressTaskStatus(task.status),
+        )
+        .map((task) => 'AUTOMATION_ITEM:${task.status.name.toUpperCase()}')
+        .toList(growable: false);
+  }
+
+  List<CustomerHardDeleteBlocker> _parseHardDeleteBlockers(dynamic raw) {
+    if (raw is! List) return const <CustomerHardDeleteBlocker>[];
+    return raw
+        .whereType<Map>()
+        .map(
+          (item) => CustomerHardDeleteBlocker.fromJson(
+            Map<String, dynamic>.from(item),
+          ),
+        )
+        .toList(growable: false);
   }
 
   Future<String?> pickAndUploadDocument(String actor) async {
@@ -1309,6 +1689,7 @@ class DemoRepository extends ChangeNotifier {
       businessStatus: values['businessStatus'] ?? 'PENDING',
       createdAt: DateTime.now(),
       createdBy: actor,
+      passportImagePath: draft.passportImagePath,
     );
     customers.insert(0, customer);
     ocrDrafts.removeWhere((item) => item.id == draft.id);
@@ -1335,6 +1716,7 @@ class DemoRepository extends ChangeNotifier {
         gender: values['gender']!,
         passportExpiryDate: values['passportExpiryDate']!,
         businessStatus: values['businessStatus'] ?? 'PENDING',
+        passportImagePath: draft.passportImagePath,
       );
       final customer = _customerFromRemote(row);
       final resultId = draft.id.startsWith('remote-ocr-')
@@ -1476,30 +1858,11 @@ class DemoRepository extends ChangeNotifier {
   }
 
   List<String> deleteCustomers(List<String> ids, String actor) {
-    final blocked = <String>[];
-    for (final id in ids) {
-      final hasRunningTask = tasks.any(
-        (task) =>
-            (task.status == TaskStatus.queued ||
-                task.status == TaskStatus.running ||
-                task.status == TaskStatus.needsReview) &&
-            task.customerIds.contains(id),
-      );
-      final customer = findCustomer(id);
-      if (customer == null || hasRunningTask) {
-        if (customer != null) {
-          blocked.add(customer.fullName);
-        }
-        continue;
-      }
-      customer.deletedAt = DateTime.now();
-      auditEvents.insert(0, '软删除客户 ${customer.fullName}');
-    }
-    if (blocked.isEmpty) {
-      auditEvents.insert(0, '$actor 批量软删除 ${ids.length} 位客户');
-    }
-    notifyListeners();
-    return blocked;
+    final outcome = _hardDeleteLocally(ids, actor);
+    return outcome.blocked
+        .where((item) => item.customerId.isNotEmpty)
+        .map((item) => item.customerId)
+        .toList(growable: false);
   }
 
   AutomationTask? activeTaskForCustomer(String customerId) {
@@ -2065,6 +2428,7 @@ class _MdacShellState extends State<MdacShell> {
         return CustomersScreen(
           repository: widget.repository,
           actor: widget.userName,
+          role: widget.role,
         );
       case AppSection.tasks:
         return TasksScreen(repository: widget.repository);
@@ -2476,11 +2840,13 @@ class CustomersScreen extends StatefulWidget {
   const CustomersScreen({
     required this.repository,
     required this.actor,
+    required this.role,
     super.key,
   });
 
   final DemoRepository repository;
   final String actor;
+  final UserRole role;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -2489,7 +2855,10 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
-  String filter = '全部';
+  String businessStatusFilter = '全部';
+  String createdDateFilter = '全部日期';
+  String nationalityFilter = '全部国家';
+  DateTimeRange? createdDateRange;
 
   @override
   void dispose() {
@@ -2497,18 +2866,86 @@ class _CustomersScreenState extends State<CustomersScreen> {
     super.dispose();
   }
 
+  List<String> get availableNationalities {
+    final values =
+        widget.repository.activeCustomers
+            .map((customer) => customer.nationality.trim().toUpperCase())
+            .where((value) => value.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    return ['全部国家', ...values];
+  }
+
   List<Customer> get filtered {
     final query = searchController.text.trim().toLowerCase();
-    return widget.repository.activeCustomers.where((customer) {
+    final result = widget.repository.activeCustomers.where((customer) {
       final matchesQuery =
           query.isEmpty ||
           customer.fullName.toLowerCase().contains(query) ||
           customer.passportNumber.toLowerCase().contains(query);
-      final matchesFilter =
-          filter == '全部' ||
-          businessStatusLabel(customer.businessStatus) == filter;
-      return matchesQuery && matchesFilter;
+      final matchesStatus =
+          businessStatusFilter == '全部' ||
+          businessStatusLabel(customer.businessStatus) == businessStatusFilter;
+      final matchesDate = matchesCustomerCreatedDateFilter(
+        customer.createdAt,
+        createdDateFilter,
+        customRange: createdDateRange,
+      );
+      final matchesNationality =
+          nationalityFilter == '全部国家' ||
+          customer.nationality.trim().toUpperCase() == nationalityFilter;
+      return matchesQuery && matchesStatus && matchesDate && matchesNationality;
     }).toList();
+    result.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    return result;
+  }
+
+  Future<void> selectCreatedDateFilter(String value) async {
+    if (value != '自定义范围') {
+      setState(() {
+        createdDateFilter = value;
+        createdDateRange = null;
+      });
+      return;
+    }
+    final today = _dateOnly(DateTime.now());
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: today,
+      initialDateRange:
+          createdDateRange ??
+          DateTimeRange(
+            start: today.subtract(const Duration(days: 29)),
+            end: today,
+          ),
+      helpText: '选择客户录入日期范围',
+      cancelText: '取消',
+      confirmText: '确定',
+    );
+    if (!mounted || range == null) return;
+    setState(() {
+      createdDateFilter = value;
+      createdDateRange = range;
+    });
+  }
+
+  String get createdDateFilterLabel {
+    if (createdDateFilter == '自定义范围' && createdDateRange != null) {
+      return '录入：${formatShortDate(createdDateRange!.start)} - '
+          '${formatShortDate(createdDateRange!.end)}';
+    }
+    return createdDateFilter == '全部日期' ? '录入日期' : '录入：$createdDateFilter';
+  }
+
+  void clearCustomerFilters() {
+    setState(() {
+      businessStatusFilter = '全部';
+      createdDateFilter = '全部日期';
+      nationalityFilter = '全部国家';
+      createdDateRange = null;
+    });
   }
 
   void toggleAll(List<Customer> list) {
@@ -2724,45 +3161,233 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
   }
 
-  Future<void> deleteSelected() async {
+  Future<void> updateSelectedCreatedAt() async {
+    if (widget.role != UserRole.owner) {
+      showToast(context, '只有 OWNER 可以批量修改系统创建时间。', error: true);
+      return;
+    }
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
       return;
     }
+
+    final today = _dateOnly(DateTime.now());
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(2000),
+      lastDate: today,
+      initialDate: today,
+      helpText: '选择新的创建日期',
+      cancelText: '取消',
+      confirmText: '下一步',
+    );
+    if (!mounted || date == null) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(DateTime.now()),
+      helpText: '选择新的创建时间',
+      cancelText: '取消',
+      confirmText: '下一步',
+    );
+    if (!mounted || time == null) return;
+
+    final createdAt = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!isValidCustomerCreatedAt(createdAt)) {
+      showToast(context, '创建时间必须在 01/01/2000 至当前时间之后一天以内。', error: true);
+      return;
+    }
+
+    final count = selected.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('确认软删除？'),
-        content: Text('将从默认客户列表隐藏 ${selected.length} 位客户。历史任务与审计记录会保留。'),
+        title: const Text('确认批量修改系统创建时间？'),
+        content: Text(
+          '将直接修改 $count 位客户的 customers.created_at：\n\n'
+          '${formatDateTime(createdAt)}\n\n'
+          '原始创建时间会写入审计记录。此操作会影响录入日期筛选和列表排序。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认修改'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final error = await widget.repository.updateCustomersCreatedAtWithSync(
+      selected.toList(),
+      createdAt,
+      widget.actor,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+      return;
+    }
+    setState(() => selected.clear());
+    showToast(context, '$count 位客户的系统创建时间已更新并写入审计记录。');
+  }
+
+  Future<void> deleteSelected() async {
+    if (widget.role != UserRole.owner) {
+      showToast(context, '只有 OWNER 可以永久删除客户。', error: true);
+      return;
+    }
+    if (selected.isEmpty) {
+      showToast(context, '请先选择客户。');
+      return;
+    }
+    final selectedIds = selected.toList(growable: false);
+    List<CustomerHardDeletePreview> previews;
+    try {
+      previews = await widget.repository.previewHardDeleteWithSync(selectedIds);
+    } catch (exception) {
+      if (mounted) showToast(context, '无法取得永久删除资格：$exception', error: true);
+      return;
+    }
+    if (!mounted) return;
+
+    final eligible = previews
+        .where((item) => item.exists && item.canDelete)
+        .toList(growable: false);
+    final blocked = previews
+        .where((item) => !item.exists || !item.canDelete)
+        .toList(growable: false);
+    final storageCount = eligible.fold<int>(
+      0,
+      (sum, item) => sum + item.storageObjectCount,
+    );
+    final customerNames = <String, String>{
+      for (final item in previews)
+        item.customerId:
+            widget.repository.findCustomer(item.customerId)?.fullName ??
+            item.customerId,
+    };
+    String reasonLabel(String reason) {
+      final status = reason.contains(':')
+          ? reason.substring(reason.indexOf(':') + 1)
+          : reason;
+      switch (status) {
+        case 'QUEUED':
+          return '任务排队中';
+        case 'CLAIMED':
+          return '任务已领取';
+        case 'RUNNING':
+          return '任务执行中';
+        case 'NEEDS_REVIEW':
+          return '等待人工审核';
+        case 'REVIEW_REQUIRED':
+          return 'OCR 等待审核';
+        case 'READY_TO_CREATE':
+          return 'OCR 等待建档';
+        case 'NOT_FOUND':
+          return '客户不存在';
+        default:
+          return status;
+      }
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认永久删除客户？'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '已选择 ${previews.length} 位客户，可删除 ${eligible.length} 位。',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 12),
+                if (blocked.isNotEmpty) ...[
+                  const Text(
+                    '以下客户有进行中任务，本次整批操作将被阻止：',
+                    style: TextStyle(color: Colors.deepOrange),
+                  ),
+                  const SizedBox(height: 6),
+                  ...blocked.map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '• ${customerNames[item.customerId] ?? item.customerId}：'
+                        '${item.blockedReasons.map(reasonLabel).join('、')}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                const Text(
+                  'Owner 确认后将永久清除：客户档案、护照图片/PDF、OCR 原文与 MRZ、任务快照、PIN 记录、流程结果和私有截图。',
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '预计清理私有 Storage 对象：$storageCount 个。\n'
+                  '此操作不可恢复，系统不会自动删除其他客户。',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
           ),
           FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认删除'),
+            onPressed: blocked.isNotEmpty || eligible.isEmpty
+                ? null
+                : () => Navigator.pop(context, true),
+            child: const Text('确认永久删除'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
-    final result = await widget.repository.deleteCustomersWithSync(
-      selected.toList(),
+
+    final outcome = await widget.repository.hardDeleteCustomersWithSync(
+      selectedIds,
       widget.actor,
     );
     if (!mounted) return;
-    if (result.error != null) {
-      showToast(context, result.error!, error: true);
+    if (!outcome.created) {
+      final failure = outcome.blocked
+          .map(
+            (item) => item.reasons.isEmpty
+                ? item.customerId
+                : '${item.customerId}: ${item.reasons.join('、')}',
+          )
+          .join('；');
+      showToast(
+        context,
+        '永久删除未完成${failure.isEmpty ? '' : '：$failure'}。可刷新资格后重试。',
+        error: true,
+      );
       return;
     }
     setState(() => selected.clear());
     showToast(
       context,
-      result.blocked.isEmpty
-          ? '客户已软删除并同步到 Supabase，历史记录仍然保留。'
-          : '以下客户正在执行任务，未删除：${result.blocked.join('、')}',
-      error: result.blocked.isNotEmpty,
+      '${outcome.customerCount} 位客户及 ${outcome.storageObjectCount} 个私有文件已永久删除。',
     );
   }
 
@@ -2919,9 +3544,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       isDense: true,
                     ),
                   );
-                  final filterMenu = PopupMenuButton<String>(
-                    initialValue: filter,
-                    onSelected: (value) => setState(() => filter = value),
+                  final statusMenu = PopupMenuButton<String>(
+                    initialValue: businessStatusFilter,
+                    onSelected: (value) =>
+                        setState(() => businessStatusFilter = value),
                     itemBuilder: (context) =>
                         ['全部', '待处理', '已注册', '已收 PIN', '需关注']
                             .map(
@@ -2931,28 +3557,77 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             .toList(),
                     child: OutlinedButton.icon(
                       onPressed: null,
-                      icon: const Icon(Icons.filter_list_rounded),
-                      label: Text(filter),
+                      icon: const Icon(Icons.flag_outlined),
+                      label: Text(
+                        businessStatusFilter == '全部'
+                            ? '业务状态'
+                            : '状态：$businessStatusFilter',
+                      ),
                     ),
                   );
-                  if (constraints.maxWidth < 560) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        search,
-                        const SizedBox(height: 10),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: filterMenu,
-                        ),
-                      ],
-                    );
-                  }
-                  return Row(
+                  final dateMenu = PopupMenuButton<String>(
+                    initialValue: createdDateFilter,
+                    onSelected: selectCreatedDateFilter,
+                    itemBuilder: (context) => customerCreatedDateFilters
+                        .map(
+                          (item) =>
+                              PopupMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.calendar_month_outlined),
+                      label: Text(createdDateFilterLabel),
+                    ),
+                  );
+                  final countryMenu = PopupMenuButton<String>(
+                    initialValue: nationalityFilter,
+                    onSelected: (value) =>
+                        setState(() => nationalityFilter = value),
+                    itemBuilder: (context) => availableNationalities
+                        .map(
+                          (item) =>
+                              PopupMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.public_outlined),
+                      label: Text(
+                        nationalityFilter == '全部国家'
+                            ? '国家'
+                            : '国家：$nationalityFilter',
+                      ),
+                    ),
+                  );
+                  final hasCategoryFilters =
+                      businessStatusFilter != '全部' ||
+                      createdDateFilter != '全部日期' ||
+                      nationalityFilter != '全部国家';
+                  final categoryFilters = Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      Expanded(child: search),
-                      const SizedBox(width: 12),
-                      filterMenu,
+                      statusMenu,
+                      dateMenu,
+                      countryMenu,
+                      if (hasCategoryFilters)
+                        TextButton.icon(
+                          onPressed: clearCustomerFilters,
+                          icon: const Icon(Icons.clear_rounded, size: 17),
+                          label: const Text('清除分类'),
+                        ),
+                    ],
+                  );
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      search,
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: categoryFilters,
+                      ),
                     ],
                   );
                 },
@@ -3026,7 +3701,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             const SizedBox(
                               width: 100,
                               child: Text(
-                                '创建时间',
+                                '录入日期',
                                 style: TextStyle(
                                   color: AppTheme.muted,
                                   fontSize: 12,
@@ -3075,8 +3750,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 onRegistration: () =>
                     startSimpleTask(TaskType.registrationCheck),
                 onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                onCreatedAt: widget.role == UserRole.owner
+                    ? updateSelectedCreatedAt
+                    : null,
                 onExport: exportSelected,
-                onDelete: deleteSelected,
+                onDelete: widget.role == UserRole.owner ? deleteSelected : null,
               ),
             const SizedBox(height: 28),
           ],
@@ -4779,7 +5457,7 @@ class CustomerRow extends StatelessWidget {
               ),
               const SizedBox(height: 7),
               Text(
-                '创建于 ${formatShortDate(customer.createdAt)} · ${customer.createdBy}',
+                '录入于 ${formatShortDate(customer.createdAt)} · ${customer.createdBy}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: AppTheme.muted, fontSize: 10),
@@ -4869,8 +5547,9 @@ class SelectionBar extends StatelessWidget {
     required this.onPin,
     required this.onRegistration,
     required this.onVisitPass,
+    this.onCreatedAt,
     required this.onExport,
-    required this.onDelete,
+    this.onDelete,
     super.key,
   });
 
@@ -4879,8 +5558,9 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onPin;
   final VoidCallback onRegistration;
   final VoidCallback onVisitPass;
+  final VoidCallback? onCreatedAt;
   final VoidCallback onExport;
-  final VoidCallback onDelete;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -4931,17 +5611,24 @@ class SelectionBar extends StatelessWidget {
             label: const Text('查 Visit Pass'),
             onPressed: onVisitPass,
           ),
+          if (onCreatedAt != null)
+            ActionChip(
+              avatar: const Icon(Icons.edit_calendar_outlined, size: 16),
+              label: const Text('修改创建时间'),
+              onPressed: onCreatedAt,
+            ),
           ActionChip(
             avatar: const Icon(Icons.file_download_outlined, size: 16),
             label: const Text('导出 Excel'),
             onPressed: onExport,
           ),
-          IconButton(
-            onPressed: onDelete,
-            tooltip: '软删除',
-            color: Colors.white70,
-            icon: const Icon(Icons.delete_outline_rounded),
-          ),
+          if (onDelete != null)
+            IconButton(
+              onPressed: onDelete,
+              tooltip: '永久删除',
+              color: Colors.white70,
+              icon: const Icon(Icons.delete_forever_outlined),
+            ),
         ],
       ),
     );
@@ -5776,6 +6463,13 @@ bool isMdacDate(String value) {
   return date.year == year && date.month == month && date.day == day;
 }
 
+bool isValidCustomerCreatedAt(DateTime value) {
+  final utc = value.toUtc();
+  final minimum = DateTime.utc(2000, 1, 1);
+  final maximum = DateTime.now().toUtc().add(const Duration(days: 1));
+  return !utc.isBefore(minimum) && !utc.isAfter(maximum);
+}
+
 Future<DateTime?> pickDate(BuildContext context, DateTime? initial) =>
     showDatePicker(
       context: context,
@@ -6027,6 +6721,10 @@ Future<void> showCustomerDetail(
                   DetailChip(label: 'Gmail PIN', value: customer.pin ?? '未获取'),
                 ],
               ),
+              if (customer.passportImagePath?.trim().isNotEmpty == true) ...[
+                const SizedBox(height: 18),
+                PassportDocumentCard(path: customer.passportImagePath!),
+              ],
               if (customer.lastSummary != null) ...[
                 const SizedBox(height: 18),
                 Container(
@@ -6044,7 +6742,7 @@ Future<void> showCustomerDetail(
               ],
               const SizedBox(height: 18),
               Text(
-                '创建于 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
+                '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
               if (onEdit != null) ...[
@@ -6067,6 +6765,194 @@ Future<void> showCustomerDetail(
       ),
     ),
   );
+}
+
+class PassportDocumentCard extends StatefulWidget {
+  const PassportDocumentCard({required this.path, super.key});
+
+  final String path;
+
+  @override
+  State<PassportDocumentCard> createState() => _PassportDocumentCardState();
+}
+
+class _PassportDocumentCardState extends State<PassportDocumentCard> {
+  Future<String>? _signedUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareSignedUrl();
+  }
+
+  @override
+  void didUpdateWidget(covariant PassportDocumentCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path) _prepareSignedUrl();
+  }
+
+  void _prepareSignedUrl() {
+    _signedUrl = SupabaseGateway.isConfigured && SupabaseGateway.client != null
+        ? _createSignedUrl()
+        : null;
+  }
+
+  Future<String> _createSignedUrl() =>
+      SupabaseGateway.createSignedPassportImageUrl(widget.path);
+
+  void _retry() {
+    setState(_prepareSignedUrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isImage = isPassportImagePath(widget.path);
+    if (!isImage) {
+      return _card(
+        icon: Icons.picture_as_pdf_outlined,
+        title: '护照 PDF 已录入',
+        body: '原始文件保存在私有 Storage；当前详情页显示文件卡片。',
+        child: const Text(
+          'PDF 文件不会被公开，也不会在列表中直接下载。',
+          style: TextStyle(color: AppTheme.muted, fontSize: 12),
+        ),
+      );
+    }
+
+    return _card(
+      icon: Icons.badge_outlined,
+      title: '护照原图 · 低分辨率预览',
+      body: '完整页面比例保留；签名预览链接 5 分钟后自动失效。',
+      child: _signedUrl == null
+          ? _unavailableState()
+          : FutureBuilder<String>(
+              future: _signedUrl,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const SizedBox(
+                    height: 280,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (snapshot.hasError || !snapshot.hasData) {
+                  return SizedBox(
+                    height: 180,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            '护照图片暂时无法加载',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            '请确认登录状态后重试。',
+                            style: TextStyle(
+                              color: AppTheme.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          OutlinedButton.icon(
+                            onPressed: _retry,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('重新加载'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+                return ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: 300,
+                      child: Image.network(
+                        snapshot.data!,
+                        fit: BoxFit.contain,
+                        filterQuality: FilterQuality.low,
+                        cacheWidth: 900,
+                        cacheHeight: 1200,
+                        errorBuilder: (context, error, stackTrace) => Center(
+                          child: TextButton.icon(
+                            onPressed: _retry,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('图片加载失败，重试'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _unavailableState() {
+    return const SizedBox(
+      height: 180,
+      child: Center(
+        child: Text(
+          '护照图片暂时无法加载',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+
+  Widget _card({
+    required IconData icon,
+    required String title,
+    required String body,
+    required Widget child,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.canvas,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            body,
+            style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+bool isPassportImagePath(String path) {
+  final normalized = path.toLowerCase().split('?').first;
+  return normalized.endsWith('.jpg') ||
+      normalized.endsWith('.jpeg') ||
+      normalized.endsWith('.png') ||
+      normalized.endsWith('.webp');
 }
 
 class DetailChip extends StatelessWidget {

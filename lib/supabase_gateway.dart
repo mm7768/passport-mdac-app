@@ -527,8 +527,8 @@ class SupabaseGateway {
         .from('customers')
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .isFilter('deleted_at', null)
         .order('created_at', ascending: false)
@@ -575,6 +575,7 @@ class SupabaseGateway {
     required String gender,
     required String passportExpiryDate,
     String businessStatus = 'PENDING',
+    String? passportImagePath,
   }) async {
     final client = _requiredClient;
     final userId = _requiredUserId;
@@ -588,13 +589,14 @@ class SupabaseGateway {
           'nationality': nationality.trim().toUpperCase(),
           'gender': gender.trim(),
           'passport_expiry_date': _toIsoDate(passportExpiryDate),
+          'passport_image_path': passportImagePath,
           'business_status': businessStatus,
           'created_by': userId,
         })
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .single();
     return Map<String, dynamic>.from(row);
@@ -632,11 +634,131 @@ class SupabaseGateway {
         .eq('id', id)
         .select(
           'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, business_status, '
-          'created_by, created_at, deleted_at',
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at',
         )
         .single();
     return Map<String, dynamic>.from(row);
+  }
+
+  static Future<List<Map<String, dynamic>>> bulkUpdateCustomerCreatedAt({
+    required List<String> customerIds,
+    required DateTime createdAt,
+  }) async {
+    if (customerIds.isEmpty) {
+      throw const FormatException('至少需要选择一位客户。');
+    }
+    final normalizedIds = customerIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    if (normalizedIds.length != customerIds.length) {
+      throw const FormatException('客户 ID 无效。');
+    }
+    final result = await _requiredClient.rpc(
+      'bulk_update_customer_created_at',
+      params: {
+        'p_customer_ids': normalizedIds,
+        'p_created_at': createdAt.toUtc().toIso8601String(),
+      },
+    );
+    if (result is! List) {
+      throw const FormatException('Supabase 未返回批量修改结果。');
+    }
+    return result
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+  }
+
+  static Future<Map<String, dynamic>> previewCustomerHardDelete({
+    required List<String> customerIds,
+  }) async {
+    if (customerIds.isEmpty) {
+      throw const FormatException('至少需要选择一位客户。');
+    }
+    final result = await _requiredClient.rpc(
+      'preview_customer_hard_delete',
+      params: {'p_customer_ids': customerIds},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回永久删除预览。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  static Future<Map<String, dynamic>> createCustomerHardDeleteJob({
+    required List<String> customerIds,
+  }) async {
+    if (customerIds.isEmpty) {
+      throw const FormatException('至少需要选择一位客户。');
+    }
+    final result = await _requiredClient.rpc(
+      'create_customer_hard_delete_job',
+      params: {'p_customer_ids': customerIds},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回永久删除任务。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  static Future<void> removeCustomerStorageObjects(
+    List<Map<String, dynamic>> storagePaths,
+  ) async {
+    final grouped = <String, List<String>>{};
+    for (final item in storagePaths) {
+      final bucket = item['bucket']?.toString().trim() ?? '';
+      final path = item['path']?.toString().trim() ?? '';
+      if (bucket.isEmpty || path.isEmpty) continue;
+      if (bucket != 'passport-documents') {
+        throw const FormatException('永久删除遇到未授权的 Storage bucket。');
+      }
+      grouped.putIfAbsent(bucket, () => <String>[]).add(path);
+    }
+    for (final entry in grouped.entries) {
+      await _requiredClient.storage.from(entry.key).remove(entry.value);
+    }
+  }
+
+  static Future<Map<String, dynamic>> markCustomerHardDeleteStorageCleaned(
+    String jobId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'mark_customer_hard_delete_storage_cleaned',
+      params: {'p_job_id': jobId},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回 Storage 清理状态。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  static Future<Map<String, dynamic>> failCustomerHardDelete({
+    required String jobId,
+    required String errorMessage,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'fail_customer_hard_delete',
+      params: {'p_job_id': jobId, 'p_error_message': errorMessage},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回永久删除失败状态。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  static Future<Map<String, dynamic>> completeCustomerHardDelete(
+    String jobId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'complete_customer_hard_delete',
+      params: {'p_job_id': jobId},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回永久删除结果。');
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   static Future<void> softDeleteCustomer(String id) async {
@@ -648,6 +770,25 @@ class SupabaseGateway {
           'updated_by': _requiredUserId,
         })
         .eq('id', id);
+  }
+
+  static Future<String> createSignedPassportImageUrl(String path) async {
+    final normalizedPath = path.trim();
+    if (normalizedPath.isEmpty) {
+      throw const FormatException('护照图片路径为空。');
+    }
+    return _requiredClient.storage
+        .from('passport-documents')
+        .createSignedUrl(
+          normalizedPath,
+          300,
+          transform: const TransformOptions(
+            width: 900,
+            height: 1200,
+            resize: ResizeMode.contain,
+            quality: 72,
+          ),
+        );
   }
 
   static Future<void> clearLatestPinRecord(String customerId) async {

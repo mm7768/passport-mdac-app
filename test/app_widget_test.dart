@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:passport_mdac_app/main.dart';
 
+void _noop() {}
+
 void main() {
   testWidgets('owner can enter the MDAC Desk workspace', (tester) async {
     await tester.pumpWidget(const MdacPilotApp());
@@ -68,6 +70,27 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('编辑客户档案'), findsOneWidget);
     expect(find.text('保存修改'), findsOneWidget);
+  });
+
+  testWidgets('owner sees bulk created_at action after selecting customers', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+
+    final checkboxes = find.byType(Checkbox);
+    expect(checkboxes, findsNWidgets(5));
+    await tester.tap(checkboxes.at(1));
+    await tester.tap(checkboxes.at(2));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已选 2 位'), findsOneWidget);
+    expect(find.text('修改创建时间'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('manual customer submission closes cleanly', (tester) async {
@@ -142,6 +165,80 @@ void main() {
     await tester.tap(find.text('取消').last);
     await tester.pumpAndSettle();
     expect(find.text('人工确认 OCR 结果'), findsNothing);
+  });
+
+  testWidgets('passport document card handles private image and PDF states', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              PassportDocumentCard(path: 'owner/ocr/passport.jpg'),
+              PassportDocumentCard(path: 'owner/ocr/passport.pdf'),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('护照原图 · 低分辨率预览'), findsOneWidget);
+    expect(find.text('护照 PDF 已录入'), findsOneWidget);
+    expect(find.text('护照图片暂时无法加载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('owner can permanently delete an eligible customer', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('客户'));
+    await tester.pumpAndSettle();
+
+    final checkboxes = find.byType(Checkbox);
+    await tester.ensureVisible(checkboxes.at(4));
+    await tester.tap(checkboxes.at(4));
+    await tester.pumpAndSettle();
+    final deleteButton = find.byTooltip('永久删除');
+    await tester.ensureVisible(deleteButton);
+    await tester.tap(deleteButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认永久删除客户？'), findsOneWidget);
+    expect(find.textContaining('此操作不可恢复'), findsOneWidget);
+    await tester.tap(find.text('确认永久删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认永久删除客户？'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('operator selection bar hides permanent delete action', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SelectionBar(
+            count: 1,
+            onMdac: _noop,
+            onPin: _noop,
+            onRegistration: _noop,
+            onVisitPass: _noop,
+            onExport: _noop,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('永久删除'), findsNothing);
+    expect(find.text('导出 Excel'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('phone width keeps primary pages free of layout exceptions', (
