@@ -31,7 +31,7 @@ class AzureResultParsingTests(unittest.TestCase):
         extracted, confidence, status = parse_azure_result(raw)
 
         self.assertEqual(status, "READY_TO_CREATE")
-        self.assertEqual(extracted["full_name"], "LEE SHU FEN")
+        self.assertEqual(extracted["full_name"], "FEN LEE SHU")
         self.assertEqual(extracted["passport_number"], "EJ40890")
         self.assertEqual(extracted["date_of_birth"], "1989-07-14")
         self.assertEqual(extracted["passport_expiry_date"], "2032-10-26")
@@ -40,6 +40,32 @@ class AzureResultParsingTests(unittest.TestCase):
         self.assertTrue(extracted["mrz"])
         self.assertIsNotNone(confidence)
         self.assertGreater(confidence, 0.95)
+
+    def test_passport_name_uses_surname_then_given_names(self):
+        raw = {
+            "analyzeResult": {
+                "documents": [
+                    {
+                        "docType": "passport",
+                        "fields": {
+                            "FirstName": {"valueString": "XISHUN", "confidence": 0.99},
+                            "LastName": {"valueString": "LI", "confidence": 0.99},
+                            "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},
+                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},
+                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},
+                            "Nationality": {"valueCountryRegion": "CHN", "confidence": 0.99},
+                            "Sex": {"valueString": "M", "confidence": 0.99},
+                            "MachineReadableZone": {"content": "P<CHNLI<<XISHUN<<<<<<<<<<<<<<<<<<<<<<<<<<<<"},
+                        },
+                    }
+                ]
+            }
+        }
+
+        extracted, _, status = parse_azure_result(raw)
+
+        self.assertEqual(status, "READY_TO_CREATE")
+        self.assertEqual(extracted["full_name"], "LI XISHUN")
 
     def test_missing_critical_field_requires_review(self):
         raw = {
