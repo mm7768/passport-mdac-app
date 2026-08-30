@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -26,8 +27,37 @@ import requests
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 LOG = logging.getLogger("visit_pass_check_worker")
+WORKER_NAME = "visit_pass_check"
 DEFAULT_CHECK_URL = "https://imigresen-online.imi.gov.my/mdac/register?viewVisitPass"
 DEFAULT_BUCKET = "passport-documents"
+
+
+def log_event(
+    level: int,
+    *,
+    step: str,
+    status: str,
+    batch_id: str | None = None,
+    item_id: str | None = None,
+    customer_id: str | None = None,
+    result: Any = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Write one searchable event without passport, PIN, or page contents."""
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "worker": WORKER_NAME,
+        "batch_id": batch_id,
+        "item_id": item_id,
+        "customer_id": customer_id,
+        "step": step,
+        "status": status,
+        "result": result,
+        "error_code": error_code,
+        "error_message": error_message,
+    }
+    LOG.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
 
 
 class WorkerError(RuntimeError):
@@ -398,13 +428,28 @@ class VisitPassCheckWorker:
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
         self.supabase.heartbeat(status="BUSY", batch_id=batch_id)
+        log_event(
+            logging.INFO,
+            step="batch_claim",
+            status="running",
+            batch_id=batch_id,
+        )
         processed = 0
         while True:
             item = self.supabase.claim_item(batch_id)
             if item is None:
                 break
             item_id = str(item["id"])
+            customer_id = str(item.get("customer_id") or "") or None
             self.supabase.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
+            log_event(
+                logging.INFO,
+                step="item_claim",
+                status="running",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+            )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
                 screenshot, challenge_type, summary = asyncio.run(
@@ -414,7 +459,16 @@ class VisitPassCheckWorker:
                 try:
                     screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
                 except Exception:
-                    LOG.exception("Check Visit Pass 截图上传失败；不记录截图内容")
+                    log_event(
+                        logging.WARNING,
+                        step="screenshot_upload",
+                        status="failed",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        error_code="SCREENSHOT_UPLOAD_FAILED",
+                        error_message="Visit Pass Check screenshot upload failed",
+                    )
                     summary["screenshot_saved"] = False
                     summary["screenshot_upload_failed"] = True
 
@@ -437,12 +491,30 @@ class VisitPassCheckWorker:
                     error_message=error_message,
                 )
                 processed += 1
-                LOG.warning(
-                    "Check Visit Pass 预览完成：需要人工审核；不自动处理挑战，不查询结果，不提交"
+                log_event(
+                    logging.WARNING,
+                    step="result_writeback",
+                    status="needs_review",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    result="UNPARSED",
+                    error_code=error_code,
+                    error_message=error_message,
                 )
             except Exception as exception:
                 error_code, error_message, retryable = classify_page_failure(exception)
-                LOG.exception("Check Visit Pass 预览异常；未确认结果")
+                log_event(
+                    logging.ERROR,
+                    step="page_preview",
+                    status="failed",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    result="RESULT_UNKNOWN",
+                    error_code=error_code,
+                    error_message=error_message,
+                )
                 try:
                     self.supabase.finish_item(
                         item_id=item_id,
@@ -465,41 +537,78 @@ class VisitPassCheckWorker:
                         error_message=error_message,
                     )
                 except Exception:
-                    LOG.exception("Check Visit Pass 失败回写异常")
+                    log_event(
+                        logging.ERROR,
+                        step="result_writeback",
+                        status="failed",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        result="FAILED",
+                        error_code="SUPABASE_WRITEBACK_FAILED",
+                        error_message="Visit Pass Check failure writeback failed",
+                    )
 
         self.supabase.heartbeat(status="ONLINE")
+        log_event(
+            logging.INFO,
+            step="batch_complete",
+            status="completed",
+            batch_id=batch_id,
+            result={"processed_count": processed},
+        )
         return processed
 
     def run_once(self) -> int:
         self.supabase.heartbeat(status="ONLINE")
         batch = self.supabase.claim_batch()
         if batch is None:
+            log_event(logging.DEBUG, step="batch_claim", status="idle")
             return 0
         return self.process_batch(batch)
 
     def run_poll(self) -> None:
-        LOG.info(
-            "Visit Pass Check Worker ONLINE：轮询间隔 %ss；FILL_REVIEW；不处理 CAPTCHA；不查询结果；不提交",
-            self.config.poll_seconds,
+        log_event(
+            logging.INFO,
+            step="worker_start",
+            status="online",
+            result={"mode": "FILL_REVIEW", "poll_seconds": self.config.poll_seconds},
         )
         while True:
             try:
                 processed = self.run_once()
                 if processed:
-                    LOG.info("本轮处理 %d 项 Check Visit Pass 预览任务", processed)
+                    log_event(
+                        logging.INFO,
+                        step="poll_complete",
+                        status="completed",
+                        result={"processed_count": processed},
+                    )
             except Exception:
-                LOG.exception("Visit Pass Check Worker 本轮异常；未将结果标为成功")
+                log_event(
+                    logging.ERROR,
+                    step="poll",
+                    status="failed",
+                    error_code="WORKER_POLL_FAILED",
+                    error_message="Visit Pass Check worker poll failed",
+                )
                 try:
                     self.supabase.heartbeat(status="ERROR")
                 except Exception:
-                    LOG.exception("无法写入 Visit Pass Check Worker ERROR 心跳")
+                    log_event(
+                        logging.ERROR,
+                        step="heartbeat",
+                        status="failed",
+                        error_code="HEARTBEAT_WRITE_FAILED",
+                        error_message="Visit Pass Check error heartbeat write failed",
+                    )
             time.sleep(self.config.poll_seconds)
 
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(message)s",
     )
 
 
