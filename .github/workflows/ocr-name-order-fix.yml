@@ -1,0 +1,100 @@
+name: OCR Passport Name Order Fix
+
+on:
+  push:
+    branches:
+      - fix/ocr-passport-name-order
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Patch passport name order and regression tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker = Path('worker/azure_ocr_worker.py')
+          text = worker.read_text()
+          old = '    full_name = " ".join(part for part in (first_name, last_name) if part).upper()\n'
+          new = (
+              '    # Azure FirstName is the given name and LastName is the surname.\n'
+              '    # For passports, keep the canonical passport/MRZ order: surname first,\n'
+              '    # followed by given names (for example LI XISHUN, not XISHUN LI).\n'
+              '    full_name = " ".join(part for part in (last_name, first_name) if part).upper()\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit(f'worker anchor count={text.count(old)}')
+          worker.write_text(text.replace(old, new, 1))
+
+          test = Path('worker/test_azure_ocr_worker.py')
+          text = test.read_text()
+          old_expectation = '        self.assertEqual(extracted["full_name"], "LEE SHU FEN")\n'
+          if text.count(old_expectation) != 1:
+              raise SystemExit(f'expectation anchor count={text.count(old_expectation)}')
+          text = text.replace(
+              old_expectation,
+              '        self.assertEqual(extracted["full_name"], "FEN LEE SHU")\n',
+              1,
+          )
+
+          anchor = '    def test_missing_critical_field_requires_review(self):\n'
+          regression = '''    def test_passport_name_uses_surname_then_given_names(self):
+        raw = {
+            "analyzeResult": {
+                "documents": [
+                    {
+                        "docType": "passport",
+                        "fields": {
+                            "FirstName": {"valueString": "XISHUN", "confidence": 0.99},
+                            "LastName": {"valueString": "LI", "confidence": 0.99},
+                            "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},
+                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},
+                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},
+                            "Nationality": {"valueCountryRegion": "CHN", "confidence": 0.99},
+                            "Sex": {"valueString": "M", "confidence": 0.99},
+                            "MachineReadableZone": {"content": "P<CHNLI<<XISHUN<<<<<<<<<<<<<<<<<<<<<<<<<<<<"},
+                        },
+                    }
+                ]
+            }
+        }
+
+        extracted, _, status = parse_azure_result(raw)
+
+        self.assertEqual(status, "READY_TO_CREATE")
+        self.assertEqual(extracted["full_name"], "LI XISHUN")
+
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'test anchor count={text.count(anchor)}')
+          test.write_text(text.replace(anchor, regression + anchor, 1))
+          PY
+
+      - name: Install worker dependencies
+        run: python -m pip install -r requirements-worker.txt
+
+      - name: Run OCR worker tests
+        working-directory: worker
+        run: python -m unittest test_azure_ocr_worker.py
+
+      - name: Commit validated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/ocr-name-order-fix.yml
+          git add worker/azure_ocr_worker.py worker/test_azure_ocr_worker.py
+          git diff --cached --check
+          git commit -m "fix: preserve passport surname-first OCR name order"
+          git push origin HEAD:fix/ocr-passport-name-order
