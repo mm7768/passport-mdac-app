@@ -50,33 +50,36 @@ jobs:
           )
 
           anchor = '    def test_missing_critical_field_requires_review(self):\n'
-          regression = '''    def test_passport_name_uses_surname_then_given_names(self):
-        raw = {
-            "analyzeResult": {
-                "documents": [
-                    {
-                        "docType": "passport",
-                        "fields": {
-                            "FirstName": {"valueString": "XISHUN", "confidence": 0.99},
-                            "LastName": {"valueString": "LI", "confidence": 0.99},
-                            "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},
-                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},
-                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},
-                            "Nationality": {"valueCountryRegion": "CHN", "confidence": 0.99},
-                            "Sex": {"valueString": "M", "confidence": 0.99},
-                            "MachineReadableZone": {"content": "P<CHNLI<<XISHUN<<<<<<<<<<<<<<<<<<<<<<<<<<<<"},
-                        },
-                    }
-                ]
-            }
-        }
-
-        extracted, _, status = parse_azure_result(raw)
-
-        self.assertEqual(status, "READY_TO_CREATE")
-        self.assertEqual(extracted["full_name"], "LI XISHUN")
-
-'''
+          lines = [
+              '    def test_passport_name_uses_surname_then_given_names(self):',
+              '        raw = {',
+              '            "analyzeResult": {',
+              '                "documents": [',
+              '                    {',
+              '                        "docType": "passport",',
+              '                        "fields": {',
+              '                            "FirstName": {"valueString": "XISHUN", "confidence": 0.99},',
+              '                            "LastName": {"valueString": "LI", "confidence": 0.99},',
+              '                            "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},',
+              '                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},',
+              '                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},',
+              '                            "Nationality": {"valueCountryRegion": "CHN", "confidence": 0.99},',
+              '                            "Sex": {"valueString": "M", "confidence": 0.99},',
+              '                            "MachineReadableZone": {"content": "P<CHNLI<<XISHUN<<<<<<<<<<<<<<<<<<<<<<<<<<<<"},',
+              '                        },',
+              '                    }',
+              '                ]',
+              '            }',
+              '        }',
+              '',
+              '        extracted, _, status = parse_azure_result(raw)',
+              '',
+              '        self.assertEqual(status, "READY_TO_CREATE")',
+              '        self.assertEqual(extracted["full_name"], "LI XISHUN")',
+              '',
+              '',
+          ]
+          regression = '\n'.join(lines)
           if text.count(anchor) != 1:
               raise SystemExit(f'test anchor count={text.count(anchor)}')
           test.write_text(text.replace(anchor, regression + anchor, 1))
