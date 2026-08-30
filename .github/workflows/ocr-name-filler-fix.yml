@@ -1,0 +1,131 @@
+name: OCR Passport MRZ Filler Cleanup
+
+on:
+  push:
+    branches:
+      - fix/ocr-passport-name-order
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    if: ${{ !contains(github.event.head_commit.message, 'fix: strip MRZ filler from passport names') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Patch MRZ filler cleanup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker = Path('worker/azure_ocr_worker.py')
+          text = worker.read_text()
+          anchor = 'def parse_azure_result(raw_result: dict[str, Any]) -> tuple[dict[str, Any], float | None, str]:\n'
+          helper = '\n'.join([
+              'def _clean_passport_name_part(value: str) -> str:',
+              '    """Normalize MRZ filler without removing valid name punctuation."""',
+              '    return " ".join(value.replace("<", " ").split())',
+              '',
+              '',
+          ])
+          if '_clean_passport_name_part' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'parse anchor count={text.count(anchor)}')
+              text = text.replace(anchor, helper + anchor, 1)
+
+          old_first = '    first_name = _field_text(fields, "FirstName", "GivenName")\n'
+          new_first = '    first_name = _clean_passport_name_part(_field_text(fields, "FirstName", "GivenName"))\n'
+          old_last = '    last_name = _field_text(fields, "LastName", "Surname")\n'
+          new_last = '    last_name = _clean_passport_name_part(_field_text(fields, "LastName", "Surname"))\n'
+          if text.count(old_first) != 1 or text.count(old_last) != 1:
+              raise SystemExit('name field anchors not found exactly once')
+          text = text.replace(old_first, new_first, 1).replace(old_last, new_last, 1)
+          worker.write_text(text)
+
+          test = Path('worker/test_azure_ocr_worker.py')
+          text = test.read_text()
+          anchor = '    def test_missing_critical_field_requires_review(self):\n'
+          regression_lines = [
+              '    def test_passport_name_strips_mrz_filler(self):',
+              '        raw = {',
+              '            "analyzeResult": {',
+              '                "documents": [',
+              '                    {',
+              '                        "docType": "passport",',
+              '                        "fields": {',
+              '                            "FirstName": {"valueString": "XISHUN<<<", "confidence": 0.99},',
+              '                            "LastName": {"valueString": "LI<", "confidence": 0.99},',
+              '                            "DocumentNumber": {"valueString": "TEST124", "confidence": 0.99},',
+              '                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},',
+              '                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},',
+              '                            "Nationality": {"valueCountryRegion": "CHN", "confidence": 0.99},',
+              '                            "Sex": {"valueString": "M", "confidence": 0.99},',
+              '                        },',
+              '                    }',
+              '                ]',
+              '            }',
+              '        }',
+              '',
+              '        extracted, _, status = parse_azure_result(raw)',
+              '',
+              '        self.assertEqual(status, "READY_TO_CREATE")',
+              '        self.assertEqual(extracted["full_name"], "LI XISHUN")',
+              '',
+              '    def test_passport_name_preserves_valid_punctuation(self):',
+              '        raw = {',
+              '            "analyzeResult": {',
+              '                "documents": [',
+              '                    {',
+              '                        "docType": "passport",',
+              '                        "fields": {',
+              '                            "FirstName": {"valueString": "ANNE-MARIE", "confidence": 0.99},',
+              '                            "LastName": {"valueString": "O\\\'CONNOR", "confidence": 0.99},',
+              '                            "DocumentNumber": {"valueString": "TEST125", "confidence": 0.99},',
+              '                            "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},',
+              '                            "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},',
+              '                            "Nationality": {"valueCountryRegion": "IRL", "confidence": 0.99},',
+              '                            "Sex": {"valueString": "F", "confidence": 0.99},',
+              '                        },',
+              '                    }',
+              '                ]',
+              '            }',
+              '        }',
+              '',
+              '        extracted, _, status = parse_azure_result(raw)',
+              '',
+              '        self.assertEqual(status, "READY_TO_CREATE")',
+              '        self.assertEqual(extracted["full_name"], "O\\\'CONNOR ANNE-MARIE")',
+              '',
+          ]
+          regression = '\n'.join(regression_lines)
+          if 'test_passport_name_strips_mrz_filler' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'test anchor count={text.count(anchor)}')
+              text = text.replace(anchor, regression + anchor, 1)
+          test.write_text(text)
+          PY
+
+      - name: Install worker dependencies
+        run: python -m pip install -r requirements-worker.txt
+
+      - name: Run OCR worker tests
+        working-directory: worker
+        run: python -m unittest test_azure_ocr_worker.py
+
+      - name: Commit validated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/ocr-name-filler-fix.yml
+          git add worker/azure_ocr_worker.py worker/test_azure_ocr_worker.py
+          git diff --cached --check
+          git commit -m "fix: strip MRZ filler from passport names"
+          git push origin HEAD:fix/ocr-passport-name-order
