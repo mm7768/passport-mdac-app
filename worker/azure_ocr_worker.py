@@ -317,8 +317,8 @@ def parse_azure_result(raw_result: dict[str, Any]) -> tuple[dict[str, Any], floa
     document = documents[0] if isinstance(documents[0], dict) else {}
     fields = document.get("fields", {}) if isinstance(document.get("fields"), dict) else {}
 
-    first_name = " ".join(_field_text(fields, "FirstName", "GivenName").replace("<", " ").split())
-    last_name = " ".join(_field_text(fields, "LastName", "Surname").replace("<", " ").split())
+    first_name = " ".join(_field_text(fields, "FirstName", "GivenName").replace("<", " ").split()).strip(" ,，")
+    last_name = " ".join(_field_text(fields, "LastName", "Surname").replace("<", " ").split()).strip(" ,，")
     # Azure FirstName is the given name and LastName is the surname.
     # For passports, keep the canonical passport/MRZ order: surname first,
     # followed by given names (for example LI XISHUN, not XISHUN LI).

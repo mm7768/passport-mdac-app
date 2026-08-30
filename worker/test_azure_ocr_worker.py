@@ -48,7 +48,7 @@ class AzureResultParsingTests(unittest.TestCase):
                     {
                         "docType": "passport",
                         "fields": {
-                            "FirstName": {"valueString": "XISHUN", "confidence": 0.99},
+                            "FirstName": {"valueString": "XISHUN,", "confidence": 0.99},
                             "LastName": {"valueString": "LI", "confidence": 0.99},
                             "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},
                             "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},
