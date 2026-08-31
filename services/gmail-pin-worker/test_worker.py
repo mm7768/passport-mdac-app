@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import unittest
 from email.message import EmailMessage
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from worker import (
     GmailPinWorker,
+    configure_logging,
     decide_for_item,
     log_event,
     normalize_pin,
@@ -17,6 +20,12 @@ from worker import (
 
 
 class GMailPinParsingTests(unittest.TestCase):
+    def test_logging_uses_stdout_for_railway_severity(self) -> None:
+        with patch.object(logging, "basicConfig") as basic_config:
+            configure_logging("INFO")
+
+        self.assertIs(basic_config.call_args.kwargs["stream"], sys.stdout)
+
     def test_normalize_pin_trims_outer_only(self) -> None:
         self.assertEqual(normalize_pin("  A  B   C  "), "A  B   C")
         self.assertIsNone(normalize_pin("   "))
