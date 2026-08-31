@@ -521,6 +521,73 @@ class CustomerHardDeleteOutcome {
   final int storageObjectCount;
 }
 
+const johorStateCode = '01';
+const defaultJohorCityCode = '0100';
+const johorCityCodes = <String, String>{
+  '0100': 'JOHOR',
+  '0101': 'ASAHAN, JOHOR',
+  '0102': 'AYER BALOI',
+  '0103': 'AYER HITAM',
+  '0104': 'BAKRI',
+  '0105': 'BATU ANAM',
+  '0106': 'BATU PAHAT',
+  '0107': 'BEKOK',
+  '0108': 'BENUT',
+  '0109': 'BUKIT GAMBIR',
+  '0110': 'BUKIT PASIR',
+  '0111': 'CHAAH',
+  '0112': 'ENDAU',
+  '0113': 'GELANG PATAH',
+  '0114': 'GEMAS',
+  '0115': 'GERSEK',
+  '0116': 'G. TAIB ANDAK',
+  '0117': 'JEMENTAH',
+  '0118': 'JOHOR BAHRU',
+  '0119': 'KAHANG',
+  '0120': 'KLUANG',
+  '0121': 'KG KNGAN T DR',
+  '0122': 'KOTA TINGGI',
+  '0123': 'KUKUP',
+  '0124': 'KULAI',
+  '0125': 'LABIS',
+  '0126': 'LAYANG-LAYANG',
+  '0127': 'MASAI',
+  '0128': 'MERSING',
+  '0129': 'MUAR',
+  '0130': 'PAGOH',
+  '0131': 'PALOH',
+  '0132': 'PANCHOR',
+  '0133': 'PARIT JAWA',
+  '0134': 'PARIT RAJA',
+  '0135': 'PARIT SULONG',
+  '0136': 'PASIR GUDANG',
+  '0137': 'PEKAN NANAS',
+  '0138': 'PENGERANG',
+  '0139': 'PONTIAN',
+  '0140': 'RENGIT',
+  '0141': 'SEGAMAT',
+  '0142': 'SKUDAI',
+  '0143': 'SEMERAH',
+  '0144': 'SENAI',
+  '0145': 'SENGGARANG',
+  '0146': 'SIMPANG RENGGAM',
+  '0147': 'SUNGAI MATI',
+  '0148': 'TANGKAK',
+  '0149': 'ULU TIRAM',
+  '0150': 'YONG PENG',
+  '0151': 'SAGIL',
+  '0157': 'BUKIT KEPONG',
+  '0177': 'LENGA',
+  '0191': 'SUNGAI BALANG',
+  '0192': 'GEMAS BARU',
+  '0193': 'RENGGAM',
+  '0194': 'BANDAR PENAWAR',
+  '0195': 'LEDANG',
+  '0196': 'ISKANDAR PUTERI',
+  '0197': 'KULAI JAYA',
+  '0198': 'KANGKAR PULAI',
+};
+
 class MdacSettings {
   const MdacSettings({
     required this.mdacEmail,
@@ -549,8 +616,8 @@ class MdacSettings {
     accommodationStay: '02',
     address1: '',
     address2: '',
-    stateCode: '',
-    cityCode: '',
+    stateCode: johorStateCode,
+    cityCode: defaultJohorCityCode,
     postcode: '',
     pobMode: 'NATIONALITY',
   );
@@ -4339,8 +4406,10 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
     _vesselController.text = settings.vessel;
     _address1Controller.text = settings.address1;
     _address2Controller.text = settings.address2;
-    _stateController.text = settings.stateCode;
-    _cityController.text = settings.cityCode;
+    _stateController.text = johorStateCode;
+    _cityController.text = johorCityCodes.containsKey(settings.cityCode)
+        ? settings.cityCode
+        : defaultJohorCityCode;
     _postcodeController.text = settings.postcode;
     _travelMode = settings.travelMode;
     _accommodationStay = settings.accommodationStay;
@@ -4385,7 +4454,7 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
     accommodationStay: _accommodationStay,
     address1: _address1Controller.text,
     address2: _address2Controller.text,
-    stateCode: _stateController.text,
+    stateCode: johorStateCode,
     cityCode: _cityController.text,
     postcode: _postcodeController.text,
     pobMode: _pobMode,
@@ -4614,21 +4683,43 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                     _wideField(
                       fieldWidth,
                       _textField(
-                        label: '马来西亚州代码',
+                        label: '马来西亚州代码（固定为 JOHOR）',
                         controller: _stateController,
-                        hint: '例如 14 = WP KUALA LUMPUR',
-                        keyboardType: TextInputType.number,
-                        validator: (value) => _code(value, '州代码', 2),
+                        readOnly: true,
+                        validator: (value) => value == johorStateCode
+                            ? null
+                            : '州代码必须是 01（JOHOR）',
                       ),
                     ),
                     _wideField(
                       fieldWidth,
-                      _textField(
-                        label: '马来西亚城市代码',
-                        controller: _cityController,
-                        hint: '请使用官方下拉选项的 value',
-                        keyboardType: TextInputType.number,
-                        validator: (value) => _code(value, '城市代码', 4),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(_cityController.text),
+                        isExpanded: true,
+                        initialValue: _cityController.text,
+                        decoration: const InputDecoration(
+                          labelText: '马来西亚城市代码（仅 JOHOR）',
+                        ),
+                        items: johorCityCodes.entries
+                            .map(
+                              (entry) => DropdownMenuItem(
+                                value: entry.key,
+                                child: Text('${entry.value} · ${entry.key}'),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _cityController.text = value;
+                              _dirty = true;
+                            });
+                          }
+                        },
+                        validator: (value) =>
+                            value == null || !johorCityCodes.containsKey(value)
+                            ? '请选择 JOHOR 城市'
+                            : null,
                       ),
                     ),
                     _wideField(
