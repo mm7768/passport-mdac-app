@@ -2380,8 +2380,17 @@ class MdacShell extends StatefulWidget {
 
 class _MdacShellState extends State<MdacShell> {
   AppSection section = AppSection.overview;
+  String? customerStatusFilter;
 
-  void open(AppSection target) => setState(() => section = target);
+  void open(AppSection target) => setState(() {
+    section = target;
+    if (target != AppSection.customers) customerStatusFilter = null;
+  });
+
+  void openCustomers([String? statusFilter]) => setState(() {
+    customerStatusFilter = statusFilter;
+    section = AppSection.customers;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2424,12 +2433,14 @@ class _MdacShellState extends State<MdacShell> {
           repository: widget.repository,
           userName: widget.userName,
           onNavigate: open,
+          onOpenCustomers: openCustomers,
         );
       case AppSection.customers:
         return CustomersScreen(
           repository: widget.repository,
           actor: widget.userName,
           role: widget.role,
+          initialBusinessStatusFilter: customerStatusFilter,
         );
       case AppSection.tasks:
         return TasksScreen(repository: widget.repository);
@@ -2636,12 +2647,14 @@ class OverviewScreen extends StatelessWidget {
     required this.repository,
     required this.userName,
     required this.onNavigate,
+    required this.onOpenCustomers,
     super.key,
   });
 
   final DemoRepository repository;
   final String userName;
   final ValueChanged<AppSection> onNavigate;
+  final ValueChanged<String?> onOpenCustomers;
 
   @override
   Widget build(BuildContext context) {
@@ -2685,6 +2698,7 @@ class OverviewScreen extends StatelessWidget {
                       caption: '软删除记录不计入',
                       icon: Icons.people_alt_outlined,
                       tint: AppTheme.mint,
+                      onTap: () => onOpenCustomers(null),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2693,6 +2707,9 @@ class OverviewScreen extends StatelessWidget {
                       caption: '可以开始下一步',
                       icon: Icons.pending_actions_rounded,
                       tint: const Color(0xFFFFEBD8),
+                      onTap: () => onOpenCustomers(
+                        businessStatusLabel('PENDING'),
+                      ),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2701,6 +2718,7 @@ class OverviewScreen extends StatelessWidget {
                       caption: '手机与 Worker 已解耦',
                       icon: Icons.sync_rounded,
                       tint: const Color(0xFFE0EDF8),
+                      onTap: () => onNavigate(AppSection.tasks),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2709,6 +2727,9 @@ class OverviewScreen extends StatelessWidget {
                       caption: '不确定结果不会伪装成功',
                       icon: Icons.error_outline_rounded,
                       tint: const Color(0xFFFFE2E0),
+                      onTap: () => onOpenCustomers(
+                        businessStatusLabel('ACTION_REQUIRED'),
+                      ),
                     ),
                   ],
                 );
@@ -2842,12 +2863,14 @@ class CustomersScreen extends StatefulWidget {
     required this.repository,
     required this.actor,
     required this.role,
+    this.initialBusinessStatusFilter,
     super.key,
   });
 
   final DemoRepository repository;
   final String actor;
   final UserRole role;
+  final String? initialBusinessStatusFilter;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -2856,10 +2879,16 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
-  String businessStatusFilter = '全部';
+  late String businessStatusFilter;
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
   DateTimeRange? createdDateRange;
+
+  @override
+  void initState() {
+    super.initState();
+    businessStatusFilter = widget.initialBusinessStatusFilter ?? '全部';
+  }
 
   @override
   void dispose() {
@@ -5217,6 +5246,7 @@ class StatCard extends StatelessWidget {
     required this.caption,
     required this.icon,
     required this.tint,
+    required this.onTap,
     this.width,
     super.key,
   });
@@ -5226,6 +5256,7 @@ class StatCard extends StatelessWidget {
   final String caption;
   final IconData icon;
   final Color tint;
+  final VoidCallback onTap;
   final double? width;
 
   @override
@@ -5233,9 +5264,12 @@ class StatCard extends StatelessWidget {
     return SizedBox(
       width: width ?? 210,
       child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -5269,6 +5303,7 @@ class StatCard extends StatelessWidget {
                 style: const TextStyle(color: AppTheme.muted, fontSize: 11),
               ),
             ],
+            ),
           ),
         ),
       ),
