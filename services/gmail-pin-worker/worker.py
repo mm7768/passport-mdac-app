@@ -141,7 +141,7 @@ class WorkerConfig:
             gmail_lookback_days=bounded_int("GMAIL_LOOKBACK_DAYS", "7", 1, 30),
             poll_seconds=positive_float("GMAIL_POLL_SECONDS", "30", 10.0),
             lease_seconds=bounded_int("GMAIL_LEASE_SECONDS", "900", 60, 3600),
-            max_attempts=bounded_int("GMAIL_MAX_ATTEMPTS", "5", 1, 20),
+            max_attempts=bounded_int("GMAIL_MAX_ATTEMPTS", "12", 1, 20),
             request_timeout_seconds=positive_float(
                 "SUPABASE_REQUEST_TIMEOUT_SECONDS", "30", 5.0
             ),
@@ -241,7 +241,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_status": status,
                 "p_hostname": socket.gethostname(),
-                "p_version": "gmail-pin-1",
+                "p_version": "gmail-pin-2",
             },
         )
 
@@ -313,7 +313,7 @@ def normalize_pin(value: str | None) -> str | None:
 
 
 def normalize_passport(value: Any) -> str:
-    return str(value or "").strip().upper()
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
 
 def resolve_gmail_address(snapshot: Any) -> str | None:
@@ -349,7 +349,12 @@ def decode_part_text(part: Message) -> str:
 
 def html_to_text(value: str) -> str:
     value = re.sub(r"<\s*br\s*/?\s*>", "\n", value, flags=re.IGNORECASE)
-    value = re.sub(r"</\s*(p|div|tr|li)\s*>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"</?\s*(p|div|tr|li|table|tbody|thead|tfoot|td|th)\b[^>]*>",
+        "\n",
+        value,
+        flags=re.IGNORECASE,
+    )
     value = re.sub(r"<[^>]+>", " ", value)
     return html.unescape(value)
 
@@ -377,18 +382,52 @@ def extract_email_body(message: Message) -> str:
 
 
 def extract_fields(body: str) -> dict[str, str | None]:
-    def first(pattern: str) -> str | None:
-        match = re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE)
-        return match.group(1).strip() if match else None
+    lines = [
+        line.strip()
+        for line in body.replace("\r", "\n").split("\n")
+        if line.strip()
+    ]
+    known_label = re.compile(
+        r"^(?:Name|Passport\s*(?:No\.?|Number)|PIN)\b",
+        flags=re.IGNORECASE,
+    )
 
-    name = first(r"^\s*Name\s*:\s*(.+?)\s*$")
-    passport = first(r"^\s*Passport\s+No\.\s*:\s*([A-Za-z0-9]+)\s*$")
-    pin = first(r"^\s*PIN\s*:\s*(.*?)\s*$")
+    def labeled_value(label: str) -> str | None:
+        pattern = re.compile(
+            rf"^{label}\s*(?:(?:[:：=\-])|(?:\bis\b))?\s*(.*)$",
+            flags=re.IGNORECASE,
+        )
+        for index, line in enumerate(lines):
+            match = pattern.match(line)
+            if match is None:
+                continue
+            value = match.group(1).strip()
+            if value:
+                return value
+            if index + 1 < len(lines) and not known_label.match(lines[index + 1]):
+                return lines[index + 1]
+        return None
+
+    name = labeled_value(r"Name")
+    passport = labeled_value(r"Passport\s*(?:No\.?|Number)")
+    pin = labeled_value(r"PIN")
     return {
         "name": name,
-        "passport_number": passport.upper() if passport else None,
+        "passport_number": normalize_passport(passport) or None,
         "pin": normalize_pin(pin),
     }
+
+
+def _received_datetime(message: ParsedEmail) -> datetime | None:
+    if not message.received_at:
+        return None
+    try:
+        value = datetime.fromisoformat(message.received_at)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def parse_message(raw_email: bytes) -> ParsedEmail:
@@ -455,31 +494,71 @@ def decide_for_item(
             error_code="PIN_NOT_FOUND",
             error_message="No matching MDAC PIN email found in the lookback window",
         )
-    if len(candidates) != 1:
-        return PinDecision(
-            status="NEEDS_REVIEW",
-            email=None,
-            confidence=None,
-            summary={**base_summary, "reason": "multiple_matching_messages"},
-            error_code="PIN_MATCH_NOT_UNIQUE",
-            error_message="Multiple matching Gmail messages require manual review",
-        )
-
-    candidate = candidates[0]
-    if candidate.pin is None:
+    valid_candidates = [candidate for candidate in candidates if candidate.pin is not None]
+    base_summary["valid_candidate_count"] = len(valid_candidates)
+    if not valid_candidates:
+        candidate = candidates[-1]
         return PinDecision(
             status="PARSE_FAILED",
             email=candidate,
             confidence=None,
-            summary={**base_summary, "reason": "matching_message_has_no_pin"},
+            summary={**base_summary, "reason": "matching_messages_have_no_pin"},
             error_code="PIN_NOT_PARSED",
-            error_message="Matching Gmail message does not contain a readable PIN",
+            error_message="Matching Gmail messages do not contain a readable PIN",
         )
+
+    if len(valid_candidates) == 1:
+        candidate = valid_candidates[0]
+        reason = "single_valid_passport_match"
+    else:
+        dated_candidates = [
+            (received_at, candidate)
+            for candidate in valid_candidates
+            if (received_at := _received_datetime(candidate)) is not None
+        ]
+        if len(dated_candidates) == len(valid_candidates):
+            newest_at = max(received_at for received_at, _ in dated_candidates)
+            newest = [
+                candidate
+                for received_at, candidate in dated_candidates
+                if received_at == newest_at
+            ]
+            if len({candidate.pin for candidate in newest}) == 1:
+                candidate = newest[-1]
+                reason = "newest_valid_passport_match"
+            else:
+                return PinDecision(
+                    status="NEEDS_REVIEW",
+                    email=None,
+                    confidence=None,
+                    summary={
+                        **base_summary,
+                        "reason": "newest_matching_messages_conflict",
+                    },
+                    error_code="PIN_MATCH_NOT_UNIQUE",
+                    error_message="Newest matching Gmail messages contain conflicting PIN values",
+                )
+        elif len({candidate.pin for candidate in valid_candidates}) == 1:
+            candidate = valid_candidates[-1]
+            reason = "duplicate_messages_same_pin"
+        else:
+            return PinDecision(
+                status="NEEDS_REVIEW",
+                email=None,
+                confidence=None,
+                summary={
+                    **base_summary,
+                    "reason": "multiple_matching_messages_without_order",
+                },
+                error_code="PIN_MATCH_NOT_UNIQUE",
+                error_message="Matching Gmail messages cannot be ordered safely",
+            )
+
     return PinDecision(
         status="RECEIVED",
         email=candidate,
         confidence=1.0,
-        summary={**base_summary, "reason": "unique_passport_match"},
+        summary={**base_summary, "reason": reason},
     )
 
 
@@ -580,7 +659,42 @@ class GmailPinWorker:
         else:
             try:
                 credentials = self.supabase.get_gmail_runtime_credentials()
-                if credentials["gmail_address"] != gmail_address:
+            except WorkerError:
+                credential_error = "gmail_vault_credentials_unavailable"
+                log_event(
+                    logging.ERROR,
+                    step="gmail_credentials",
+                    status="failed",
+                    batch_id=batch_id,
+                    error_code="GMAIL_VAULT_CREDENTIALS_UNAVAILABLE",
+                    error_message="Gmail Vault credentials are unavailable",
+                )
+            else:
+                if credentials["gmail_address"] == gmail_address:
+                    try:
+                        messages = self.gmail.fetch_recent(
+                            credentials["gmail_address"],
+                            credentials["gmail_app_password"],
+                        )
+                    except WorkerError:
+                        credential_error = "gmail_imap_access_failed"
+                        log_event(
+                            logging.ERROR,
+                            step="gmail_fetch",
+                            status="failed",
+                            batch_id=batch_id,
+                            error_code="GMAIL_IMAP_ACCESS_FAILED",
+                            error_message="Gmail IMAP authentication or mailbox access failed",
+                        )
+                    else:
+                        log_event(
+                            logging.INFO,
+                            step="gmail_fetch",
+                            status="succeeded",
+                            batch_id=batch_id,
+                            result={"candidate_count": len(messages)},
+                        )
+                else:
                     credential_error = "gmail_address_snapshot_rotated"
                     log_event(
                         logging.ERROR,
@@ -590,28 +704,6 @@ class GmailPinWorker:
                         error_code="GMAIL_ADDRESS_SNAPSHOT_ROTATED",
                         error_message="Gmail address snapshot differs from Vault configuration",
                     )
-                else:
-                    messages = self.gmail.fetch_recent(
-                        credentials["gmail_address"],
-                        credentials["gmail_app_password"],
-                    )
-                    log_event(
-                        logging.INFO,
-                        step="gmail_fetch",
-                        status="succeeded",
-                        batch_id=batch_id,
-                        result={"candidate_count": len(messages)},
-                    )
-            except WorkerError:
-                credential_error = "gmail_credentials_unavailable"
-                log_event(
-                    logging.ERROR,
-                    step="gmail_credentials",
-                    status="failed",
-                    batch_id=batch_id,
-                    error_code="GMAIL_CREDENTIALS_UNAVAILABLE",
-                    error_message="Gmail credentials are unavailable",
-                )
         processed = 0
         while True:
             item = self.supabase.claim_item(batch_id)
@@ -654,11 +746,18 @@ class GmailPinWorker:
                         "email_body_stored": False,
                         "pin_value_logged": False,
                     },
-                    error_code=(
-                        "GMAIL_ADDRESS_SNAPSHOT_INVALID"
-                        if credential_error == "gmail_address_snapshot_missing_or_invalid"
-                        else "GMAIL_CREDENTIALS_UNAVAILABLE"
-                    ),
+                    error_code={
+                        "gmail_address_snapshot_missing_or_invalid": (
+                            "GMAIL_ADDRESS_SNAPSHOT_INVALID"
+                        ),
+                        "gmail_address_snapshot_rotated": (
+                            "GMAIL_ADDRESS_SNAPSHOT_ROTATED"
+                        ),
+                        "gmail_vault_credentials_unavailable": (
+                            "GMAIL_VAULT_CREDENTIALS_UNAVAILABLE"
+                        ),
+                        "gmail_imap_access_failed": "GMAIL_IMAP_ACCESS_FAILED",
+                    }.get(credential_error, "GMAIL_CREDENTIALS_UNAVAILABLE"),
                     error_message="Gmail address or credential configuration requires review",
                 )
             else:
