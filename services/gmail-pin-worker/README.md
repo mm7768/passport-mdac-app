@@ -24,7 +24,7 @@ Flutter 设置 Gmail 地址并选择客户
 
 PIN 值不写入日志，邮件正文不存储。PIN 只在唯一护照号匹配、且邮件中成功解析到非空 PIN 时写入 `email_pin_records.pin_value`，并将客户业务状态更新为 `PIN_RECEIVED`。PIN 的清理规则只去除首尾空白，保留中间空格和连续空格；全空白值视为未获取。
 
-没有匹配邮件的单次轮询使用 `NOT_FOUND` 并在达到最大尝试次数前回到队列。多封匹配、无法解析、护照号缺失、Gmail 认证失败或 refresh/credential 失效都不能标记成功；达到上限后转 `NEEDS_REVIEW` 或 `ACTION_REQUIRED`，保留错误代码和不含敏感内容的摘要。
+没有匹配邮件的单次轮询使用 `NOT_FOUND`，默认 5 分钟后再试，最多 12 次（约 55 分钟的等待窗口）。批次领取次数只用于观察，不再限制批次中的客户数量；同一批次会在一个租约内继续处理其他已经就绪的客户。多封匹配时优先选取带有效 PIN 且时间最新的邮件；若最新邮件相互冲突或无法安全排序，才转人工审核。无法解析、护照号缺失、Gmail 认证失败或凭证失效都不能标记成功。
 
 ## Railway 配置
 
@@ -41,14 +41,13 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GMAIL_WORKER_ID
 GMAIL_AUTH_MODE=IMAP_APP_PASSWORD
-GMAIL_APP_PASSWORD
 GMAIL_SENDER_FILTER=mdac@imi.gov.my
 GMAIL_IMAP_HOST=imap.gmail.com
 GMAIL_IMAP_FOLDER=INBOX
 GMAIL_LOOKBACK_DAYS=7
 GMAIL_POLL_SECONDS=30
 GMAIL_LEASE_SECONDS=900
-GMAIL_MAX_ATTEMPTS=5
+GMAIL_MAX_ATTEMPTS=12
 GMAIL_MARK_SEEN=false
 SUPABASE_REQUEST_TIMEOUT_SECONDS=30
 LOG_LEVEL=INFO

@@ -942,6 +942,16 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> syncTaskWorkspaceFromSupabase() async {
+    if (!remoteMode) return null;
+    final results = await Future.wait<String?>([
+      syncAutomationTasksFromSupabase(),
+      syncCustomersFromSupabase(),
+    ]);
+    final errors = results.whereType<String>().toList(growable: false);
+    return errors.isEmpty ? null : errors.join('\n');
+  }
+
   TaskType _taskTypeFromRemote(String? value) {
     switch (value) {
       case 'GMAIL_PIN':
@@ -4183,12 +4193,12 @@ class TasksScreen extends StatelessWidget {
         children: [
           OutlinedButton.icon(
             onPressed: () async {
-              final error = await repository.syncAutomationTasksFromSupabase();
+              final error = await repository.syncTaskWorkspaceFromSupabase();
               if (!context.mounted) return;
               if (error != null) {
                 showToast(context, error, error: true);
               } else {
-                showToast(context, '已刷新 Supabase MDAC 任务状态。');
+                showToast(context, '已刷新任务、客户状态和 Gmail PIN。');
               }
             },
             icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -5001,7 +5011,22 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 18),
             MdacSettingsEditor(repository: repository),
             const SizedBox(height: 18),
-            GmailSettingsEditor(repository: repository),
+            if (role == UserRole.owner)
+              GmailSettingsEditor(repository: repository)
+            else
+              SectionCard(
+                title: 'Gmail PIN 默认邮箱',
+                actionLabel:
+                    (repository.gmailSettings ?? GmailSettings.defaults())
+                        .isComplete
+                    ? '已配置'
+                    : '待 OWNER 配置',
+                onAction: null,
+                child: const Text(
+                  'Gmail 地址与 Vault App Password 仅允许 OWNER 修改。',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 12),
+                ),
+              ),
             const SizedBox(height: 18),
             SectionCard(
               title: '账号管理',
