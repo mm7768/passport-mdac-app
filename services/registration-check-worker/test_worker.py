@@ -22,6 +22,12 @@ spec.loader.exec_module(worker)
 
 
 class RegistrationCheckWorkerTests(unittest.TestCase):
+    def test_logging_uses_stdout_for_railway_severity(self) -> None:
+        with patch.object(logging, "basicConfig") as basic_config:
+            worker.configure_logging("INFO")
+
+        self.assertIs(basic_config.call_args.kwargs["stream"], sys.stdout)
+
     def test_normalization(self) -> None:
         self.assertEqual(worker.normalize_passport(" ab 123 "), "AB 123")
         self.assertEqual(worker.normalize_nationality(" chn "), "CHN")

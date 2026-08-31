@@ -22,6 +22,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class VisitPassWorkerTests(unittest.TestCase):
+    def test_logging_uses_stdout_for_railway_severity(self) -> None:
+        with patch.object(logging, "basicConfig") as basic_config:
+            MODULE.configure_logging("INFO")
+
+        self.assertIs(basic_config.call_args.kwargs["stream"], sys.stdout)
+
     def test_normalize_inputs(self) -> None:
         self.assertEqual(MODULE.normalize_passport(" ab123 "), "AB123")
         self.assertEqual(MODULE.normalize_nationality(" chn "), "CHN")

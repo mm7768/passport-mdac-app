@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import socket
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -585,6 +586,7 @@ def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(message)s",
+        stream=sys.stdout,
     )
 
 
