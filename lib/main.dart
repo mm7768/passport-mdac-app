@@ -5,7 +5,11 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'features/tasks/task_models.dart';
+import 'features/tasks/task_presentation.dart';
 import 'supabase_gateway.dart';
+
+export 'features/tasks/task_models.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -222,23 +226,6 @@ enum UserRole { owner, operator }
 
 enum AppSection { overview, customers, tasks, settings }
 
-enum TaskType { mdacRegistration, gmailPin, registrationCheck, visitPassCheck }
-
-enum TaskStatus {
-  queued,
-  running,
-  succeeded,
-  partialSuccess,
-  failed,
-  needsReview,
-}
-
-bool _isInProgressTaskStatus(TaskStatus status) {
-  return status == TaskStatus.queued ||
-      status == TaskStatus.running ||
-      status == TaskStatus.needsReview;
-}
-
 const customerGenderOptions = <String>['男', '女'];
 const customerBusinessStatusOptions = <String>[
   'PENDING',
@@ -414,38 +401,6 @@ class UploadRecord {
   String get fingerprint => '$fileName:$sizeBytes';
   bool get isFinished =>
       status == UploadStatus.uploaded || status == UploadStatus.failed;
-}
-
-class AutomationTask {
-  AutomationTask({
-    required this.id,
-    required this.type,
-    required this.customerIds,
-    required this.createdAt,
-    required this.createdBy,
-    this.entryDate,
-    this.exitDate,
-    this.status = TaskStatus.queued,
-    this.successCount = 0,
-    this.failedCount = 0,
-    this.note = '',
-  });
-
-  final String id;
-  final TaskType type;
-  final List<String> customerIds;
-  final DateTime createdAt;
-  final String createdBy;
-  final DateTime? entryDate;
-  final DateTime? exitDate;
-  TaskStatus status;
-  int successCount;
-  int failedCount;
-  String note;
-
-  int get totalCount => customerIds.length;
-  int get completedCount => successCount + failedCount;
-  double get progress => totalCount == 0 ? 0 : completedCount / totalCount;
 }
 
 class CustomerHardDeletePreview {
@@ -1488,7 +1443,7 @@ class DemoRepository extends ChangeNotifier {
         .where(
           (task) =>
               task.customerIds.contains(customerId) &&
-              _isInProgressTaskStatus(task.status),
+              isInProgressTaskStatus(task.status),
         )
         .map((task) => 'AUTOMATION_ITEM:${task.status.name.toUpperCase()}')
         .toList(growable: false);
@@ -7119,79 +7074,6 @@ Color statusColor(String value) {
 
 Color statusTextColor(String value) =>
     value == 'ACTION_REQUIRED' ? AppTheme.danger : AppTheme.ink;
-
-String taskTypeLabel(TaskType type) {
-  switch (type) {
-    case TaskType.mdacRegistration:
-      return 'MDAC 批量注册';
-    case TaskType.gmailPin:
-      return 'Gmail PIN 获取';
-    case TaskType.registrationCheck:
-      return 'Check Registration';
-    case TaskType.visitPassCheck:
-      return 'Check Visit Pass';
-  }
-}
-
-IconData taskTypeIcon(TaskType type) {
-  switch (type) {
-    case TaskType.mdacRegistration:
-      return Icons.flight_takeoff_rounded;
-    case TaskType.gmailPin:
-      return Icons.mark_email_read_outlined;
-    case TaskType.registrationCheck:
-      return Icons.manage_search_rounded;
-    case TaskType.visitPassCheck:
-      return Icons.badge_outlined;
-  }
-}
-
-Color taskTypeColor(TaskType type) {
-  switch (type) {
-    case TaskType.mdacRegistration:
-      return AppTheme.orange;
-    case TaskType.gmailPin:
-      return const Color(0xFF6B78D6);
-    case TaskType.registrationCheck:
-      return AppTheme.teal;
-    case TaskType.visitPassCheck:
-      return const Color(0xFF6D8EAC);
-  }
-}
-
-String taskStatusLabel(TaskStatus status) {
-  switch (status) {
-    case TaskStatus.queued:
-      return '排队中';
-    case TaskStatus.running:
-      return '执行中';
-    case TaskStatus.succeeded:
-      return '已完成';
-    case TaskStatus.partialSuccess:
-      return '部分成功';
-    case TaskStatus.failed:
-      return '失败';
-    case TaskStatus.needsReview:
-      return '待确认';
-  }
-}
-
-Color taskStatusColor(TaskStatus status) {
-  switch (status) {
-    case TaskStatus.queued:
-      return const Color(0xFF5D85AD);
-    case TaskStatus.running:
-      return AppTheme.orange;
-    case TaskStatus.succeeded:
-      return AppTheme.teal;
-    case TaskStatus.partialSuccess:
-      return AppTheme.warning;
-    case TaskStatus.failed:
-      return AppTheme.danger;
-    case TaskStatus.needsReview:
-      return const Color(0xFF7B67AF);
-  }
-}
 
 String formatDate(DateTime date) =>
     '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
