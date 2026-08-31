@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import logging
 import unittest
 from email.message import EmailMessage
+from types import SimpleNamespace
 
 from worker import (
+    GmailPinWorker,
     decide_for_item,
+    log_event,
     normalize_pin,
     parse_message,
     resolve_gmail_address,
@@ -93,6 +98,69 @@ class GMailPinParsingTests(unittest.TestCase):
         self.assertEqual(decision.status, "PARSE_FAILED")
         self.assertEqual(decision.error_code, "PIN_NOT_PARSED")
 
+    def test_structured_log_contains_context_without_secret_values(self) -> None:
+        with self.assertLogs("gmail_pin_worker", level=logging.INFO) as captured:
+            log_event(
+                logging.INFO,
+                step="result_writeback",
+                status="succeeded",
+                batch_id="batch-1",
+                item_id="item-1",
+                customer_id="customer-1",
+                result="RECEIVED",
+            )
+
+        event = json.loads(captured.records[0].getMessage())
+        self.assertEqual(event["worker"], "gmail_pin")
+        self.assertEqual(event["batch_id"], "batch-1")
+        self.assertEqual(event["item_id"], "item-1")
+        self.assertEqual(event["customer_id"], "customer-1")
+        self.assertNotIn("passport_number", event)
+        self.assertNotIn("pin_value", event)
+
+    def test_process_batch_writes_unique_match_and_logs_no_pin(self) -> None:
+        message = parse_message(self._message_bytes("AA100", "SECRET-PIN", "one"))
+        supabase = _FakeSupabase()
+        worker = GmailPinWorker.__new__(GmailPinWorker)
+        worker.config = SimpleNamespace(gmail_lookback_days=7)
+        worker.supabase = supabase
+        worker.gmail = _FakeGmail([message])
+
+        with self.assertLogs("gmail_pin_worker", level=logging.INFO) as captured:
+            processed = worker.process_batch(
+                {
+                    "id": "batch-1",
+                    "gmail_settings_snapshot": {"gmail_address": "test@gmail.com"},
+                }
+            )
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(supabase.finished[0]["pin_status"], "RECEIVED")
+        self.assertEqual(supabase.finished[0]["pin_value"], "SECRET-PIN")
+        self.assertNotIn("SECRET-PIN", "\n".join(captured.output))
+
+    def test_process_batch_surfaces_writeback_failure(self) -> None:
+        message = parse_message(self._message_bytes("AA100", "SECRET-PIN", "one"))
+        supabase = _FakeSupabase(fail_writeback=True)
+        worker = GmailPinWorker.__new__(GmailPinWorker)
+        worker.config = SimpleNamespace(gmail_lookback_days=7)
+        worker.supabase = supabase
+        worker.gmail = _FakeGmail([message])
+
+        with self.assertLogs("gmail_pin_worker", level=logging.ERROR) as captured:
+            with self.assertRaises(RuntimeError):
+                worker.process_batch(
+                    {
+                        "id": "batch-1",
+                        "gmail_settings_snapshot": {
+                            "gmail_address": "test@gmail.com"
+                        },
+                    }
+                )
+
+        self.assertIn("SUPABASE_WRITEBACK_FAILED", "\n".join(captured.output))
+        self.assertNotIn("SECRET-PIN", "\n".join(captured.output))
+
     @staticmethod
     def _message_bytes(passport: str, pin: str | None, suffix: str) -> bytes:
         message = EmailMessage()
@@ -104,6 +172,45 @@ class GMailPinParsingTests(unittest.TestCase):
             f"Name : TEST PERSON\nPassport No. : {passport}\n{pin_line}"
         )
         return message.as_bytes()
+
+
+class _FakeGmail:
+    def __init__(self, messages: list) -> None:
+        self.messages = messages
+
+    def fetch_recent(self, gmail_address: str, app_password: str) -> list:
+        return self.messages
+
+
+class _FakeSupabase:
+    def __init__(self, *, fail_writeback: bool = False) -> None:
+        self.items = [
+            {
+                "id": "item-1",
+                "customer_id": "customer-1",
+                "customer_snapshot": {"passport_number": "AA100"},
+            }
+        ]
+        self.finished: list[dict] = []
+        self.fail_writeback = fail_writeback
+
+    def heartbeat(self, **kwargs) -> None:
+        return None
+
+    def get_gmail_runtime_credentials(self) -> dict[str, str]:
+        return {
+            "gmail_address": "test@gmail.com",
+            "gmail_app_password": "not-logged",
+        }
+
+    def claim_item(self, batch_id: str) -> dict | None:
+        return self.items.pop(0) if self.items else None
+
+    def finish_item(self, **kwargs) -> dict:
+        if self.fail_writeback:
+            raise RuntimeError("writeback failed")
+        self.finished.append(kwargs)
+        return {"ok": True}
 
 
 if __name__ == "__main__":

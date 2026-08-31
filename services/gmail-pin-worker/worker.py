@@ -15,6 +15,7 @@ import argparse
 import email
 import html
 import imaplib
+import json
 import logging
 import os
 import re
@@ -30,8 +31,37 @@ from typing import Any
 import requests
 
 LOG = logging.getLogger("gmail_pin_worker")
+WORKER_NAME = "gmail_pin"
 DEFAULT_SENDER = "mdac@imi.gov.my"
 DEFAULT_IMAP_HOST = "imap.gmail.com"
+
+
+def log_event(
+    level: int,
+    *,
+    step: str,
+    status: str,
+    batch_id: str | None = None,
+    item_id: str | None = None,
+    customer_id: str | None = None,
+    result: Any = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Write one searchable event without customer documents or secret values."""
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "worker": WORKER_NAME,
+        "batch_id": batch_id,
+        "item_id": item_id,
+        "customer_id": customer_id,
+        "step": step,
+        "status": status,
+        "result": result,
+        "error_code": error_code,
+        "error_message": error_message,
+    }
+    LOG.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
 
 
 class WorkerError(RuntimeError):
@@ -487,7 +517,13 @@ class GmailReader:
             for uid in uids:
                 status, fetched = mailbox.uid("fetch", uid, "(BODY.PEEK[])")
                 if status != "OK":
-                    LOG.warning("跳过一封无法读取的 Gmail 邮件")
+                    log_event(
+                        logging.WARNING,
+                        step="email_parse",
+                        status="skipped",
+                        error_code="EMAIL_PARSE_FAILED",
+                        error_message="A Gmail candidate could not be parsed",
+                    )
                     continue
                 raw_email = next(
                     (
@@ -520,42 +556,77 @@ class GmailPinWorker:
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
         self.supabase.heartbeat(status="BUSY", batch_id=batch_id)
+        log_event(
+            logging.INFO,
+            step="batch_claim",
+            status="running",
+            batch_id=batch_id,
+        )
         gmail_settings = batch.get("gmail_settings_snapshot")
         gmail_address = resolve_gmail_address(gmail_settings)
         messages: list[ParsedEmail] = []
         credential_error: str | None = None
         if gmail_address is None:
             credential_error = "gmail_address_snapshot_missing_or_invalid"
-            LOG.error(
-                "Gmail 地址快照缺失或无效；不会连接邮箱，也不会伪造 PIN 成功"
+            log_event(
+                logging.ERROR,
+                step="gmail_credentials",
+                status="failed",
+                batch_id=batch_id,
+                error_code="GMAIL_ADDRESS_SNAPSHOT_INVALID",
+                error_message="Gmail address snapshot is missing or invalid",
             )
         else:
             try:
                 credentials = self.supabase.get_gmail_runtime_credentials()
                 if credentials["gmail_address"] != gmail_address:
                     credential_error = "gmail_address_snapshot_rotated"
-                    LOG.error(
-                        "Gmail 地址快照与当前 Vault 地址不一致；不会连接邮箱"
+                    log_event(
+                        logging.ERROR,
+                        step="gmail_credentials",
+                        status="failed",
+                        batch_id=batch_id,
+                        error_code="GMAIL_ADDRESS_SNAPSHOT_ROTATED",
+                        error_message="Gmail address snapshot differs from Vault configuration",
                     )
                 else:
                     messages = self.gmail.fetch_recent(
                         credentials["gmail_address"],
                         credentials["gmail_app_password"],
                     )
-                    LOG.info(
-                        "Gmail PIN 检查完成：获取 %d 封候选邮件；PIN 值不写入日志",
-                        len(messages),
+                    log_event(
+                        logging.INFO,
+                        step="gmail_fetch",
+                        status="succeeded",
+                        batch_id=batch_id,
+                        result={"candidate_count": len(messages)},
                     )
             except WorkerError:
                 credential_error = "gmail_credentials_unavailable"
-                LOG.error("Gmail 凭证不可用；不会伪造 PIN 成功")
+                log_event(
+                    logging.ERROR,
+                    step="gmail_credentials",
+                    status="failed",
+                    batch_id=batch_id,
+                    error_code="GMAIL_CREDENTIALS_UNAVAILABLE",
+                    error_message="Gmail credentials are unavailable",
+                )
         processed = 0
         while True:
             item = self.supabase.claim_item(batch_id)
             if item is None:
                 break
             item_id = str(item["id"])
+            customer_id = str(item.get("customer_id") or "") or None
             self.supabase.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
+            log_event(
+                logging.INFO,
+                step="item_claim",
+                status="running",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+            )
             snapshot = item.get("customer_snapshot")
             if not isinstance(snapshot, dict):
                 decision = PinDecision(
@@ -594,60 +665,117 @@ class GmailPinWorker:
                     snapshot, messages, self.config.gmail_lookback_days
                 )
             candidate = decision.email
-            self.supabase.finish_item(
+            try:
+                self.supabase.finish_item(
+                    item_id=item_id,
+                    pin_status=decision.status,
+                    email_message_id=candidate.message_id if candidate else None,
+                    sender=candidate.sender if candidate else None,
+                    subject=candidate.subject if candidate else None,
+                    pin_value=(
+                        candidate.pin
+                        if decision.status == "RECEIVED" and candidate
+                        else None
+                    ),
+                    match_confidence=decision.confidence,
+                    raw_summary=decision.summary,
+                    received_at=candidate.received_at if candidate else None,
+                    error_code=decision.error_code,
+                    error_message=decision.error_message,
+                )
+            except Exception:
+                log_event(
+                    logging.ERROR,
+                    step="result_writeback",
+                    status="failed",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    result=decision.status,
+                    error_code="SUPABASE_WRITEBACK_FAILED",
+                    error_message="Gmail PIN result writeback failed",
+                )
+                raise
+            processed += 1
+            log_event(
+                logging.INFO
+                if decision.status in {"RECEIVED", "NOT_FOUND"}
+                else logging.WARNING,
+                step="result_writeback",
+                status=(
+                    "succeeded"
+                    if decision.status == "RECEIVED"
+                    else "not_found"
+                    if decision.status == "NOT_FOUND"
+                    else "needs_review"
+                ),
+                batch_id=batch_id,
                 item_id=item_id,
-                pin_status=decision.status,
-                email_message_id=candidate.message_id if candidate else None,
-                sender=candidate.sender if candidate else None,
-                subject=candidate.subject if candidate else None,
-                pin_value=candidate.pin if decision.status == "RECEIVED" and candidate else None,
-                match_confidence=decision.confidence,
-                raw_summary=decision.summary,
-                received_at=candidate.received_at if candidate else None,
+                customer_id=customer_id,
+                result=decision.status,
                 error_code=decision.error_code,
                 error_message=decision.error_message,
             )
-            processed += 1
-            if decision.status == "RECEIVED":
-                LOG.info("已写回一项 Gmail PIN 结果；PIN 值不写入日志")
-            elif decision.status == "NOT_FOUND":
-                LOG.info("本轮未找到一项对应 PIN；按租约策略处理")
-            else:
-                LOG.warning("一项 Gmail PIN 结果需要人工审核：%s", decision.status)
         self.supabase.heartbeat(status="ONLINE")
+        log_event(
+            logging.INFO,
+            step="batch_complete",
+            status="completed",
+            batch_id=batch_id,
+            result={"processed_count": processed},
+        )
         return processed
 
     def run_once(self) -> int:
         self.supabase.heartbeat(status="ONLINE")
         batch = self.supabase.claim_batch()
         if batch is None:
+            log_event(logging.DEBUG, step="batch_claim", status="idle")
             return 0
         return self.process_batch(batch)
 
     def run_poll(self) -> None:
-        LOG.info(
-            "Gmail PIN Worker ONLINE：轮询间隔 %ss，发件人过滤 %s；不删除/移动/标记邮件",
-            self.config.poll_seconds,
-            self.config.gmail_sender_filter,
+        log_event(
+            logging.INFO,
+            step="worker_start",
+            status="online",
+            result={"poll_seconds": self.config.poll_seconds},
         )
         while True:
             try:
                 processed = self.run_once()
                 if processed:
-                    LOG.info("本轮处理 %d 项 Gmail PIN 任务", processed)
+                    log_event(
+                        logging.INFO,
+                        step="poll_complete",
+                        status="completed",
+                        result={"processed_count": processed},
+                    )
             except Exception:
-                LOG.exception("Gmail PIN Worker 本轮异常；未将未确认结果标为成功")
+                log_event(
+                    logging.ERROR,
+                    step="poll",
+                    status="failed",
+                    error_code="WORKER_POLL_FAILED",
+                    error_message="Gmail PIN worker poll failed",
+                )
                 try:
                     self.supabase.heartbeat(status="ERROR")
                 except Exception:
-                    LOG.exception("无法写入 Gmail PIN Worker ERROR 心跳")
+                    log_event(
+                        logging.ERROR,
+                        step="heartbeat",
+                        status="failed",
+                        error_code="HEARTBEAT_WRITE_FAILED",
+                        error_message="Gmail PIN error heartbeat write failed",
+                    )
             time.sleep(self.config.poll_seconds)
 
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(message)s",
     )
 
 
