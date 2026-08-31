@@ -435,6 +435,66 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
     }
   }
 
+  Future<Map<String, dynamic>> _validateSubmitPreflight(
+    _MdacHumanItem item,
+  ) async {
+    final controller = _controller;
+    final batch = _batch;
+    if (controller == null || batch == null) {
+      return const {'ok': false, 'reason': 'review_not_ready'};
+    }
+    final encoded = jsonEncode(batch.formPayload(item));
+    final result = await controller.runJavaScriptReturningResult('''
+      (() => {
+        const payload = $encoded;
+        const expected = {
+          '#region': payload.region,
+          '#nationality': payload.nationality,
+          '#pob': payload.pob,
+          '#sex': payload.sex,
+          '#name': payload.name,
+          '#passNo': payload.passNo,
+          '#dob': payload.dob,
+          '#passExpDte': payload.passExpDte,
+          '#arrDt': payload.arrDt,
+          '#depDt': payload.depDt,
+          '#email': payload.email,
+          '#confirmEmail': payload.email,
+          '#mobile': payload.mobile,
+          '#trvlMode': payload.travelMode,
+          '#embark': payload.embark,
+          '#vesselNm': payload.vessel,
+          '#accommodationStay': payload.accommodationStay,
+          '#accommodationAddress1': payload.address1,
+          '#accommodationAddress2': payload.address2,
+          '#accommodationState': payload.stateCode,
+          '#accommodationCity': payload.cityCode,
+          '#accommodationPostcode': payload.postcode,
+        };
+        const mismatches = Object.entries(expected)
+          .filter(([selector, value]) => {
+            const node = document.querySelector(selector);
+            return !node || String(node.value).trim() !== String(value ?? '').trim();
+          })
+          .map(([selector]) => selector);
+        const submit = document.querySelector('#submit');
+        const invalid = document.querySelectorAll('input:invalid, select:invalid').length;
+        const officialHost = location.protocol === 'https:' &&
+          location.hostname === 'imigresen-online.imi.gov.my';
+        return JSON.stringify({
+          ok: officialHost && mismatches.length === 0 && Boolean(submit) &&
+            !submit.disabled && invalid === 0,
+          officialHost,
+          mismatches,
+          submitExists: Boolean(submit),
+          submitDisabled: Boolean(submit?.disabled),
+          invalid,
+        });
+      })();
+    ''');
+    return _decodeJsResult(result);
+  }
+
   Future<void> _confirmAndSubmit() async {
     final item = _active;
     final controller = _controller;
@@ -469,9 +529,24 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
 
     setState(() {
       _submitBusy = true;
-      _pageMessage = '正在先记录本次提交意图，防止异常后重复提交…';
+      _pageMessage = '正在最后核对官方页面字段与滑块状态…';
     });
     try {
+      final preflight = await _validateSubmitPreflight(item);
+      if (!mounted || _active?.id != item.id) return;
+      if (preflight['ok'] != true) {
+        final mismatches = (preflight['mismatches'] as List?)?.join(', ');
+        setState(() {
+          _captchaReady = false;
+          _pageMessage = mismatches != null && mismatches.isNotEmpty
+              ? '提交已停止：确认后页面字段发生变化（$mismatches）。请重新恢复并核对资料。'
+              : '提交已停止：官方页面、必填项或滑块状态已变化。请重新检查后再提交。';
+        });
+        return;
+      }
+      setState(() {
+        _pageMessage = '最终核对通过，正在记录本次提交意图以防止异常后重复提交…';
+      });
       await widget.supabase.rpc(
         'mark_mdac_human_submitted',
         params: {
