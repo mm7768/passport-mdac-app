@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'mdac_human_review.dart';
 import 'supabase_gateway.dart';
 
 Future<void> main() async {
@@ -5635,6 +5636,35 @@ class SelectionBar extends StatelessWidget {
   }
 }
 
+bool canOpenMdacHumanReview(AutomationTask task) =>
+    task.type == TaskType.mdacRegistration &&
+    task.status == TaskStatus.needsReview;
+
+Future<void> openMdacHumanReview(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository,
+) async {
+  final client = SupabaseGateway.client;
+  if (client == null) {
+    showToast(context, 'Supabase 未配置，无法打开 MDAC 人工处理。', error: true);
+    return;
+  }
+  await Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => MdacHumanReviewScreen(batchId: task.id, supabase: client),
+    ),
+  );
+  final syncErrors = await Future.wait<String?>([
+    repository.syncAutomationTasksFromSupabase(),
+    repository.syncCustomersFromSupabase(),
+  ]);
+  final errors = syncErrors.whereType<String>().toList();
+  if (errors.isNotEmpty && context.mounted) {
+    showToast(context, errors.join('\n'), error: true);
+  }
+}
+
 class TaskRow extends StatelessWidget {
   const TaskRow({required this.task, required this.repository, super.key});
 
@@ -5727,6 +5757,18 @@ class TaskRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             TaskStatusPill(status: task.status),
+            if (canOpenMdacHumanReview(task))
+              IconButton(
+                tooltip: '人工处理 MDAC',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () => openMdacHumanReview(context, task, repository),
+                icon: const Icon(
+                  Icons.touch_app_outlined,
+                  size: 18,
+                  color: AppTheme.teal,
+                ),
+              ),
             IconButton(
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
@@ -5772,6 +5814,16 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 18),
         SizedBox(width: 92, child: TaskStatusPill(status: task.status)),
         const SizedBox(width: 10),
+        if (canOpenMdacHumanReview(task))
+          IconButton(
+            tooltip: '人工处理 MDAC',
+            onPressed: () => openMdacHumanReview(context, task, repository),
+            icon: const Icon(
+              Icons.touch_app_outlined,
+              size: 18,
+              color: AppTheme.teal,
+            ),
+          ),
         IconButton(
           onPressed: () => showTaskDetail(context, task, repository),
           icon: const Icon(
@@ -7050,6 +7102,15 @@ Future<void> showTaskDetail(
         ),
       ),
       actions: [
+        if (canOpenMdacHumanReview(task))
+          FilledButton.icon(
+            onPressed: () async {
+              await openMdacHumanReview(context, task, repository);
+              if (context.mounted) Navigator.pop(context);
+            },
+            icon: const Icon(Icons.touch_app_outlined),
+            label: const Text('人工处理 MDAC'),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('关闭'),

@@ -30,6 +30,19 @@ finish_mdac_fill_preview()
 item=NEEDS_REVIEW、mdac_registrations=NEEDS_REVIEW、submitted=false
 ```
 
+## 与 Android 人工提交页的分工
+
+Railway Worker 到 `NEEDS_REVIEW` 就结束，之后由 Flutter App 的“人工处理 MDAC”页面接管：
+
+1. App 从批次与客户快照重建同一份官方表单，并逐项回读字段。
+2. 操作员本人核对资料并完成官方滑块；App 不生成、模拟或重放 CAPTCHA 轨迹。
+3. App 只在页面必填项有效且官方 Submit 可用时开放“确认提交 MDAC”。
+4. 用户确认后，App 会先通过 Supabase RPC 记录提交意图，再点击官方 Submit。这样即使 WebView 跳转、网络中断或 App 崩溃，也不会把同一客户重新开放提交。
+5. 只有官方页面出现 `SUCCESSFULLY REGISTERED.` 且用户再次确认，App 才会写入 `SUCCEEDED` 和客户状态 `MDAC_REGISTERED`。
+6. 页面空白、超时、跳转异常或无法确认时必须写为 `RESULT_UNKNOWN`，禁止盲目重复提交。
+
+因此，当前 MDAC 注册不是“Railway 全自动提交”，而是“Worker 安全填表预览 + Android 人工滑块与明确确认”。两部分共用 Supabase 中冻结的客户/设置快照，但职责不能互换。
+
 批次和单项都带租约。Worker 心跳会续期租约；进程崩溃后，下次领取会回收已过期的 `CLAIMED/RUNNING` 项。每项有最大尝试次数，超过上限不能无限循环。预览完成后，数据库原子函数会同时写入 `mdac_registrations` 和 `audit_logs`，并明确保存 `submitted=false`、`result_confirmed=false`、`submitted_at=NULL` 和 `result_confirmed_at=NULL`。
 
 ## 旧版规则的迁移
@@ -79,6 +92,18 @@ MDAC_SCREENSHOT_PREFIX
 python -m unittest discover -s services/mdac-fill-preview -p 'test_*.py'
 ```
 
+Flutter 人工提交页还应运行：
+
+```bash
+flutter analyze
+flutter test
+flutter build apk --debug
+```
+
+最终验收必须使用 Android 真机，并按“单客户预览 → 人工滑块 → 提交 → 看到官方成功文字 → App 确认成功 → 刷新客户状态”的顺序执行。没有看到官方成功文字时，只能选择“结果无法确认”。测试不得保存或上传姓名、完整护照号、邮箱、页面正文、验证码轨迹或 App Password。
+
 ## 已知限制
 
-当前服务已经连接 Flutter 的真实 automation batch 创建和任务同步界面：App 保存 MDAC 设置后，入队 RPC 会原子复制客户与业务设置快照；Worker 完成页面回读后写回 `NEEDS_REVIEW`，不会把预览标为 `MDAC_REGISTERED`。当前服务也不处理 Gmail PIN、不查询注册结果、不重试结果未知的真实提交。未来若要开启真实提交，应另建明确的 Submit Worker，并要求独立授权、单独凭证/策略、人工确认和 `RESULT_UNKNOWN` 防重复提交设计，不能通过修改本服务的一个环境变量实现。
+当前服务已经连接 Flutter 的真实 automation batch 创建和任务同步界面：App 保存 MDAC 设置后，入队 RPC 会原子复制客户与业务设置快照；Worker 完成页面回读后写回 `NEEDS_REVIEW`，不会把预览标为 `MDAC_REGISTERED`。当前服务也不处理 Gmail PIN、不查询注册结果、不重试结果未知的真实提交。
+
+真实 Submit 目前只存在于 Android 人工处理页，仍需真机验证后才可合并启用；不能通过修改本 Worker 的环境变量开启。若未来另建 Submit Worker，必须重新设计独立授权、审计、幂等和 `RESULT_UNKNOWN` 防重复提交机制，并单独审查上线。
