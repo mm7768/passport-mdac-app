@@ -324,6 +324,9 @@ void main() {
     test('MDAC settings require a complete business default set', () {
       final empty = MdacSettings.defaults();
       expect(empty.isComplete, isFalse);
+      expect(empty.stateCode, johorStateCode);
+      expect(empty.cityCode, defaultJohorCityCode);
+      expect(johorCityCodes['0118'], 'JOHOR BAHRU');
 
       final complete = MdacSettings.fromMap({
         'mdac_email': 'desk@example.com',
