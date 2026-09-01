@@ -5961,7 +5961,7 @@ class TaskRow extends StatelessWidget {
                 icon: const Icon(
                   Icons.cancel_outlined,
                   size: 18,
-                  color: AppTheme.coral,
+                  color: AppTheme.danger,
                 ),
               ),
             if (canOpenMdacHumanReview(task))
@@ -6029,7 +6029,7 @@ class TaskRow extends StatelessWidget {
             icon: const Icon(
               Icons.cancel_outlined,
               size: 18,
-              color: AppTheme.coral,
+              color: AppTheme.danger,
             ),
           ),
         if (canOpenMdacHumanReview(task))
