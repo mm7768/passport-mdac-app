@@ -33,7 +33,7 @@ import requests
 
 LOG = logging.getLogger("gmail_pin_worker")
 WORKER_NAME = "gmail_pin"
-WORKER_VERSION = "gmail-pin-2"
+WORKER_VERSION = "gmail-pin-3"
 DEFAULT_SENDER = "mdac@imi.gov.my"
 DEFAULT_IMAP_HOST = "imap.gmail.com"
 

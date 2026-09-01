@@ -22,7 +22,7 @@ import requests
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 LOG = logging.getLogger("mdac_fill_preview")
-WORKER_VERSION = "mdac-fill-preview-2"
+WORKER_VERSION = "mdac-fill-preview-3"
 MDAC_URL = "https://imigresen-online.imi.gov.my/mdac/main?registerMain"
 
 
