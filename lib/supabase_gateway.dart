@@ -521,6 +521,17 @@ class SupabaseGateway {
     ];
   }
 
+  static Future<Map<String, dynamic>> cancelAutomationBatch(
+    String batchId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'cancel_automation_batch',
+      params: {'p_batch_id': batchId},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回取消任务结果。');
+  }
+
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
     final rows = await client
