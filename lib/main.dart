@@ -1936,8 +1936,7 @@ class DemoRepository extends ChangeNotifier {
   AutomationTask? activeTaskForCustomer(String customerId) {
     for (final task in tasks) {
       if ((task.status == TaskStatus.queued ||
-              task.status == TaskStatus.running ||
-              task.status == TaskStatus.needsReview) &&
+              task.status == TaskStatus.running) &&
           task.customerIds.contains(customerId)) {
         return task;
       }
