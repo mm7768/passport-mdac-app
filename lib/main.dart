@@ -1162,7 +1162,7 @@ class DemoRepository extends ChangeNotifier {
         final rawFullName = extracted['full_name']?.toString() ?? '';
         final normalizedFullName = rawFullName
             .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
-            .split(RegExp(r'\\s+'))
+            .split(RegExp(r'\s+'))
             .where((part) => part.isNotEmpty)
             .join(' ')
             .toUpperCase();
@@ -1793,7 +1793,7 @@ class DemoRepository extends ChangeNotifier {
       id: 'c-${DateTime.now().microsecondsSinceEpoch}',
       fullName: values['fullName']!
           .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
-          .split(RegExp(r'\\s+'))
+          .split(RegExp(r'\s+'))
           .where((part) => part.isNotEmpty)
           .join(' ')
           .toUpperCase(),
