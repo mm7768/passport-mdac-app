@@ -1157,18 +1157,29 @@ class DemoRepository extends ChangeNotifier {
             int.tryParse(row['segment_index']?.toString() ?? '') ?? 0;
         final confidence =
             double.tryParse(row['confidence']?.toString() ?? '') ?? 0;
+        final nationality =
+            extracted['nationality']?.toString().trim().toUpperCase() ?? '';
+        final rawFullName = extracted['full_name']?.toString() ?? '';
+        final normalizedFullName = rawFullName
+            .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
+            .split(RegExp(r'\\s+'))
+            .where((part) => part.isNotEmpty)
+            .join(' ')
+            .toUpperCase();
+        final extractedPlace =
+            extracted['place_of_birth']?.toString().trim().toUpperCase() ?? '';
         drafts.add(
           OcrDraft(
             id: 'remote-ocr-${row['id']}',
             sourceLabel: fileNames[batchId] ?? 'OCR 批次 $batchId',
             sourceIndex: '第 ${pageIndex + 1} 页 · 护照 ${segmentIndex + 1}',
-            fullName: extracted['full_name']?.toString() ?? '',
+            fullName: normalizedFullName,
             passportNumber: extracted['passport_number']?.toString() ?? '',
             dateOfBirth: _displayDate(
               extracted['date_of_birth'] ?? extracted['display_date_of_birth'],
             ),
-            placeOfBirth: extracted['place_of_birth']?.toString() ?? '',
-            nationality: extracted['nationality']?.toString() ?? '',
+            placeOfBirth: extractedPlace.isEmpty ? nationality : extractedPlace,
+            nationality: nationality,
             gender: extracted['gender']?.toString() ?? '',
             passportExpiryDate: _displayDate(
               extracted['passport_expiry_date'] ??
@@ -1780,7 +1791,12 @@ class DemoRepository extends ChangeNotifier {
 
     final customer = Customer(
       id: 'c-${DateTime.now().microsecondsSinceEpoch}',
-      fullName: values['fullName']!.trim().toUpperCase(),
+      fullName: values['fullName']!
+          .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
+          .split(RegExp(r'\\s+'))
+          .where((part) => part.isNotEmpty)
+          .join(' ')
+          .toUpperCase(),
       passportNumber: normalizedPassport,
       dateOfBirth: values['dateOfBirth']!.trim(),
       placeOfBirth: values['placeOfBirth']!.trim().toUpperCase(),
