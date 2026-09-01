@@ -5885,7 +5885,7 @@ class TaskRow extends StatelessWidget {
             TaskStatusPill(status: task.status),
             if (canOpenMdacHumanReview(task))
               IconButton(
-                tooltip: '人工处理 MDAC',
+                tooltip: '打开待验证页面',
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 onPressed: () => openMdacHumanReview(context, task, repository),
@@ -5942,7 +5942,7 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 10),
         if (canOpenMdacHumanReview(task))
           IconButton(
-            tooltip: '人工处理 MDAC',
+            tooltip: '打开待验证页面',
             onPressed: () => openMdacHumanReview(context, task, repository),
             icon: const Icon(
               Icons.touch_app_outlined,
@@ -7235,7 +7235,7 @@ Future<void> showTaskDetail(
               if (context.mounted) Navigator.pop(context);
             },
             icon: const Icon(Icons.touch_app_outlined),
-            label: const Text('人工处理 MDAC'),
+            label: const Text('打开待验证页面'),
           ),
         TextButton(
           onPressed: () => Navigator.pop(context),
