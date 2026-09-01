@@ -231,6 +231,7 @@ enum TaskStatus {
   succeeded,
   partialSuccess,
   failed,
+  cancelled,
   needsReview,
 }
 
@@ -964,6 +965,37 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> cancelAutomationTask(String batchId, String actor) async {
+    if (!remoteMode) {
+      AutomationTask? task;
+      for (final item in tasks) {
+        if (item.id == batchId) {
+          task = item;
+          break;
+        }
+      }
+      if (task == null) return '找不到需要取消的任务。';
+      if (task.status != TaskStatus.queued &&
+          task.status != TaskStatus.needsReview) {
+        return '只能取消排队中或待人工审核的任务。';
+      }
+      task.status = TaskStatus.cancelled;
+      auditEvents.insert(0, '$actor 取消任务 $batchId');
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.cancelAutomationBatch(batchId);
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 取消任务 $batchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '取消任务失败：$exception';
+    }
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -1034,8 +1066,9 @@ class DemoRepository extends ChangeNotifier {
       case 'PARTIAL_SUCCESS':
         return TaskStatus.partialSuccess;
       case 'FAILED':
-      case 'CANCELLED':
         return TaskStatus.failed;
+      case 'CANCELLED':
+        return TaskStatus.cancelled;
       case 'NEEDS_REVIEW':
         return TaskStatus.needsReview;
       case 'QUEUED':
@@ -5761,6 +5794,42 @@ class SelectionBar extends StatelessWidget {
   }
 }
 
+bool canCancelAutomationTask(AutomationTask task) =>
+    task.status == TaskStatus.queued ||
+    task.status == TaskStatus.needsReview;
+
+Future<void> confirmCancelAutomationTask(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('取消任务？'),
+      content: const Text('任务记录会保留，但未完成项目会停止，客户可重新创建任务。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('返回'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('确认取消'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  final error = await repository.cancelAutomationTask(task.id, '当前用户');
+  if (!context.mounted) return;
+  showToast(
+    context,
+    error ?? '任务已取消。',
+    error: error != null,
+  );
+}
+
 bool canOpenMdacHumanReview(AutomationTask task) =>
     task.type == TaskType.mdacRegistration &&
     task.status == TaskStatus.needsReview;
@@ -5882,6 +5951,19 @@ class TaskRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             TaskStatusPill(status: task.status),
+            if (canCancelAutomationTask(task))
+              IconButton(
+                tooltip: '取消任务',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () =>
+                    confirmCancelAutomationTask(context, task, repository),
+                icon: const Icon(
+                  Icons.cancel_outlined,
+                  size: 18,
+                  color: AppTheme.coral,
+                ),
+              ),
             if (canOpenMdacHumanReview(task))
               IconButton(
                 tooltip: '打开待验证页面',
@@ -5939,6 +6021,17 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 18),
         SizedBox(width: 92, child: TaskStatusPill(status: task.status)),
         const SizedBox(width: 10),
+        if (canCancelAutomationTask(task))
+          IconButton(
+            tooltip: '取消任务',
+            onPressed: () =>
+                confirmCancelAutomationTask(context, task, repository),
+            icon: const Icon(
+              Icons.cancel_outlined,
+              size: 18,
+              color: AppTheme.coral,
+            ),
+          ),
         if (canOpenMdacHumanReview(task))
           IconButton(
             tooltip: '打开待验证页面',
@@ -6693,11 +6786,14 @@ Future<Map<String, String>?> showCustomerForm(
     required String label,
     String? hintText,
     TextInputType? keyboardType,
+    bool allowEmpty = false,
   }) => TextFormField(
     controller: controllers[key],
     keyboardType: keyboardType,
-    validator: (value) =>
-        value == null || value.trim().isEmpty ? '请输入$label' : null,
+    validator: (value) => !allowEmpty &&
+            (value == null || value.trim().isEmpty)
+        ? '请输入$label'
+        : null,
     decoration: InputDecoration(
       labelText: label,
       hintText: hintText,
@@ -6800,6 +6896,7 @@ Future<Map<String, String>?> showCustomerForm(
                     label: 'Gmail PIN（可留空）',
                     hintText: '保留 PIN 中间空格，首尾空格会自动清除',
                     keyboardType: TextInputType.visiblePassword,
+                    allowEmpty: true,
                   ),
                   const SizedBox(height: 4),
                   Row(
@@ -7357,6 +7454,8 @@ String taskStatusLabel(TaskStatus status) {
       return '部分成功';
     case TaskStatus.failed:
       return '失败';
+    case TaskStatus.cancelled:
+      return '已取消';
     case TaskStatus.needsReview:
       return '待确认';
   }
@@ -7373,6 +7472,7 @@ Color taskStatusColor(TaskStatus status) {
     case TaskStatus.partialSuccess:
       return AppTheme.warning;
     case TaskStatus.failed:
+    case TaskStatus.cancelled:
       return AppTheme.danger;
     case TaskStatus.needsReview:
       return const Color(0xFF7B67AF);
