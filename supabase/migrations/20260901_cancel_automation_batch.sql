@@ -5,7 +5,7 @@ create or replace function public.cancel_automation_batch(p_batch_id uuid)
 returns jsonb
 language plpgsql
 security invoker
-set search_path = public, pg_temp
+set search_path = public, private, pg_temp
 as $$
 declare
   v_batch public.automation_batches;
@@ -13,7 +13,7 @@ declare
   v_failed_count integer;
   v_cancelled_count integer;
 begin
-  if not public.is_active_user() then
+  if not private.is_active_user() then
     raise exception 'active user required';
   end if;
 
