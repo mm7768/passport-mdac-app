@@ -5959,7 +5959,7 @@ class TaskRow extends StatelessWidget {
                 padding: EdgeInsets.zero,
                 onPressed: () =>
                     confirmCancelAutomationTask(context, task, repository),
-                icon: const Icon(
+                icon: Icon(
                   task.status == TaskStatus.cancelled
                       ? Icons.delete_forever_outlined
                       : Icons.cancel_outlined,
@@ -6029,7 +6029,7 @@ class TaskRow extends StatelessWidget {
             tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
             onPressed: () =>
                 confirmCancelAutomationTask(context, task, repository),
-            icon: const Icon(
+            icon: Icon(
               task.status == TaskStatus.cancelled
                       ? Icons.delete_forever_outlined
                       : Icons.cancel_outlined,
