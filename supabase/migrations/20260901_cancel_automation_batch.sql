@@ -4,7 +4,7 @@
 create or replace function public.cancel_automation_batch(p_batch_id uuid)
 returns jsonb
 language plpgsql
-security invoker
+security definer
 set search_path = public, private, pg_temp
 as $$
 declare
@@ -12,8 +12,9 @@ declare
   v_storage_paths jsonb := '[]'::jsonb;
   v_customer_ids uuid[];
   v_item_count integer := 0;
+  v_deleted_batch_count integer := 0;
 begin
-  if not private.is_active_user() then
+  if auth.uid() is null or not private.is_active_user() then
     raise exception 'active user required';
   end if;
 
@@ -78,6 +79,11 @@ begin
 
   delete from public.automation_batches
    where id = p_batch_id;
+  get diagnostics v_deleted_batch_count = row_count;
+
+  if v_deleted_batch_count <> 1 then
+    raise exception 'automation batch delete failed';
+  end if;
 
   update public.customers c
      set business_status = 'PENDING',
