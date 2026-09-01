@@ -3923,130 +3923,230 @@ class UploadHistorySection extends StatelessWidget {
     return '${(bytes / 1024).ceil()} KB';
   }
 
+  Color _statusColor(UploadRecord record) {
+    if (record.status == UploadStatus.failed) return AppTheme.danger;
+    if (record.status == UploadStatus.uploaded) return AppTheme.teal;
+    return AppTheme.orange;
+  }
+
+  Future<void> _retry(BuildContext context, UploadRecord record) async {
+    if (record.retryBytes == null) return;
+    final error = await repository.retryUpload(record, actor);
+    if (error != null && context.mounted) {
+      showToast(context, error, error: true);
+    }
+  }
+
+  void _showDetails(BuildContext context, UploadRecord record) {
+    final color = _statusColor(record);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                record.fileName,
+                style: const TextStyle(
+                  color: AppTheme.ink,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)} · ${_statusLabel(record.status)}',
+                style: TextStyle(color: color, fontWeight: FontWeight.w700),
+              ),
+              if (record.batchId != null) ...[
+                const SizedBox(height: 10),
+                SelectableText(
+                  'OCR 批次：${record.batchId}',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                ),
+              ],
+              if (record.errorMessage != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  record.errorMessage!,
+                  style: const TextStyle(color: AppTheme.danger),
+                ),
+              ],
+              if (record.status == UploadStatus.failed &&
+                  record.retryBytes != null) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _retry(context, record);
+                  },
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('重新上传'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _recordRow(BuildContext context, UploadRecord record) {
+    final color = _statusColor(record);
+    return Material(
+      color: const Color(0xFFF8FBFA),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _showDetails(context, record),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 58),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.line),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                record.isPdf
+                    ? Icons.picture_as_pdf_outlined
+                    : Icons.image_outlined,
+                color: color,
+                size: 22,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      record.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppTheme.ink,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    if (record.status == UploadStatus.uploading)
+                      LinearProgressIndicator(
+                        value: record.progress,
+                        minHeight: 4,
+                        borderRadius: BorderRadius.circular(4),
+                        color: AppTheme.teal,
+                        backgroundColor: AppTheme.mint,
+                      )
+                    else
+                      Text(
+                        '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)}',
+                        style: const TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                _statusLabel(record.status),
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
+                ),
+              ),
+              const SizedBox(width: 2),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppTheme.muted,
+                size: 18,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAll(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * 0.78,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 12),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '全部上传记录',
+                        style: TextStyle(
+                          color: AppTheme.ink,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${repository.uploadRecords.length} 条',
+                      style: const TextStyle(color: AppTheme.muted),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: repository.uploadRecords.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (_, index) =>
+                      _recordRow(sheetContext, repository.uploadRecords[index]),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final records = repository.uploadRecords;
+    final visible = records.take(3).toList(growable: false);
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 0, 28, 14),
       child: SectionCard(
-        title: '上传批次 · ${repository.uploadRecords.length}',
+        title: '上传记录 · ${records.length}',
         child: Column(
-          children: repository.uploadRecords.map((record) {
-            final statusColor = record.status == UploadStatus.failed
-                ? AppTheme.danger
-                : record.status == UploadStatus.uploaded
-                ? AppTheme.teal
-                : AppTheme.orange;
-            return Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FBFA),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppTheme.line),
+          children: [
+            for (var index = 0; index < visible.length; index++) ...[
+              _recordRow(context, visible[index]),
+              if (index < visible.length - 1) const SizedBox(height: 8),
+            ],
+            if (records.length > visible.length) ...[
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: () => _showAll(context),
+                icon: const Icon(Icons.list_alt_rounded),
+                label: Text('查看全部 ${records.length} 条'),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        record.isPdf
-                            ? Icons.picture_as_pdf_outlined
-                            : Icons.image_outlined,
-                        color: statusColor,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          record.fileName,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: AppTheme.ink,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _statusLabel(record.status),
-                        style: TextStyle(
-                          color: statusColor,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)}',
-                    style: const TextStyle(color: AppTheme.muted, fontSize: 12),
-                  ),
-                  if (record.status == UploadStatus.uploading) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: LinearProgressIndicator(
-                            value: record.progress,
-                            minHeight: 6,
-                            borderRadius: BorderRadius.circular(6),
-                            color: AppTheme.teal,
-                            backgroundColor: AppTheme.mint,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text('${(record.progress * 100).round()}%'),
-                      ],
-                    ),
-                  ],
-                  if (record.status == UploadStatus.uploaded)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(
-                        '已保存至私有 Storage · 批次 ${record.batchId ?? '待同步'}',
-                        style: const TextStyle(
-                          color: AppTheme.teal,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  if (record.status == UploadStatus.failed)
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            record.errorMessage ?? '未知上传错误',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppTheme.danger,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: record.retryBytes == null
-                              ? null
-                              : () async {
-                                  final error = await repository.retryUpload(
-                                    record,
-                                    actor,
-                                  );
-                                  if (error != null && context.mounted) {
-                                    showToast(context, error, error: true);
-                                  }
-                                },
-                          child: const Text('重试'),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-            );
-          }).toList(),
+            ],
+          ],
         ),
       ),
     );
