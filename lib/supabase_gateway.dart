@@ -528,8 +528,21 @@ class SupabaseGateway {
       'cancel_automation_batch',
       params: {'p_batch_id': batchId},
     );
-    if (result is Map) return Map<String, dynamic>.from(result);
-    throw const FormatException('Supabase 未返回取消任务结果。');
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回删除任务结果。');
+    }
+    final row = Map<String, dynamic>.from(result);
+    final rawPaths = row['storage_paths'];
+    final paths = rawPaths is List
+        ? rawPaths
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList(growable: false)
+        : const <Map<String, dynamic>>[];
+    if (paths.isNotEmpty) {
+      await removeCustomerStorageObjects(paths);
+    }
+    return row;
   }
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {

@@ -5796,7 +5796,8 @@ class SelectionBar extends StatelessWidget {
 
 bool canCancelAutomationTask(AutomationTask task) =>
     task.status == TaskStatus.queued ||
-    task.status == TaskStatus.needsReview;
+    task.status == TaskStatus.needsReview ||
+    task.status == TaskStatus.cancelled;
 
 Future<void> confirmCancelAutomationTask(
   BuildContext context,
@@ -5806,8 +5807,8 @@ Future<void> confirmCancelAutomationTask(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('取消任务？'),
-      content: const Text('任务记录会保留，但未完成项目会停止，客户可重新创建任务。'),
+      title: Text(task.status == TaskStatus.cancelled ? '永久删除任务？' : '取消并删除任务？'),
+      content: const Text('任务、未完成项目及相关结果会永久删除；客户档案会保留。此操作无法撤销。'),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(dialogContext, false),
@@ -5815,7 +5816,7 @@ Future<void> confirmCancelAutomationTask(
         ),
         FilledButton(
           onPressed: () => Navigator.pop(dialogContext, true),
-          child: const Text('确认取消'),
+          child: Text(task.status == TaskStatus.cancelled ? '确认删除' : '确认取消并删除'),
         ),
       ],
     ),
@@ -5825,7 +5826,7 @@ Future<void> confirmCancelAutomationTask(
   if (!context.mounted) return;
   showToast(
     context,
-    error ?? '任务已取消。',
+    error ?? '任务记录已永久删除。',
     error: error != null,
   );
 }
@@ -5953,13 +5954,15 @@ class TaskRow extends StatelessWidget {
             TaskStatusPill(status: task.status),
             if (canCancelAutomationTask(task))
               IconButton(
-                tooltip: '取消任务',
+                tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 onPressed: () =>
                     confirmCancelAutomationTask(context, task, repository),
                 icon: const Icon(
-                  Icons.cancel_outlined,
+                  task.status == TaskStatus.cancelled
+                      ? Icons.delete_forever_outlined
+                      : Icons.cancel_outlined,
                   size: 18,
                   color: AppTheme.danger,
                 ),
@@ -6023,11 +6026,13 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 10),
         if (canCancelAutomationTask(task))
           IconButton(
-            tooltip: '取消任务',
+            tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
             onPressed: () =>
                 confirmCancelAutomationTask(context, task, repository),
             icon: const Icon(
-              Icons.cancel_outlined,
+              task.status == TaskStatus.cancelled
+                      ? Icons.delete_forever_outlined
+                      : Icons.cancel_outlined,
               size: 18,
               color: AppTheme.danger,
             ),
