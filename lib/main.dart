@@ -3909,7 +3909,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 }
 
-class UploadHistorySection extends StatelessWidget {
+class UploadHistorySection extends StatefulWidget {
   const UploadHistorySection({
     required this.repository,
     required this.actor,
@@ -3918,6 +3918,16 @@ class UploadHistorySection extends StatelessWidget {
 
   final DemoRepository repository;
   final String actor;
+
+  @override
+  State<UploadHistorySection> createState() => _UploadHistorySectionState();
+}
+
+class _UploadHistorySectionState extends State<UploadHistorySection> {
+  bool _expanded = false;
+
+  DemoRepository get repository => widget.repository;
+  String get actor => widget.actor;
 
   String _statusLabel(UploadStatus status) {
     switch (status) {
@@ -4146,22 +4156,67 @@ class UploadHistorySection extends StatelessWidget {
     final visible = records.take(3).toList(growable: false);
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 0, 28, 14),
-      child: SectionCard(
-        title: '上传记录 · ${records.length}',
+      child: Card(
+        clipBehavior: Clip.antiAlias,
         child: Column(
           children: [
-            for (var index = 0; index < visible.length; index++) ...[
-              _recordRow(context, visible[index]),
-              if (index < visible.length - 1) const SizedBox(height: 8),
-            ],
-            if (records.length > visible.length) ...[
-              const SizedBox(height: 10),
-              TextButton.icon(
-                onPressed: () => _showAll(context),
-                icon: const Icon(Icons.list_alt_rounded),
-                label: Text('查看全部 ${records.length} 条'),
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 17,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '上传记录 · ${records.length}',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    AnimatedRotation(
+                      turns: _expanded ? 0.5 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      child: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppTheme.teal,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ],
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeInOut,
+              child: _expanded
+                  ? Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                      child: Column(
+                        children: [
+                          for (
+                            var index = 0;
+                            index < visible.length;
+                            index++
+                          ) ...[
+                            _recordRow(context, visible[index]),
+                            if (index < visible.length - 1)
+                              const SizedBox(height: 8),
+                          ],
+                          if (records.length > visible.length) ...[
+                            const SizedBox(height: 10),
+                            TextButton.icon(
+                              onPressed: () => _showAll(context),
+                              icon: const Icon(Icons.list_alt_rounded),
+                              label: Text('查看全部 ${records.length} 条'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
           ],
         ),
       ),
