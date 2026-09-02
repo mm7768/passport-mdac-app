@@ -1276,6 +1276,26 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> createCaseForExistingCustomerWithSync(
+    Customer customer,
+    String actor,
+  ) async {
+    if (customer.isDeleted) return '客户已删除，不能再次下单。';
+    if (!remoteMode) {
+      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的本地 Case');
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.createCaseForExistingCustomer(customer.id);
+      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的 Case');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '再次下单失败：$exception';
+    }
+  }
+
   Future<String?> updateCustomerWithSync(
     Customer customer,
     Map<String, String> values,
@@ -3211,6 +3231,40 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> createCaseForExistingCustomer(Customer customer) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认再次下单？'),
+        content: Text(
+          '将为 ${customer.fullName} 创建一个全新的业务 Case。\n\n'
+          '客户基本资料和当前有效护照会被复用；入境日期、MDAC、Registration 和 Visit Pass 不会复用。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('创建新 Case'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await widget.repository.createCaseForExistingCustomerWithSync(
+      customer,
+      widget.actor,
+    );
+    if (!mounted) return;
+    showToast(
+      context,
+      error ?? '新 Case 已创建，可为本次订单设置日期并开始 MDAC。',
+      error: error != null,
+    );
+  }
+
   Future<void> startMdac() async {
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
@@ -3881,6 +3935,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           onOpen: () => showCustomerDetail(
                             context,
                             customer,
+                            onNewCase: () =>
+                                createCaseForExistingCustomer(customer),
                             onEdit: () => editCustomer(customer),
                           ),
                         ),
@@ -7121,6 +7177,7 @@ Future<Map<String, String>?> showCustomerForm(
 Future<void> showCustomerDetail(
   BuildContext context,
   Customer customer, {
+  VoidCallback? onNewCase,
   VoidCallback? onEdit,
 }) async {
   await showModalBottomSheet<void>(
@@ -7197,8 +7254,22 @@ Future<void> showCustomerDetail(
                 '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
-              if (onEdit != null) ...[
+              if (onNewCase != null) ...[
                 const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      onNewCase();
+                    },
+                    icon: const Icon(Icons.add_business_rounded),
+                    label: const Text('再次下单'),
+                  ),
+                ),
+              ],
+              if (onEdit != null) ...[
+                const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
