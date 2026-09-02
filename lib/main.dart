@@ -1521,6 +1521,8 @@ class DemoRepository extends ChangeNotifier {
       await SupabaseGateway.markCustomerHardDeleteStorageCleaned(jobId);
       final completed = await SupabaseGateway.completeCustomerHardDelete(jobId);
       await syncCustomersFromSupabase();
+      await syncOcrBatchesFromSupabase();
+      await syncOcrResultsFromSupabase();
       auditEvents.insert(
         0,
         '$actor 永久删除 ${uniqueIds.length} 位客户及其护照资料；Storage ${paths.length} 个对象已清理',
