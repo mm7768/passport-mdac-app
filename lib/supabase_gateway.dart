@@ -125,7 +125,7 @@ class SupabaseGateway {
     required String customerId,
     required Map<String, dynamic> extractedData,
   }) async {
-    await _requiredClient
+    final row = await _requiredClient
         .from('ocr_results')
         .update({
           'status': 'CREATED',
@@ -134,7 +134,12 @@ class SupabaseGateway {
           'reviewed_at': DateTime.now().toUtc().toIso8601String(),
           'extracted_data': extractedData,
         })
-        .eq('id', resultId);
+        .eq('id', resultId)
+        .select('id, created_customer_id')
+        .single();
+    if (row['created_customer_id']?.toString() != customerId) {
+      throw const FormatException('OCR 与客户关联写入失败。');
+    }
   }
 
   static Future<Map<String, dynamic>> uploadOcrBatch({
@@ -601,29 +606,37 @@ class SupabaseGateway {
     String businessStatus = 'PENDING',
     String? passportImagePath,
   }) async {
-    final client = _requiredClient;
-    final userId = _requiredUserId;
-    final row = await client
-        .from('customers')
-        .insert({
-          'full_name': fullName.trim().toUpperCase(),
-          'passport_number': passportNumber.trim().toUpperCase(),
-          'date_of_birth': _toIsoDate(dateOfBirth),
-          'place_of_birth': placeOfBirth.trim().toUpperCase(),
-          'nationality': nationality.trim().toUpperCase(),
-          'gender': gender.trim(),
-          'passport_expiry_date': _toIsoDate(passportExpiryDate),
-          'passport_image_path': passportImagePath,
-          'business_status': businessStatus,
-          'created_by': userId,
-        })
-        .select(
-          'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, passport_image_path, '
-          'business_status, created_by, created_at, deleted_at',
-        )
-        .single();
-    return Map<String, dynamic>.from(row);
+    final response = await _requiredClient.rpc(
+      'create_customer_with_case',
+      params: {
+        'p_full_name': fullName.trim().toUpperCase(),
+        'p_passport_number': passportNumber.trim().toUpperCase(),
+        'p_date_of_birth': _toIsoDate(dateOfBirth),
+        'p_place_of_birth': placeOfBirth.trim().toUpperCase(),
+        'p_nationality': nationality.trim().toUpperCase(),
+        'p_gender': gender.trim(),
+        'p_passport_expiry_date': _toIsoDate(passportExpiryDate),
+        'p_passport_image_path': passportImagePath,
+        'p_customer_type': 'STANDARD',
+      },
+    );
+    if (response is! Map || response['customer'] is! Map) {
+      throw const FormatException('Supabase 未返回 Customer + Passport + Case。');
+    }
+    return Map<String, dynamic>.from(response['customer'] as Map);
+  }
+
+  static Future<Map<String, dynamic>> createCaseForExistingCustomer(
+    String customerId,
+  ) async {
+    final response = await _requiredClient.rpc(
+      'create_case_for_existing_customer',
+      params: {'p_customer_id': customerId},
+    );
+    if (response is! Map || response['case'] is! Map) {
+      throw const FormatException('Supabase 未返回新 Case。');
+    }
+    return Map<String, dynamic>.from(response);
   }
 
   static Future<Map<String, dynamic>> updateCustomer({
