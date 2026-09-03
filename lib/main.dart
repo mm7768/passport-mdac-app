@@ -4523,10 +4523,19 @@ class OcrDraftSection extends StatelessWidget {
   }
 }
 
-class TasksScreen extends StatelessWidget {
+class TasksScreen extends StatefulWidget {
   const TasksScreen({required this.repository, super.key});
 
   final DemoRepository repository;
+
+  @override
+  State<TasksScreen> createState() => _TasksScreenState();
+}
+
+class _TasksScreenState extends State<TasksScreen> {
+  bool _recentBatchesExpanded = false;
+
+  DemoRepository get repository => widget.repository;
 
   @override
   Widget build(BuildContext context) {
@@ -4562,12 +4571,59 @@ class TasksScreen extends StatelessWidget {
           children: [
             WorkerBanner(repository: repository),
             const SizedBox(height: 20),
-            SectionCard(
-              title: '最近批次',
+            Card(
+              clipBehavior: Clip.antiAlias,
               child: Column(
-                children: repository.tasks
-                    .map((task) => TaskRow(task: task, repository: repository))
-                    .toList(),
+                children: [
+                  InkWell(
+                    onTap: () => setState(
+                      () => _recentBatchesExpanded = !_recentBatchesExpanded,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 17,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '最近批次 · ${repository.tasks.length}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          AnimatedRotation(
+                            turns: _recentBatchesExpanded ? 0.5 : 0,
+                            duration: const Duration(milliseconds: 180),
+                            child: const Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              color: AppTheme.teal,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeInOut,
+                    child: _recentBatchesExpanded
+                        ? Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                            child: Column(
+                              children: repository.tasks
+                                  .map(
+                                    (task) => TaskRow(
+                                      task: task,
+                                      repository: repository,
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 20),
