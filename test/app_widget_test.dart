@@ -36,7 +36,7 @@ void main() {
     await tester.tap(find.text('任务'));
     await tester.pumpAndSettle();
     expect(find.text('任务队列'), findsOneWidget);
-    await tester.tap(find.text('最近批次'));
+    await tester.tap(find.textContaining('最近批次'));
     await tester.pumpAndSettle();
     expect(find.text('MDAC 批量注册'), findsWidgets);
   });
