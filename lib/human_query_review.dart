@@ -375,6 +375,8 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                         ),
                         onWebViewCreated: (controller) => _controller = controller,
                         onLoadStop: (controller, url) => _fillOfficialForm(),
+                        // TODO: migrate when the beta callback API stabilizes.
+                        // ignore: deprecated_member_use
                         onDownloadStartRequest: (controller, request) =>
                             _captureOfficialPdf(request),
                         onReceivedError: (controller, request, error) {
