@@ -241,7 +241,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                         onWebViewCreated: (controller) => _controller = controller,
                         onLoadStop: (controller, url) => _fillOfficialForm(),
                         onReceivedError: (controller, request, error) {
-                          if (!request.isForMainFrame || !mounted) return;
+                          if (request.isForMainFrame != true || !mounted) return;
                           setState(() => _error = '官方页面加载失败：${error.description}');
                         },
                       ),
