@@ -1,13 +1,13 @@
 """Check Registration Worker.
 
-This module is intentionally a fill-and-review worker, not a submission bot.
+This module queries the official Check Registration service and records verified outcomes.
 It reads the passport number and nationality from the client-safe task snapshot,
 gets the PIN only through a service-role-only RPC, fills the official public query
 page, verifies the filled DOM values, detects official CAPTCHA/slider challenges,
-saves a private review screenshot, and writes NEEDS_REVIEW/RESULT_UNKNOWN.
+saves evidence only for found records or ambiguous responses, and writes the outcome.
 
-It never solves a CAPTCHA, simulates a drag, invokes a form action, or confirms a
-registration result. No passport number or PIN is written to logs.
+It never solves a CAPTCHA or simulates a drag. It only invokes the official Search action
+when no challenge is present. No passport number or PIN is written to logs.
 """
 from __future__ import annotations
 
@@ -107,9 +107,11 @@ class WorkerConfig:
                 raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
-        mode = os.getenv("REGISTRATION_CHECK_MODE", "FILL_REVIEW").strip().upper()
-        if mode != "FILL_REVIEW":
-            raise WorkerError("REGISTRATION_CHECK_MODE 必须严格为 FILL_REVIEW")
+        mode = os.getenv("REGISTRATION_CHECK_MODE", "AUTO_QUERY").strip().upper()
+        if mode not in {"AUTO_QUERY", "FILL_REVIEW"}:
+            raise WorkerError("REGISTRATION_CHECK_MODE 必须为 AUTO_QUERY")
+        if mode == "FILL_REVIEW":
+            LOG.warning("REGISTRATION_CHECK_MODE=FILL_REVIEW 已兼容升级为 AUTO_QUERY")
         allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "false").strip().lower()
         if allow_submit != "false":
             raise WorkerError("ALLOW_REAL_SUBMIT 必须严格为 false")
@@ -266,6 +268,7 @@ class SupabaseAdminClient:
         screenshot_path: str | None,
         challenge_type: str | None,
         result_unknown: bool,
+        result_confirmed: bool,
         retryable: bool,
         error_code: str | None,
         error_message: str | None,
@@ -280,7 +283,7 @@ class SupabaseAdminClient:
                 "p_raw_summary": raw_summary,
                 "p_screenshot_path": screenshot_path,
                 "p_challenge_type": challenge_type,
-                "p_result_confirmed": False,
+                "p_result_confirmed": result_confirmed,
                 "p_result_unknown": result_unknown,
                 "p_retryable": retryable,
                 "p_max_attempts": self.config.max_attempts,
@@ -319,64 +322,76 @@ def challenge_type_from_markup(markup: str) -> str | None:
     return None
 
 
-def make_preview_summary(
+def make_query_summary(
     *,
     challenge_type: str | None,
     field_checks: dict[str, bool],
+    outcome: str,
     screenshot_saved: bool,
 ) -> dict[str, Any]:
     return {
         "source": "MDAC_CHECK_REGISTRATION",
-        "mode": "FILL_REVIEW",
+        "mode": "AUTO_QUERY",
         "fields_checked": sorted(field_checks),
         "field_values_verified": all(field_checks.values()),
         "challenge_type": challenge_type,
+        "outcome": outcome,
         "screenshot_saved": screenshot_saved,
         "captcha_bypass": False,
-        "submitted": False,
-        "result_confirmed": False,
-        "result_page_read": False,
+        "submitted": outcome != "CHALLENGE",
+        "result_confirmed": outcome in {"REGISTERED", "NOT_REGISTERED", "PIN_INVALID"},
+        "result_page_read": outcome != "CHALLENGE",
         "passport_number_logged": False,
         "pin_value_logged": False,
     }
 
 
+def classify_result_text(text: str) -> str:
+    normalized = " ".join(text.upper().split())
+    pin_markers = (
+        "INVALID PIN", "INCORRECT PIN", "WRONG PIN", "PIN IS INVALID",
+        "PIN NOT VALID", "INVALID PASSPORT OR PIN",
+    )
+    no_record_markers = (
+        "NO RECORD FOUND", "NO DATA FOUND", "RECORD NOT FOUND",
+        "NO REGISTRATION FOUND", "NO MATCHING RECORD",
+    )
+    registered_markers = (
+        "REGISTRATION INFORMATION", "REGISTRATION DETAILS",
+        "ARRIVAL INFORMATION", "TRAVEL INFORMATION",
+    )
+    if any(marker in normalized for marker in pin_markers):
+        return "PIN_INVALID"
+    if any(marker in normalized for marker in no_record_markers):
+        return "NOT_REGISTERED"
+    if any(marker in normalized for marker in registered_markers):
+        return "REGISTERED"
+    return "UNKNOWN"
+
+
 def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     if isinstance(exception, PlaywrightTimeoutError):
-        return (
-            "PAGE_TIMEOUT",
-            "Official Check Registration page did not become ready in time",
-            True,
-        )
+        return ("PAGE_TIMEOUT", "Official Check Registration page did not respond in time", True)
     if isinstance(exception, (requests.RequestException, TimeoutError)):
         return ("TRANSIENT_REMOTE_ERROR", "Temporary remote service error", True)
-    return ("REGISTRATION_CHECK_WORKER_ERROR", "Check Registration preview failed", True)
+    return ("REGISTRATION_CHECK_WORKER_ERROR", "Check Registration query failed", True)
 
 
-async def preview_page(
+async def query_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[bytes | None, str | None, str, dict[str, Any]]:
     async with async_playwright() as playwright:
-        browser: Browser = await playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"],
-        )
+        browser: Browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
         try:
             page: Page = await browser.new_page()
-            await page.goto(
-                config.check_url,
-                wait_until="domcontentloaded",
-                timeout=config.page_timeout_ms,
-            )
-            await page.wait_for_selector("#passNo", state="visible", timeout=config.page_timeout_ms)
-            await page.wait_for_selector("#nationality", state="visible", timeout=config.page_timeout_ms)
-            await page.wait_for_selector("#pinKeyId", state="visible", timeout=config.page_timeout_ms)
+            await page.goto(config.check_url, wait_until="domcontentloaded", timeout=config.page_timeout_ms)
+            for selector in ("#passNo", "#nationality", "#pinKeyId"):
+                await page.wait_for_selector(selector, state="visible", timeout=config.page_timeout_ms)
 
             await page.fill("#passNo", runtime_input["passport_number"])
             await page.select_option("#nationality", runtime_input["nationality"])
             await page.fill("#pinKeyId", runtime_input["pin_value"])
-
             field_checks = {
                 "passNo": (await page.input_value("#passNo")) == runtime_input["passport_number"],
                 "nationality": (await page.input_value("#nationality")) == runtime_input["nationality"],
@@ -385,15 +400,47 @@ async def preview_page(
             if not all(field_checks.values()):
                 raise WorkerError("Check Registration 字段回读不一致")
 
-            markup = await page.content()
-            challenge_type = challenge_type_from_markup(markup)
-            screenshot = await page.screenshot(full_page=True, type="png")
-            summary = make_preview_summary(
-                challenge_type=challenge_type,
-                field_checks=field_checks,
-                screenshot_saved=True,
+            challenge_type = challenge_type_from_markup(await page.content())
+            if challenge_type:
+                summary = make_query_summary(
+                    challenge_type=challenge_type, field_checks=field_checks,
+                    outcome="CHALLENGE", screenshot_saved=False,
+                )
+                return None, challenge_type, "CHALLENGE", summary
+
+            before_text = await page.locator("body").inner_text()
+            search = page.get_by_text("Search", exact=True).first
+            if await search.count() == 0:
+                search = page.locator("button[type=submit], input[type=submit]").first
+            if await search.count() == 0:
+                raise WorkerError("找不到官方 Search 按钮")
+
+            await search.click()
+            try:
+                await page.wait_for_load_state("networkidle", timeout=min(config.page_timeout_ms, 30000))
+            except PlaywrightTimeoutError:
+                pass
+
+            outcome = "UNKNOWN"
+            deadline = time.monotonic() + min(config.page_timeout_ms / 1000, 30)
+            while time.monotonic() < deadline:
+                body_text = await page.locator("body").inner_text()
+                outcome = classify_result_text(body_text)
+                if outcome != "UNKNOWN":
+                    break
+                if body_text != before_text:
+                    await page.wait_for_timeout(500)
+                else:
+                    await page.wait_for_timeout(750)
+
+            screenshot = None
+            if outcome in {"REGISTERED", "UNKNOWN"}:
+                screenshot = await page.screenshot(full_page=True, type="png")
+            summary = make_query_summary(
+                challenge_type=None, field_checks=field_checks, outcome=outcome,
+                screenshot_saved=screenshot is not None,
             )
-            return screenshot, challenge_type, summary
+            return screenshot, None, outcome, summary
         finally:
             await browser.close()
 
@@ -430,55 +477,44 @@ class RegistrationCheckWorker:
             )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
-                screenshot, challenge_type, summary = asyncio.run(
-                    preview_page(self.config, runtime_input)
+                screenshot, challenge_type, outcome, summary = asyncio.run(
+                    query_page(self.config, runtime_input)
                 )
                 screenshot_path: str | None = None
-                try:
-                    screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
-                except Exception:
-                    log_event(
-                        logging.WARNING,
-                        step="screenshot_upload",
-                        status="failed",
-                        batch_id=batch_id,
-                        item_id=item_id,
-                        customer_id=customer_id,
-                        error_code="SCREENSHOT_UPLOAD_FAILED",
-                        error_message="Registration Check screenshot upload failed",
-                    )
-                    summary["screenshot_saved"] = False
-                    summary["screenshot_upload_failed"] = True
+                if screenshot is not None:
+                    try:
+                        screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
+                    except Exception:
+                        summary["screenshot_saved"] = False
+                        summary["screenshot_upload_failed"] = True
+                        log_event(
+                            logging.WARNING, step="screenshot_upload", status="failed",
+                            batch_id=batch_id, item_id=item_id, customer_id=customer_id,
+                            error_code="SCREENSHOT_UPLOAD_FAILED",
+                            error_message="Registration Check evidence screenshot upload failed",
+                        )
 
-                if challenge_type is not None:
-                    error_code = "MANUAL_CHALLENGE_REQUIRED"
-                    error_message = "Official CAPTCHA/slider detected; manual review required"
-                else:
-                    error_code = "NO_SUBMIT_PREVIEW"
-                    error_message = "Fields were verified but no result was queried because this worker never submits"
+                mapping = {
+                    "REGISTERED": ("PARSED", "REGISTERED", False, True, False, None, None, "succeeded"),
+                    "NOT_REGISTERED": ("PARSED", "NOT_REGISTERED", False, True, False, "NO_REGISTRATION_RECORD", "No official registration record found", "succeeded"),
+                    "PIN_INVALID": ("PARSED", "PIN_INVALID", False, True, False, "PIN_INVALID", "Official service rejected the PIN", "failed"),
+                    "CHALLENGE": ("UNPARSED", None, True, False, False, "MANUAL_CHALLENGE_REQUIRED", "Official CAPTCHA/slider detected; manual review required", "needs_review"),
+                    "UNKNOWN": ("UNPARSED", None, True, False, False, "REGISTRATION_RESULT_UNPARSED", "Official response could not be classified", "needs_review"),
+                }
+                check_status, normalized, unknown, confirmed, retryable, error_code, error_message, log_status = mapping[outcome]
                 self.supabase.finish_item(
-                    item_id=item_id,
-                    check_status="UNPARSED",
-                    normalized_status=None,
-                    raw_summary=summary,
-                    screenshot_path=screenshot_path,
-                    challenge_type=challenge_type,
-                    result_unknown=True,
-                    retryable=False,
-                    error_code=error_code,
-                    error_message=error_message,
+                    item_id=item_id, check_status=check_status, normalized_status=normalized,
+                    raw_summary=summary, screenshot_path=screenshot_path,
+                    challenge_type=challenge_type, result_unknown=unknown,
+                    result_confirmed=confirmed, retryable=retryable,
+                    error_code=error_code, error_message=error_message,
                 )
                 processed += 1
                 log_event(
-                    logging.WARNING,
-                    step="result_writeback",
-                    status="needs_review",
-                    batch_id=batch_id,
-                    item_id=item_id,
-                    customer_id=customer_id,
-                    result="UNPARSED",
-                    error_code=error_code,
-                    error_message=error_message,
+                    logging.INFO if log_status == "succeeded" else logging.WARNING,
+                    step="result_writeback", status=log_status, batch_id=batch_id,
+                    item_id=item_id, customer_id=customer_id, result=outcome,
+                    error_code=error_code, error_message=error_message,
                 )
             except Exception as exception:
                 error_code, error_message, retryable = classify_page_failure(exception)
@@ -500,7 +536,7 @@ class RegistrationCheckWorker:
                         normalized_status=None,
                         raw_summary={
                             "source": "MDAC_CHECK_REGISTRATION",
-                            "mode": "FILL_REVIEW",
+                            "mode": "AUTO_QUERY",
                             "submitted": False,
                             "result_confirmed": False,
                             "captcha_bypass": False,
@@ -509,6 +545,7 @@ class RegistrationCheckWorker:
                         screenshot_path=None,
                         challenge_type=None,
                         result_unknown=True,
+                        result_confirmed=False,
                         retryable=retryable,
                         error_code=error_code,
                         error_message=error_message,
@@ -549,7 +586,7 @@ class RegistrationCheckWorker:
             logging.INFO,
             step="worker_start",
             status="online",
-            result={"mode": "FILL_REVIEW", "poll_seconds": self.config.poll_seconds},
+            result={"mode": "AUTO_QUERY", "poll_seconds": self.config.poll_seconds},
         )
         while True:
             try:
