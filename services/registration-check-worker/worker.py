@@ -409,7 +409,9 @@ async def query_page(
                 return None, challenge_type, "CHALLENGE", summary
 
             before_text = await page.locator("body").inner_text()
-            search = page.get_by_text("Search", exact=True).first
+            search = page.locator("#submit, #searchRegistration").first
+            if await search.count() == 0:
+                search = page.get_by_text("Search", exact=True).first
             if await search.count() == 0:
                 search = page.locator("button[type=submit], input[type=submit]").first
             if await search.count() == 0:
