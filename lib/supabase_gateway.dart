@@ -421,6 +421,36 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回人工查询结果。');
   }
 
+  static Future<List<Map<String, dynamic>>> fetchCustomerHumanEvidence(
+    String customerId,
+  ) async {
+    final registrationRows = await _requiredClient
+        .from('registration_checks')
+        .select(
+          'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
+        )
+        .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
+        .order('checked_at', ascending: false)
+        .limit(20);
+    final visitPassRows = await _requiredClient
+        .from('visit_pass_checks')
+        .select(
+          'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
+        )
+        .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
+        .order('checked_at', ascending: false)
+        .limit(20);
+    return [
+      for (final row in registrationRows)
+        {...Map<String, dynamic>.from(row), 'type': 'REGISTRATION_CHECK'},
+      for (final row in visitPassRows)
+        {...Map<String, dynamic>.from(row), 'type': 'VISIT_PASS_CHECK'},
+    ]..sort((a, b) => (b['checked_at']?.toString() ?? '')
+        .compareTo(a['checked_at']?.toString() ?? ''));
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
