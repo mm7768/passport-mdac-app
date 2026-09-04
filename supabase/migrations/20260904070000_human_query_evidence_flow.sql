@@ -108,6 +108,14 @@ begin
   if v_path is not null and v_path not like ('human-query-evidence/'||auth.uid()::text||'/%') then
     raise exception 'invalid evidence screenshot path';
   end if;
+  if v_path is not null and not exists (
+    select 1 from storage.objects o
+     where o.bucket_id='passport-documents'
+       and o.name=v_path
+       and o.owner=auth.uid()
+  ) then
+    raise exception 'evidence screenshot object does not exist or is not owned';
+  end if;
 
   if v_outcome='FOUND' then
     v_item_status:='SUCCEEDED'; v_batch_status:='SUCCEEDED'; v_check:='PARSED';
