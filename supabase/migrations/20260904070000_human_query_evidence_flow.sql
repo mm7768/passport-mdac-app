@@ -34,7 +34,7 @@ begin
   ) then raise exception 'customer already has an active automation item'; end if;
 
   select id into v_case_id from public.customer_cases
-   where customer_id=p_customer_id and deleted_at is null
+   where customer_id=p_customer_id
    order by created_at desc limit 1;
 
   insert into public.automation_batches(
