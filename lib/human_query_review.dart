@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -41,6 +42,9 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
   String? _itemId;
   String? _targetEntryDate;
   String? _targetExitDate;
+  Uint8List? _officialPdfBytes;
+  String? _officialPdfName;
+  bool _capturingPdf = false;
   bool _starting = true;
   bool _pageLoaded = false;
   bool _finishing = false;
@@ -160,6 +164,51 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     return result == true || result?.toString().toLowerCase() == 'true';
   }
 
+  Future<void> _captureOfficialPdf(DownloadStartRequest request) async {
+    if (_visitPass || _capturingPdf) return;
+    setState(() {
+      _capturingPdf = true;
+      _error = null;
+    });
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse(request.url.toString());
+      final cookies = await CookieManager.instance().getCookies(url: request.url);
+      final download = await client.getUrl(uri);
+      if (cookies.isNotEmpty) {
+        download.headers.set(
+          HttpHeaders.cookieHeader,
+          cookies.map((cookie) => '${cookie.name}=${cookie.value}').join('; '),
+        );
+      }
+      download.followRedirects = true;
+      final response = await download.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('官方 PDF 下载失败（HTTP ${response.statusCode}）');
+      }
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk in response) { builder.add(chunk); }
+      final bytes = builder.takeBytes();
+      if (bytes.length < 5 || ascii.decode(bytes.sublist(0, 4), allowInvalid: true) != '%PDF') {
+        throw const FormatException('官方返回的文件不是有效 PDF。');
+      }
+      if (!mounted) return;
+      setState(() {
+        _officialPdfBytes = bytes;
+        _officialPdfName = request.suggestedFilename ?? 'registration.pdf';
+        _capturingPdf = false;
+      });
+    } catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        _capturingPdf = false;
+        _error = '自动保存官方 PDF 失败：$exception。仍可使用结果页截图作为备用凭证。';
+      });
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<bool> _confirmOutcome(String outcome) async {
     final message = switch (outcome) {
       'FOUND' => '请确认官方页面已经明确显示有效记录。确认后 App 会立即截图；截图上传成功后才会完成任务。',
@@ -226,10 +275,19 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
         if (image == null || image.isEmpty) {
           throw const FormatException('网页截图为空，请保持结果页打开后重试。');
         }
-        screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
-          itemId: _itemId!,
-          bytes: image,
-        );
+        if (!_visitPass && outcome == 'FOUND' && _officialPdfBytes != null) {
+          screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
+            itemId: _itemId!,
+            bytes: _officialPdfBytes!,
+            extension: 'pdf',
+            contentType: 'application/pdf',
+          );
+        } else {
+          screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
+            itemId: _itemId!,
+            bytes: image,
+          );
+        }
       }
       await SupabaseGateway.finishHumanQueryTask(
         itemId: _itemId!,
@@ -283,6 +341,18 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
               ),
             ),
           ),
+          if (!_visitPass && (_capturingPdf || _officialPdfBytes != null))
+            Container(
+              width: double.infinity,
+              color: const Color(0xFFE3F4EF),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Text(
+                _capturingPdf
+                    ? '正在下载官方 Registration PDF…'
+                    : '已取得官方 PDF：${_officialPdfName ?? 'registration.pdf'}，确认成功时将自动上传。',
+                style: const TextStyle(color: Color(0xFF006C63)),
+              ),
+            ),
           if (_error != null)
             Container(
               width: double.infinity,
@@ -301,9 +371,12 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                           javaScriptEnabled: true,
                           supportZoom: true,
                           useShouldOverrideUrlLoading: false,
+                          useOnDownloadStart: true,
                         ),
                         onWebViewCreated: (controller) => _controller = controller,
                         onLoadStop: (controller, url) => _fillOfficialForm(),
+                        onDownloadStartRequest: (controller, request) =>
+                            _captureOfficialPdf(request),
                         onReceivedError: (controller, request, error) {
                           if (request.isForMainFrame != true || !mounted) return;
                           setState(() => _error = '官方页面加载失败：${error.description}');
@@ -324,7 +397,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                       children: [
                         SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
                         SizedBox(width: 10),
-                        Text('正在截图、上传并回写…'),
+                        Text('正在保存凭证、上传并回写…'),
                       ],
                     )
                   : Wrap(
