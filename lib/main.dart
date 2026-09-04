@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'mdac_human_review.dart';
+import 'human_query_review.dart';
 import 'supabase_gateway.dart';
 
 Future<void> main() async {
@@ -3349,6 +3350,90 @@ class _CustomersScreenState extends State<CustomersScreen> {
       showToast(context, '请先选择客户。');
       return;
     }
+    if (type == TaskType.registrationCheck ||
+        type == TaskType.visitPassCheck) {
+      final customers = selected
+          .map(widget.repository.findCustomer)
+          .whereType<Customer>()
+          .toList(growable: false);
+      for (final customer in customers) {
+        if ((customer.pin ?? '').trim().isEmpty) {
+          showToast(context, '${customer.fullName} 没有可用 PIN。', error: true);
+          return;
+        }
+      }
+      final visitPass = type == TaskType.visitPassCheck;
+      final settings = widget.repository.mdacSettings;
+      if (visitPass &&
+          (settings == null ||
+              settings.mdacEmail.trim().isEmpty ||
+              settings.regionCode.trim().isEmpty ||
+              settings.mdacPhone.trim().isEmpty)) {
+        showToast(context, '请先在 MDAC 默认业务配置填写邮箱、国家/地区代码和手机号。', error: true);
+        return;
+      }
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('${taskTypeLabel(type)} · 人工滑块'),
+          content: Text(
+            '共 ${customers.length} 位客户，将逐位打开官方查询页。\n\n'
+            'App 自动填写资料；你负责完成滑块、点击 Search 并判断结果。'
+            '“查到记录”必须先成功截图上传，才能完成任务。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('开始'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+
+      var completed = 0;
+      for (final customer in customers) {
+        final result = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (_) => HumanQueryReviewPage(
+              kind: visitPass
+                  ? HumanQueryKind.visitPass
+                  : HumanQueryKind.registration,
+              customerId: customer.id,
+              customerName: customer.fullName,
+              passportNumber: customer.passportNumber,
+              nationality: customer.nationality,
+              pin: customer.pin!,
+              email: settings?.mdacEmail ?? '',
+              regionCode: settings?.regionCode ?? '',
+              mobile: settings?.mdacPhone ?? '',
+            ),
+          ),
+        );
+        if (!mounted) return;
+        if (result != true) break;
+        completed += 1;
+        await widget.repository.syncAutomationTasksFromSupabase();
+        await widget.repository.syncCustomersFromSupabase();
+      }
+      if (!mounted) return;
+      if (completed == customers.length) {
+        setState(() => selected.clear());
+      }
+      showToast(
+        context,
+        completed == customers.length
+            ? '${taskTypeLabel(type)} 已完成 ${customers.length} 位。'
+            : '已完成 $completed/${customers.length} 位；未完成任务可在任务页继续处理或删除。',
+        error: completed != customers.length,
+      );
+      return;
+    }
+
     final error = await widget.repository.createTaskAsync(
       type: type,
       customerIds: selected.toList(),
