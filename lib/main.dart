@@ -3379,7 +3379,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
           content: Text(
             '共 ${customers.length} 位客户，将逐位打开官方查询页。\n\n'
             'App 自动填写资料；你负责完成滑块、点击 Search 并判断结果。'
-            '“查到记录”必须先成功截图上传，才能完成任务。',
+            'Check Registration 只接受与最近一次成功 MDAC 入境/离境日期一致的记录；官方 PDF 优先保存，截图作为备用凭证。',
           ),
           actions: [
             TextButton(
@@ -7374,6 +7374,11 @@ Future<void> showCustomerDetail(
               if (customer.passportImagePath?.trim().isNotEmpty == true) ...[
                 const SizedBox(height: 18),
                 PassportDocumentCard(path: customer.passportImagePath!),
+              ],
+              if (SupabaseGateway.isConfigured &&
+                  SupabaseGateway.currentUserId != null) ...[
+                const SizedBox(height: 18),
+                CustomerQueryEvidenceCard(customerId: customer.id),
               ],
               if (customer.lastSummary != null) ...[
                 const SizedBox(height: 18),
