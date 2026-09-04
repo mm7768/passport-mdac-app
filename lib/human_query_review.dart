@@ -431,3 +431,139 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     );
   }
 }
+
+class CustomerQueryEvidenceCard extends StatefulWidget {
+  const CustomerQueryEvidenceCard({super.key, required this.customerId});
+  final String customerId;
+  @override
+  State<CustomerQueryEvidenceCard> createState() => _CustomerQueryEvidenceCardState();
+}
+
+class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
+  late Future<List<Map<String, dynamic>>> _future;
+  @override
+  void initState() {
+    super.initState();
+    _future = SupabaseGateway.fetchCustomerHumanEvidence(widget.customerId);
+  }
+  void _reload() => setState(() {
+    _future = SupabaseGateway.fetchCustomerHumanEvidence(widget.customerId);
+  });
+  Future<void> _open(Map<String, dynamic> row) async {
+    final path = row['screenshot_path']?.toString() ?? '';
+    if (path.isEmpty) return;
+    try {
+      final url = await SupabaseGateway.createSignedPassportImageUrl(path);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (_) => _PrivateEvidencePreviewPage(
+          url: url,
+          isPdf: path.toLowerCase().endsWith('.pdf'),
+          title: row['type'] == 'VISIT_PASS_CHECK'
+              ? 'Visit Pass 查询凭证'
+              : 'Registration 查询凭证',
+        ),
+      ));
+    } catch (exception) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('凭证加载失败：$exception')),
+      );
+    }
+  }
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return OutlinedButton.icon(
+            onPressed: _reload,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('查询凭证加载失败，重试'),
+          );
+        }
+        final rows = snapshot.data ?? const <Map<String, dynamic>>[];
+        if (rows.isEmpty) return const SizedBox.shrink();
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF5FAF8),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFD4E5E0)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(children: [
+                Icon(Icons.verified_outlined, color: Color(0xFF087F78)),
+                SizedBox(width: 8),
+                Text('官方查询凭证', style: TextStyle(fontWeight: FontWeight.w800)),
+              ]),
+              const SizedBox(height: 8),
+              for (final row in rows)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: Icon(
+                    (row['screenshot_path']?.toString() ?? '').toLowerCase().endsWith('.pdf')
+                        ? Icons.picture_as_pdf_outlined
+                        : Icons.image_outlined,
+                    color: const Color(0xFF087F78),
+                  ),
+                  title: Text(row['type'] == 'VISIT_PASS_CHECK'
+                      ? 'Check Visit Pass'
+                      : 'Check Registration'),
+                  subtitle: Text(
+                    '${row['normalized_status'] ?? ''} · ${row['checked_at'] ?? ''}',
+                  ),
+                  trailing: const Icon(Icons.open_in_new_rounded),
+                  onTap: () => _open(row),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PrivateEvidencePreviewPage extends StatelessWidget {
+  const _PrivateEvidencePreviewPage({
+    required this.url,
+    required this.isPdf,
+    required this.title,
+  });
+  final String url;
+  final bool isPdf;
+  final String title;
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: isPdf
+          ? InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri(url)),
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                supportZoom: true,
+              ),
+            )
+          : InteractiveViewer(
+              minScale: 0.8,
+              maxScale: 5,
+              child: Center(
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, error, __) => Text('图片加载失败：$error'),
+                ),
+              ),
+            ),
+    );
+  }
+}
