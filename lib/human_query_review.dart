@@ -39,6 +39,8 @@ class HumanQueryReviewPage extends StatefulWidget {
 class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
   InAppWebViewController? _controller;
   String? _itemId;
+  String? _targetEntryDate;
+  String? _targetExitDate;
   bool _starting = true;
   bool _pageLoaded = false;
   bool _finishing = false;
@@ -74,6 +76,8 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
       if (!mounted) return;
       setState(() {
         _itemId = task['item_id']?.toString();
+        _targetEntryDate = task['target_entry_date']?.toString();
+        _targetExitDate = task['target_exit_date']?.toString();
         _starting = false;
       });
     } catch (exception) {
@@ -117,6 +121,45 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     }
   }
 
+  List<String> _dateCandidates(String? isoDate) {
+    if (isoDate == null || isoDate.isEmpty) return const [];
+    final parts = isoDate.split('-');
+    if (parts.length != 3) return [isoDate];
+    final year = parts[0];
+    final month = parts[1].padLeft(2, '0');
+    final day = parts[2].padLeft(2, '0');
+    return [
+      '$day/$month/$year',
+      '$day-$month-$year',
+      '$year-$month-$day',
+      '$day.$month.$year',
+    ];
+  }
+
+  String _displayDate(String? value) {
+    final candidates = _dateCandidates(value);
+    return candidates.isEmpty ? '未设置' : candidates.first;
+  }
+
+  Future<bool> _officialPageMatchesTargetDates() async {
+    if (_visitPass) return true;
+    final controller = _controller;
+    if (controller == null) return false;
+    final entry = _dateCandidates(_targetEntryDate);
+    final exit = _dateCandidates(_targetExitDate);
+    if (entry.isEmpty || exit.isEmpty) return false;
+    final result = await controller.evaluateJavascript(source: '''
+(() => {
+  const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').toUpperCase();
+  const entry = ${jsonEncode(entry)};
+  const exit = ${jsonEncode(exit)};
+  return entry.some(value => text.includes(value.toUpperCase())) &&
+         exit.some(value => text.includes(value.toUpperCase()));
+})()
+''');
+    return result == true || result?.toString().toLowerCase() == 'true';
+  }
+
   Future<bool> _confirmOutcome(String outcome) async {
     final message = switch (outcome) {
       'FOUND' => '请确认官方页面已经明确显示有效记录。确认后 App 会立即截图；截图上传成功后才会完成任务。',
@@ -146,6 +189,24 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
 
   Future<void> _finish(String outcome) async {
     if (_finishing || _itemId == null || !_pageLoaded) return;
+    if (outcome == 'FOUND' && !_visitPass) {
+      try {
+        final matches = await _officialPageMatchesTargetDates();
+        if (!matches) {
+          if (!mounted) return;
+          setState(() {
+            _error =
+                '当前官方结果没有同时显示本次目标日期：入境 ${_displayDate(_targetEntryDate)}，'
+                '离境 ${_displayDate(_targetExitDate)}。可能是历史记录，不能确认成功。';
+          });
+          return;
+        }
+      } catch (exception) {
+        if (!mounted) return;
+        setState(() => _error = '无法核对官方结果日期：$exception');
+        return;
+      }
+    }
     if (!await _confirmOutcome(outcome) || !mounted) return;
     setState(() {
       _finishing = true;
@@ -211,7 +272,10 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      '资料会自动填写。请手动完成滑块、点击官方 Search，并根据官方结果选择下方按钮。',
+                      _visitPass
+                          ? '资料会自动填写。请手动完成滑块、点击官方 Search，并根据官方结果选择下方按钮。'
+                          : '目标：入境 ${_displayDate(_targetEntryDate)} · 离境 ${_displayDate(_targetExitDate)}。'
+                              '请完成滑块并只确认日期完全一致的记录；历史记录不能判定成功。',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                   ),
