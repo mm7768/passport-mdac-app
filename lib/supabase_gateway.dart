@@ -377,21 +377,31 @@ class SupabaseGateway {
   static Future<String> uploadHumanQueryEvidence({
     required String itemId,
     required Uint8List bytes,
+    String extension = 'png',
+    String contentType = 'image/png',
   }) async {
-    if (bytes.isEmpty) throw const FormatException('网页截图为空。');
+    if (bytes.isEmpty) throw const FormatException('查询凭证为空。');
     final userId = currentUserId;
     if (userId == null) throw const AuthException('登录状态已失效。');
+    final safeExtension = extension.toLowerCase() == 'pdf' ? 'pdf' : 'png';
     final path =
-        'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.png';
+        'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
     await _requiredClient.storage.from('passport-documents').uploadBinary(
       path,
       bytes,
-      fileOptions: const FileOptions(
-        contentType: 'image/png',
+      fileOptions: FileOptions(
+        contentType: contentType,
         upsert: false,
       ),
     );
     return path;
+  }
+
+  static Future<Uint8List> downloadHumanQueryEvidence(String path) async {
+    if (!path.startsWith('human-query-evidence/$_requiredUserId/')) {
+      throw const AuthException('无权读取该查询凭证。');
+    }
+    return _requiredClient.storage.from('passport-documents').download(path);
   }
 
   static Future<Map<String, dynamic>> finishHumanQueryTask({
