@@ -239,7 +239,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_status": status,
                 "p_hostname": socket.gethostname(),
-                "p_version": "registration-check-1",
+                "p_version": "registration-check-2",
             },
         )
 
