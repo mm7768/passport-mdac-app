@@ -531,17 +531,26 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       _submitBusy = true;
       _pageMessage = '正在最后核对官方页面字段与滑块状态…';
     });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('正在核对并提交，请稍候…')),
+    );
+    // Let the dialog route finish closing before interrogating the WebView.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
     try {
       final preflight = await _validateSubmitPreflight(item);
       if (!mounted || _active?.id != item.id) return;
       if (preflight['ok'] != true) {
         final mismatches = (preflight['mismatches'] as List?)?.join(', ');
+        final message = mismatches != null && mismatches.isNotEmpty
+            ? '提交已停止：确认后页面字段发生变化（$mismatches）。请重新恢复并核对资料。'
+            : '提交已停止：官方页面、必填项或滑块状态已变化。请重新检查后再提交。';
         setState(() {
           _captchaReady = false;
-          _pageMessage = mismatches != null && mismatches.isNotEmpty
-              ? '提交已停止：确认后页面字段发生变化（$mismatches）。请重新恢复并核对资料。'
-              : '提交已停止：官方页面、必填项或滑块状态已变化。请重新检查后再提交。';
+          _pageMessage = message;
         });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: _danger),
+        );
         return;
       }
       setState(() {
@@ -579,15 +588,35 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       }
       if (!mounted) return;
       setState(() {
-        _pageMessage = '已触发官方 Submit。请等待结果页面，不要重复提交。';
+        _pageMessage = '已触发官方 Submit。正在等待并核对官方结果，请勿重复提交。';
       });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已触发官方提交，正在等待结果…')),
+      );
+      // Some official responses replace the DOM without changing the URL, so
+      // navigation callbacks alone are insufficient. Poll the visible result.
+      for (var attempt = 0; attempt < 12; attempt++) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        if (!mounted || _active?.id != item.id) return;
+        if (await _inspectOfficialSuccessMarker()) {
+          setState(() => _resultPageSeen = true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已检测到官方注册成功，请点击“确认官方成功”完成写回。'),
+            ),
+          );
+          break;
+        }
+      }
     } catch (error) {
       if (!mounted) return;
-      setState(() {
-        _pageMessage = _submitClicked
-            ? '提交意图已记录，但官方点击或页面返回异常。请按“结果无法确认”处理，禁止盲目重提。错误：$error'
-            : '未能记录提交意图，因此没有触发官方 Submit：$error';
-      });
+      final message = _submitClicked
+          ? '提交意图已记录，但官方点击或页面返回异常。请按“结果无法确认”处理，禁止盲目重提。错误：$error'
+          : '未能记录提交意图，因此没有触发官方 Submit：$error';
+      setState(() => _pageMessage = message);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: _danger),
+      );
     } finally {
       if (mounted) setState(() => _submitBusy = false);
     }
