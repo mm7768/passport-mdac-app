@@ -357,6 +357,60 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 Check Visit Pass 批次。');
   }
 
+  static Future<Map<String, dynamic>> createHumanQueryTask({
+    required String customerId,
+    required bool visitPass,
+    Map<String, dynamic> settingsSnapshot = const {},
+  }) async {
+    final result = await _requiredClient.rpc(
+      'create_human_query_task',
+      params: {
+        'p_customer_id': customerId,
+        'p_task_type': visitPass ? 'VISIT_PASS_CHECK' : 'REGISTRATION_CHECK',
+        'p_settings_snapshot': settingsSnapshot,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回人工查询任务。');
+  }
+
+  static Future<String> uploadHumanQueryEvidence({
+    required String itemId,
+    required Uint8List bytes,
+  }) async {
+    if (bytes.isEmpty) throw const FormatException('网页截图为空。');
+    final userId = currentUserId;
+    if (userId == null) throw const AuthException('登录状态已失效。');
+    final path =
+        'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.png';
+    await _requiredClient.storage.from('passport-documents').uploadBinary(
+      path,
+      bytes,
+      fileOptions: const FileOptions(
+        contentType: 'image/png',
+        upsert: false,
+      ),
+    );
+    return path;
+  }
+
+  static Future<Map<String, dynamic>> finishHumanQueryTask({
+    required String itemId,
+    required String outcome,
+    String? screenshotPath,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'finish_human_query_task',
+      params: {
+        'p_item_id': itemId,
+        'p_outcome': outcome,
+        'p_screenshot_path': screenshotPath,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回人工查询结果。');
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
