@@ -5,6 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'mdac_human_review.dart';
+import 'human_query_review.dart';
 import 'supabase_gateway.dart';
 
 Future<void> main() async {
@@ -230,6 +232,7 @@ enum TaskStatus {
   succeeded,
   partialSuccess,
   failed,
+  cancelled,
   needsReview,
 }
 
@@ -520,6 +523,73 @@ class CustomerHardDeleteOutcome {
   final int storageObjectCount;
 }
 
+const johorStateCode = '01';
+const defaultJohorCityCode = '0100';
+const johorCityCodes = <String, String>{
+  '0100': 'JOHOR',
+  '0101': 'ASAHAN, JOHOR',
+  '0102': 'AYER BALOI',
+  '0103': 'AYER HITAM',
+  '0104': 'BAKRI',
+  '0105': 'BATU ANAM',
+  '0106': 'BATU PAHAT',
+  '0107': 'BEKOK',
+  '0108': 'BENUT',
+  '0109': 'BUKIT GAMBIR',
+  '0110': 'BUKIT PASIR',
+  '0111': 'CHAAH',
+  '0112': 'ENDAU',
+  '0113': 'GELANG PATAH',
+  '0114': 'GEMAS',
+  '0115': 'GERSEK',
+  '0116': 'G. TAIB ANDAK',
+  '0117': 'JEMENTAH',
+  '0118': 'JOHOR BAHRU',
+  '0119': 'KAHANG',
+  '0120': 'KLUANG',
+  '0121': 'KG KNGAN T DR',
+  '0122': 'KOTA TINGGI',
+  '0123': 'KUKUP',
+  '0124': 'KULAI',
+  '0125': 'LABIS',
+  '0126': 'LAYANG-LAYANG',
+  '0127': 'MASAI',
+  '0128': 'MERSING',
+  '0129': 'MUAR',
+  '0130': 'PAGOH',
+  '0131': 'PALOH',
+  '0132': 'PANCHOR',
+  '0133': 'PARIT JAWA',
+  '0134': 'PARIT RAJA',
+  '0135': 'PARIT SULONG',
+  '0136': 'PASIR GUDANG',
+  '0137': 'PEKAN NANAS',
+  '0138': 'PENGERANG',
+  '0139': 'PONTIAN',
+  '0140': 'RENGIT',
+  '0141': 'SEGAMAT',
+  '0142': 'SKUDAI',
+  '0143': 'SEMERAH',
+  '0144': 'SENAI',
+  '0145': 'SENGGARANG',
+  '0146': 'SIMPANG RENGGAM',
+  '0147': 'SUNGAI MATI',
+  '0148': 'TANGKAK',
+  '0149': 'ULU TIRAM',
+  '0150': 'YONG PENG',
+  '0151': 'SAGIL',
+  '0157': 'BUKIT KEPONG',
+  '0177': 'LENGA',
+  '0191': 'SUNGAI BALANG',
+  '0192': 'GEMAS BARU',
+  '0193': 'RENGGAM',
+  '0194': 'BANDAR PENAWAR',
+  '0195': 'LEDANG',
+  '0196': 'ISKANDAR PUTERI',
+  '0197': 'KULAI JAYA',
+  '0198': 'KANGKAR PULAI',
+};
+
 class MdacSettings {
   const MdacSettings({
     required this.mdacEmail,
@@ -548,8 +618,8 @@ class MdacSettings {
     accommodationStay: '02',
     address1: '',
     address2: '',
-    stateCode: '',
-    cityCode: '',
+    stateCode: johorStateCode,
+    cityCode: defaultJohorCityCode,
     postcode: '',
     pobMode: 'NATIONALITY',
   );
@@ -896,6 +966,37 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> cancelAutomationTask(String batchId, String actor) async {
+    if (!remoteMode) {
+      AutomationTask? task;
+      for (final item in tasks) {
+        if (item.id == batchId) {
+          task = item;
+          break;
+        }
+      }
+      if (task == null) return '找不到需要取消的任务。';
+      if (task.status != TaskStatus.queued &&
+          task.status != TaskStatus.needsReview) {
+        return '只能取消排队中或待人工审核的任务。';
+      }
+      task.status = TaskStatus.cancelled;
+      auditEvents.insert(0, '$actor 取消任务 $batchId');
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.cancelAutomationBatch(batchId);
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 取消任务 $batchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '取消任务失败：$exception';
+    }
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -966,8 +1067,9 @@ class DemoRepository extends ChangeNotifier {
       case 'PARTIAL_SUCCESS':
         return TaskStatus.partialSuccess;
       case 'FAILED':
-      case 'CANCELLED':
         return TaskStatus.failed;
+      case 'CANCELLED':
+        return TaskStatus.cancelled;
       case 'NEEDS_REVIEW':
         return TaskStatus.needsReview;
       case 'QUEUED':
@@ -1056,18 +1158,29 @@ class DemoRepository extends ChangeNotifier {
             int.tryParse(row['segment_index']?.toString() ?? '') ?? 0;
         final confidence =
             double.tryParse(row['confidence']?.toString() ?? '') ?? 0;
+        final nationality =
+            extracted['nationality']?.toString().trim().toUpperCase() ?? '';
+        final rawFullName = extracted['full_name']?.toString() ?? '';
+        final normalizedFullName = rawFullName
+            .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
+            .split(RegExp(r'\s+'))
+            .where((part) => part.isNotEmpty)
+            .join(' ')
+            .toUpperCase();
+        final extractedPlace =
+            extracted['place_of_birth']?.toString().trim().toUpperCase() ?? '';
         drafts.add(
           OcrDraft(
             id: 'remote-ocr-${row['id']}',
             sourceLabel: fileNames[batchId] ?? 'OCR 批次 $batchId',
             sourceIndex: '第 ${pageIndex + 1} 页 · 护照 ${segmentIndex + 1}',
-            fullName: extracted['full_name']?.toString() ?? '',
+            fullName: normalizedFullName,
             passportNumber: extracted['passport_number']?.toString() ?? '',
             dateOfBirth: _displayDate(
               extracted['date_of_birth'] ?? extracted['display_date_of_birth'],
             ),
-            placeOfBirth: extracted['place_of_birth']?.toString() ?? '',
-            nationality: extracted['nationality']?.toString() ?? '',
+            placeOfBirth: extractedPlace.isEmpty ? nationality : extractedPlace,
+            nationality: nationality,
             gender: extracted['gender']?.toString() ?? '',
             passportExpiryDate: _displayDate(
               extracted['passport_expiry_date'] ??
@@ -1161,6 +1274,26 @@ class DemoRepository extends ChangeNotifier {
       return null;
     } catch (exception) {
       return '客户创建失败，云端未保存：$exception';
+    }
+  }
+
+  Future<String?> createCaseForExistingCustomerWithSync(
+    Customer customer,
+    String actor,
+  ) async {
+    if (customer.isDeleted) return '客户已删除，不能再次下单。';
+    if (!remoteMode) {
+      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的本地 Case');
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.createCaseForExistingCustomer(customer.id);
+      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的 Case');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '再次下单失败：$exception';
     }
   }
 
@@ -1409,6 +1542,8 @@ class DemoRepository extends ChangeNotifier {
       await SupabaseGateway.markCustomerHardDeleteStorageCleaned(jobId);
       final completed = await SupabaseGateway.completeCustomerHardDelete(jobId);
       await syncCustomersFromSupabase();
+      await syncOcrBatchesFromSupabase();
+      await syncOcrResultsFromSupabase();
       auditEvents.insert(
         0,
         '$actor 永久删除 ${uniqueIds.length} 位客户及其护照资料；Storage ${paths.length} 个对象已清理',
@@ -1679,7 +1814,12 @@ class DemoRepository extends ChangeNotifier {
 
     final customer = Customer(
       id: 'c-${DateTime.now().microsecondsSinceEpoch}',
-      fullName: values['fullName']!.trim().toUpperCase(),
+      fullName: values['fullName']!
+          .replaceAll(RegExp(r"[^A-Za-z' -]"), ' ')
+          .split(RegExp(r'\s+'))
+          .where((part) => part.isNotEmpty)
+          .join(' ')
+          .toUpperCase(),
       passportNumber: normalizedPassport,
       dateOfBirth: values['dateOfBirth']!.trim(),
       placeOfBirth: values['placeOfBirth']!.trim().toUpperCase(),
@@ -1868,8 +2008,7 @@ class DemoRepository extends ChangeNotifier {
   AutomationTask? activeTaskForCustomer(String customerId) {
     for (final task in tasks) {
       if ((task.status == TaskStatus.queued ||
-              task.status == TaskStatus.running ||
-              task.status == TaskStatus.needsReview) &&
+              task.status == TaskStatus.running) &&
           task.customerIds.contains(customerId)) {
         return task;
       }
@@ -2379,8 +2518,17 @@ class MdacShell extends StatefulWidget {
 
 class _MdacShellState extends State<MdacShell> {
   AppSection section = AppSection.overview;
+  String? customerStatusFilter;
 
-  void open(AppSection target) => setState(() => section = target);
+  void open(AppSection target) => setState(() {
+    section = target;
+    if (target != AppSection.customers) customerStatusFilter = null;
+  });
+
+  void openCustomers([String? statusFilter]) => setState(() {
+    customerStatusFilter = statusFilter;
+    section = AppSection.customers;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2423,12 +2571,14 @@ class _MdacShellState extends State<MdacShell> {
           repository: widget.repository,
           userName: widget.userName,
           onNavigate: open,
+          onOpenCustomers: openCustomers,
         );
       case AppSection.customers:
         return CustomersScreen(
           repository: widget.repository,
           actor: widget.userName,
           role: widget.role,
+          initialBusinessStatusFilter: customerStatusFilter,
         );
       case AppSection.tasks:
         return TasksScreen(repository: widget.repository);
@@ -2635,12 +2785,14 @@ class OverviewScreen extends StatelessWidget {
     required this.repository,
     required this.userName,
     required this.onNavigate,
+    required this.onOpenCustomers,
     super.key,
   });
 
   final DemoRepository repository;
   final String userName;
   final ValueChanged<AppSection> onNavigate;
+  final ValueChanged<String?> onOpenCustomers;
 
   @override
   Widget build(BuildContext context) {
@@ -2684,6 +2836,7 @@ class OverviewScreen extends StatelessWidget {
                       caption: '软删除记录不计入',
                       icon: Icons.people_alt_outlined,
                       tint: AppTheme.mint,
+                      onTap: () => onOpenCustomers(null),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2692,6 +2845,9 @@ class OverviewScreen extends StatelessWidget {
                       caption: '可以开始下一步',
                       icon: Icons.pending_actions_rounded,
                       tint: const Color(0xFFFFEBD8),
+                      onTap: () => onOpenCustomers(
+                        businessStatusLabel('PENDING'),
+                      ),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2700,6 +2856,7 @@ class OverviewScreen extends StatelessWidget {
                       caption: '手机与 Worker 已解耦',
                       icon: Icons.sync_rounded,
                       tint: const Color(0xFFE0EDF8),
+                      onTap: () => onNavigate(AppSection.tasks),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -2708,6 +2865,9 @@ class OverviewScreen extends StatelessWidget {
                       caption: '不确定结果不会伪装成功',
                       icon: Icons.error_outline_rounded,
                       tint: const Color(0xFFFFE2E0),
+                      onTap: () => onOpenCustomers(
+                        businessStatusLabel('ACTION_REQUIRED'),
+                      ),
                     ),
                   ],
                 );
@@ -2841,12 +3001,14 @@ class CustomersScreen extends StatefulWidget {
     required this.repository,
     required this.actor,
     required this.role,
+    this.initialBusinessStatusFilter,
     super.key,
   });
 
   final DemoRepository repository;
   final String actor;
   final UserRole role;
+  final String? initialBusinessStatusFilter;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -2855,10 +3017,16 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
-  String businessStatusFilter = '全部';
+  late String businessStatusFilter;
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
   DateTimeRange? createdDateRange;
+
+  @override
+  void initState() {
+    super.initState();
+    businessStatusFilter = widget.initialBusinessStatusFilter ?? '全部';
+  }
 
   @override
   void dispose() {
@@ -3064,6 +3232,40 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> createCaseForExistingCustomer(Customer customer) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认再次下单？'),
+        content: Text(
+          '将为 ${customer.fullName} 创建一个全新的业务 Case。\n\n'
+          '客户基本资料和当前有效护照会被复用；入境日期、MDAC、Registration 和 Visit Pass 不会复用。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('创建新 Case'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await widget.repository.createCaseForExistingCustomerWithSync(
+      customer,
+      widget.actor,
+    );
+    if (!mounted) return;
+    showToast(
+      context,
+      error ?? '新 Case 已创建，可为本次订单设置日期并开始 MDAC。',
+      error: error != null,
+    );
+  }
+
   Future<void> startMdac() async {
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
@@ -3148,6 +3350,90 @@ class _CustomersScreenState extends State<CustomersScreen> {
       showToast(context, '请先选择客户。');
       return;
     }
+    if (type == TaskType.registrationCheck ||
+        type == TaskType.visitPassCheck) {
+      final customers = selected
+          .map(widget.repository.findCustomer)
+          .whereType<Customer>()
+          .toList(growable: false);
+      for (final customer in customers) {
+        if ((customer.pin ?? '').trim().isEmpty) {
+          showToast(context, '${customer.fullName} 没有可用 PIN。', error: true);
+          return;
+        }
+      }
+      final visitPass = type == TaskType.visitPassCheck;
+      final settings = widget.repository.mdacSettings;
+      if (visitPass &&
+          (settings == null ||
+              settings.mdacEmail.trim().isEmpty ||
+              settings.regionCode.trim().isEmpty ||
+              settings.mdacPhone.trim().isEmpty)) {
+        showToast(context, '请先在 MDAC 默认业务配置填写邮箱、国家/地区代码和手机号。', error: true);
+        return;
+      }
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('${taskTypeLabel(type)} · 人工滑块'),
+          content: Text(
+            '共 ${customers.length} 位客户，将逐位打开官方查询页。\n\n'
+            'App 自动填写资料；你负责完成滑块、点击 Search 并判断结果。'
+            'Check Registration 只接受与最近一次成功 MDAC 入境/离境日期一致的记录；官方 PDF 优先保存，截图作为备用凭证。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('开始'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+
+      var completed = 0;
+      for (final customer in customers) {
+        final result = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (_) => HumanQueryReviewPage(
+              kind: visitPass
+                  ? HumanQueryKind.visitPass
+                  : HumanQueryKind.registration,
+              customerId: customer.id,
+              customerName: customer.fullName,
+              passportNumber: customer.passportNumber,
+              nationality: customer.nationality,
+              pin: customer.pin!,
+              email: settings?.mdacEmail ?? '',
+              regionCode: settings?.regionCode ?? '',
+              mobile: settings?.mdacPhone ?? '',
+            ),
+          ),
+        );
+        if (!mounted) return;
+        if (result != true) break;
+        completed += 1;
+        await widget.repository.syncAutomationTasksFromSupabase();
+        await widget.repository.syncCustomersFromSupabase();
+      }
+      if (!mounted) return;
+      if (completed == customers.length) {
+        setState(() => selected.clear());
+      }
+      showToast(
+        context,
+        completed == customers.length
+            ? '${taskTypeLabel(type)} 已完成 ${customers.length} 位。'
+            : '已完成 $completed/${customers.length} 位；未完成任务可在任务页继续处理或删除。',
+        error: completed != customers.length,
+      );
+      return;
+    }
+
     final error = await widget.repository.createTaskAsync(
       type: type,
       customerIds: selected.toList(),
@@ -3734,6 +4020,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           onOpen: () => showCustomerDetail(
                             context,
                             customer,
+                            onNewCase: () =>
+                                createCaseForExistingCustomer(customer),
                             onEdit: () => editCustomer(customer),
                           ),
                         ),
@@ -3764,7 +4052,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 }
 
-class UploadHistorySection extends StatelessWidget {
+class UploadHistorySection extends StatefulWidget {
   const UploadHistorySection({
     required this.repository,
     required this.actor,
@@ -3773,6 +4061,16 @@ class UploadHistorySection extends StatelessWidget {
 
   final DemoRepository repository;
   final String actor;
+
+  @override
+  State<UploadHistorySection> createState() => _UploadHistorySectionState();
+}
+
+class _UploadHistorySectionState extends State<UploadHistorySection> {
+  bool _expanded = false;
+
+  DemoRepository get repository => widget.repository;
+  String get actor => widget.actor;
 
   String _statusLabel(UploadStatus status) {
     switch (status) {
@@ -3794,130 +4092,275 @@ class UploadHistorySection extends StatelessWidget {
     return '${(bytes / 1024).ceil()} KB';
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(28, 0, 28, 14),
-      child: SectionCard(
-        title: '上传批次 · ${repository.uploadRecords.length}',
-        child: Column(
-          children: repository.uploadRecords.map((record) {
-            final statusColor = record.status == UploadStatus.failed
-                ? AppTheme.danger
-                : record.status == UploadStatus.uploaded
-                ? AppTheme.teal
-                : AppTheme.orange;
-            return Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FBFA),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppTheme.line),
+  Color _statusColor(UploadRecord record) {
+    if (record.status == UploadStatus.failed) return AppTheme.danger;
+    if (record.status == UploadStatus.uploaded) return AppTheme.teal;
+    return AppTheme.orange;
+  }
+
+  Future<void> _retry(BuildContext context, UploadRecord record) async {
+    if (record.retryBytes == null) return;
+    final error = await repository.retryUpload(record, actor);
+    if (error != null && context.mounted) {
+      showToast(context, error, error: true);
+    }
+  }
+
+  void _showDetails(BuildContext context, UploadRecord record) {
+    final color = _statusColor(record);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                record.fileName,
+                style: const TextStyle(
+                  color: AppTheme.ink,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        record.isPdf
-                            ? Icons.picture_as_pdf_outlined
-                            : Icons.image_outlined,
-                        color: statusColor,
+              const SizedBox(height: 12),
+              Text(
+                '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)} · ${_statusLabel(record.status)}',
+                style: TextStyle(color: color, fontWeight: FontWeight.w700),
+              ),
+              if (record.batchId != null) ...[
+                const SizedBox(height: 10),
+                SelectableText(
+                  'OCR 批次：${record.batchId}',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                ),
+              ],
+              if (record.errorMessage != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  record.errorMessage!,
+                  style: const TextStyle(color: AppTheme.danger),
+                ),
+              ],
+              if (record.status == UploadStatus.failed &&
+                  record.retryBytes != null) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _retry(context, record);
+                  },
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('重新上传'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _recordRow(BuildContext context, UploadRecord record) {
+    final color = _statusColor(record);
+    return Material(
+      color: const Color(0xFFF8FBFA),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _showDetails(context, record),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 58),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.line),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                record.isPdf
+                    ? Icons.picture_as_pdf_outlined
+                    : Icons.image_outlined,
+                color: color,
+                size: 22,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      record.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppTheme.ink,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          record.fileName,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: AppTheme.ink,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
+                    ),
+                    const SizedBox(height: 3),
+                    if (record.status == UploadStatus.uploading)
+                      LinearProgressIndicator(
+                        value: record.progress,
+                        minHeight: 4,
+                        borderRadius: BorderRadius.circular(4),
+                        color: AppTheme.teal,
+                        backgroundColor: AppTheme.mint,
+                      )
+                    else
                       Text(
-                        _statusLabel(record.status),
-                        style: TextStyle(
-                          color: statusColor,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
+                        '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)}',
+                        style: const TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
                         ),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${record.isPdf ? 'PDF' : '图片'} · ${_sizeLabel(record.sizeBytes)}',
-                    style: const TextStyle(color: AppTheme.muted, fontSize: 12),
-                  ),
-                  if (record.status == UploadStatus.uploading) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: LinearProgressIndicator(
-                            value: record.progress,
-                            minHeight: 6,
-                            borderRadius: BorderRadius.circular(6),
-                            color: AppTheme.teal,
-                            backgroundColor: AppTheme.mint,
-                          ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                _statusLabel(record.status),
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
+                ),
+              ),
+              const SizedBox(width: 2),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppTheme.muted,
+                size: 18,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAll(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * 0.78,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 12),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '全部上传记录',
+                        style: TextStyle(
+                          color: AppTheme.ink,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
                         ),
-                        const SizedBox(width: 10),
-                        Text('${(record.progress * 100).round()}%'),
-                      ],
+                      ),
+                    ),
+                    Text(
+                      '${repository.uploadRecords.length} 条',
+                      style: const TextStyle(color: AppTheme.muted),
                     ),
                   ],
-                  if (record.status == UploadStatus.uploaded)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: repository.uploadRecords.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (_, index) =>
+                      _recordRow(sheetContext, repository.uploadRecords[index]),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final records = repository.uploadRecords;
+    final visible = records.take(3).toList(growable: false);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 0, 28, 14),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 17,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
                       child: Text(
-                        '已保存至私有 Storage · 批次 ${record.batchId ?? '待同步'}',
-                        style: const TextStyle(
-                          color: AppTheme.teal,
-                          fontSize: 12,
-                        ),
+                        '上传记录 · ${records.length}',
+                        style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
-                  if (record.status == UploadStatus.failed)
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            record.errorMessage ?? '未知上传错误',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppTheme.danger,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: record.retryBytes == null
-                              ? null
-                              : () async {
-                                  final error = await repository.retryUpload(
-                                    record,
-                                    actor,
-                                  );
-                                  if (error != null && context.mounted) {
-                                    showToast(context, error, error: true);
-                                  }
-                                },
-                          child: const Text('重试'),
-                        ),
-                      ],
+                    AnimatedRotation(
+                      turns: _expanded ? 0.5 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      child: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppTheme.teal,
+                      ),
                     ),
-                ],
+                  ],
+                ),
               ),
-            );
-          }).toList(),
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeInOut,
+              child: _expanded
+                  ? Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                      child: Column(
+                        children: [
+                          for (
+                            var index = 0;
+                            index < visible.length;
+                            index++
+                          ) ...[
+                            _recordRow(context, visible[index]),
+                            if (index < visible.length - 1)
+                              const SizedBox(height: 8),
+                          ],
+                          if (records.length > visible.length) ...[
+                            const SizedBox(height: 10),
+                            TextButton.icon(
+                              onPressed: () => _showAll(context),
+                              icon: const Icon(Icons.list_alt_rounded),
+                              label: Text('查看全部 ${records.length} 条'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ],
         ),
       ),
     );
@@ -4165,10 +4608,19 @@ class OcrDraftSection extends StatelessWidget {
   }
 }
 
-class TasksScreen extends StatelessWidget {
+class TasksScreen extends StatefulWidget {
   const TasksScreen({required this.repository, super.key});
 
   final DemoRepository repository;
+
+  @override
+  State<TasksScreen> createState() => _TasksScreenState();
+}
+
+class _TasksScreenState extends State<TasksScreen> {
+  bool _recentBatchesExpanded = false;
+
+  DemoRepository get repository => widget.repository;
 
   @override
   Widget build(BuildContext context) {
@@ -4204,12 +4656,59 @@ class TasksScreen extends StatelessWidget {
           children: [
             WorkerBanner(repository: repository),
             const SizedBox(height: 20),
-            SectionCard(
-              title: '最近批次',
+            Card(
+              clipBehavior: Clip.antiAlias,
               child: Column(
-                children: repository.tasks
-                    .map((task) => TaskRow(task: task, repository: repository))
-                    .toList(),
+                children: [
+                  InkWell(
+                    onTap: () => setState(
+                      () => _recentBatchesExpanded = !_recentBatchesExpanded,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 17,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '最近批次 · ${repository.tasks.length}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          AnimatedRotation(
+                            turns: _recentBatchesExpanded ? 0.5 : 0,
+                            duration: const Duration(milliseconds: 180),
+                            child: const Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              color: AppTheme.teal,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeInOut,
+                    child: _recentBatchesExpanded
+                        ? Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                            child: Column(
+                              children: repository.tasks
+                                  .map(
+                                    (task) => TaskRow(
+                                      task: task,
+                                      repository: repository,
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 20),
@@ -4309,8 +4808,10 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
     _vesselController.text = settings.vessel;
     _address1Controller.text = settings.address1;
     _address2Controller.text = settings.address2;
-    _stateController.text = settings.stateCode;
-    _cityController.text = settings.cityCode;
+    _stateController.text = johorStateCode;
+    _cityController.text = johorCityCodes.containsKey(settings.cityCode)
+        ? settings.cityCode
+        : defaultJohorCityCode;
     _postcodeController.text = settings.postcode;
     _travelMode = settings.travelMode;
     _accommodationStay = settings.accommodationStay;
@@ -4355,7 +4856,7 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
     accommodationStay: _accommodationStay,
     address1: _address1Controller.text,
     address2: _address2Controller.text,
-    stateCode: _stateController.text,
+    stateCode: johorStateCode,
     cityCode: _cityController.text,
     postcode: _postcodeController.text,
     pobMode: _pobMode,
@@ -4584,21 +5085,43 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                     _wideField(
                       fieldWidth,
                       _textField(
-                        label: '马来西亚州代码',
+                        label: '马来西亚州代码（固定为 JOHOR）',
                         controller: _stateController,
-                        hint: '例如 14 = WP KUALA LUMPUR',
-                        keyboardType: TextInputType.number,
-                        validator: (value) => _code(value, '州代码', 2),
+                        readOnly: true,
+                        validator: (value) => value == johorStateCode
+                            ? null
+                            : '州代码必须是 01（JOHOR）',
                       ),
                     ),
                     _wideField(
                       fieldWidth,
-                      _textField(
-                        label: '马来西亚城市代码',
-                        controller: _cityController,
-                        hint: '请使用官方下拉选项的 value',
-                        keyboardType: TextInputType.number,
-                        validator: (value) => _code(value, '城市代码', 4),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(_cityController.text),
+                        isExpanded: true,
+                        initialValue: _cityController.text,
+                        decoration: const InputDecoration(
+                          labelText: '马来西亚城市代码（仅 JOHOR）',
+                        ),
+                        items: johorCityCodes.entries
+                            .map(
+                              (entry) => DropdownMenuItem(
+                                value: entry.key,
+                                child: Text('${entry.value} · ${entry.key}'),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _cityController.text = value;
+                              _dirty = true;
+                            });
+                          }
+                        },
+                        validator: (value) =>
+                            value == null || !johorCityCodes.containsKey(value)
+                            ? '请选择 JOHOR 城市'
+                            : null,
                       ),
                     ),
                     _wideField(
@@ -5216,6 +5739,7 @@ class StatCard extends StatelessWidget {
     required this.caption,
     required this.icon,
     required this.tint,
+    required this.onTap,
     this.width,
     super.key,
   });
@@ -5225,6 +5749,7 @@ class StatCard extends StatelessWidget {
   final String caption;
   final IconData icon;
   final Color tint;
+  final VoidCallback onTap;
   final double? width;
 
   @override
@@ -5232,9 +5757,12 @@ class StatCard extends StatelessWidget {
     return SizedBox(
       width: width ?? 210,
       child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -5268,6 +5796,7 @@ class StatCard extends StatelessWidget {
                 style: const TextStyle(color: AppTheme.muted, fontSize: 11),
               ),
             ],
+            ),
           ),
         ),
       ),
@@ -5635,6 +6164,72 @@ class SelectionBar extends StatelessWidget {
   }
 }
 
+bool canCancelAutomationTask(AutomationTask task) =>
+    task.status == TaskStatus.queued ||
+    task.status == TaskStatus.needsReview ||
+    task.status == TaskStatus.cancelled;
+
+Future<void> confirmCancelAutomationTask(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(task.status == TaskStatus.cancelled ? '永久删除任务？' : '取消并删除任务？'),
+      content: const Text('任务、未完成项目及相关结果会永久删除；客户档案会保留。此操作无法撤销。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('返回'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: Text(task.status == TaskStatus.cancelled ? '确认删除' : '确认取消并删除'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  final error = await repository.cancelAutomationTask(task.id, '当前用户');
+  if (!context.mounted) return;
+  showToast(
+    context,
+    error ?? '任务记录已永久删除。',
+    error: error != null,
+  );
+}
+
+bool canOpenMdacHumanReview(AutomationTask task) =>
+    task.type == TaskType.mdacRegistration &&
+    task.status == TaskStatus.needsReview;
+
+Future<void> openMdacHumanReview(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository,
+) async {
+  final client = SupabaseGateway.client;
+  if (client == null) {
+    showToast(context, 'Supabase 未配置，无法打开 MDAC 人工处理。', error: true);
+    return;
+  }
+  await Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => MdacHumanReviewScreen(batchId: task.id, supabase: client),
+    ),
+  );
+  final syncErrors = await Future.wait<String?>([
+    repository.syncAutomationTasksFromSupabase(),
+    repository.syncCustomersFromSupabase(),
+  ]);
+  final errors = syncErrors.whereType<String>().toList();
+  if (errors.isNotEmpty && context.mounted) {
+    showToast(context, errors.join('\n'), error: true);
+  }
+}
+
 class TaskRow extends StatelessWidget {
   const TaskRow({required this.task, required this.repository, super.key});
 
@@ -5727,6 +6322,33 @@ class TaskRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             TaskStatusPill(status: task.status),
+            if (canCancelAutomationTask(task))
+              IconButton(
+                tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () =>
+                    confirmCancelAutomationTask(context, task, repository),
+                icon: Icon(
+                  task.status == TaskStatus.cancelled
+                      ? Icons.delete_forever_outlined
+                      : Icons.cancel_outlined,
+                  size: 18,
+                  color: AppTheme.danger,
+                ),
+              ),
+            if (canOpenMdacHumanReview(task))
+              IconButton(
+                tooltip: '打开待验证页面',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () => openMdacHumanReview(context, task, repository),
+                icon: const Icon(
+                  Icons.touch_app_outlined,
+                  size: 18,
+                  color: AppTheme.teal,
+                ),
+              ),
             IconButton(
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
@@ -5772,6 +6394,29 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 18),
         SizedBox(width: 92, child: TaskStatusPill(status: task.status)),
         const SizedBox(width: 10),
+        if (canCancelAutomationTask(task))
+          IconButton(
+            tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
+            onPressed: () =>
+                confirmCancelAutomationTask(context, task, repository),
+            icon: Icon(
+              task.status == TaskStatus.cancelled
+                      ? Icons.delete_forever_outlined
+                      : Icons.cancel_outlined,
+              size: 18,
+              color: AppTheme.danger,
+            ),
+          ),
+        if (canOpenMdacHumanReview(task))
+          IconButton(
+            tooltip: '打开待验证页面',
+            onPressed: () => openMdacHumanReview(context, task, repository),
+            icon: const Icon(
+              Icons.touch_app_outlined,
+              size: 18,
+              color: AppTheme.teal,
+            ),
+          ),
         IconButton(
           onPressed: () => showTaskDetail(context, task, repository),
           icon: const Icon(
@@ -6516,11 +7161,14 @@ Future<Map<String, String>?> showCustomerForm(
     required String label,
     String? hintText,
     TextInputType? keyboardType,
+    bool allowEmpty = false,
   }) => TextFormField(
     controller: controllers[key],
     keyboardType: keyboardType,
-    validator: (value) =>
-        value == null || value.trim().isEmpty ? '请输入$label' : null,
+    validator: (value) => !allowEmpty &&
+            (value == null || value.trim().isEmpty)
+        ? '请输入$label'
+        : null,
     decoration: InputDecoration(
       labelText: label,
       hintText: hintText,
@@ -6623,6 +7271,7 @@ Future<Map<String, String>?> showCustomerForm(
                     label: 'Gmail PIN（可留空）',
                     hintText: '保留 PIN 中间空格，首尾空格会自动清除',
                     keyboardType: TextInputType.visiblePassword,
+                    allowEmpty: true,
                   ),
                   const SizedBox(height: 4),
                   Row(
@@ -6669,6 +7318,7 @@ Future<Map<String, String>?> showCustomerForm(
 Future<void> showCustomerDetail(
   BuildContext context,
   Customer customer, {
+  VoidCallback? onNewCase,
   VoidCallback? onEdit,
 }) async {
   await showModalBottomSheet<void>(
@@ -6725,6 +7375,11 @@ Future<void> showCustomerDetail(
                 const SizedBox(height: 18),
                 PassportDocumentCard(path: customer.passportImagePath!),
               ],
+              if (SupabaseGateway.isConfigured &&
+                  SupabaseGateway.currentUserId != null) ...[
+                const SizedBox(height: 18),
+                CustomerQueryEvidenceCard(customerId: customer.id),
+              ],
               if (customer.lastSummary != null) ...[
                 const SizedBox(height: 18),
                 Container(
@@ -6745,8 +7400,22 @@ Future<void> showCustomerDetail(
                 '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
-              if (onEdit != null) ...[
+              if (onNewCase != null) ...[
                 const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      onNewCase();
+                    },
+                    icon: const Icon(Icons.add_business_rounded),
+                    label: const Text('再次下单'),
+                  ),
+                ),
+              ],
+              if (onEdit != null) ...[
+                const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
@@ -7050,6 +7719,15 @@ Future<void> showTaskDetail(
         ),
       ),
       actions: [
+        if (canOpenMdacHumanReview(task))
+          FilledButton.icon(
+            onPressed: () async {
+              await openMdacHumanReview(context, task, repository);
+              if (context.mounted) Navigator.pop(context);
+            },
+            icon: const Icon(Icons.touch_app_outlined),
+            label: const Text('打开待验证页面'),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('关闭'),
@@ -7171,6 +7849,8 @@ String taskStatusLabel(TaskStatus status) {
       return '部分成功';
     case TaskStatus.failed:
       return '失败';
+    case TaskStatus.cancelled:
+      return '已取消';
     case TaskStatus.needsReview:
       return '待确认';
   }
@@ -7187,6 +7867,7 @@ Color taskStatusColor(TaskStatus status) {
     case TaskStatus.partialSuccess:
       return AppTheme.warning;
     case TaskStatus.failed:
+    case TaskStatus.cancelled:
       return AppTheme.danger;
     case TaskStatus.needsReview:
       return const Color(0xFF7B67AF);

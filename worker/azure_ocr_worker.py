@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -309,6 +310,12 @@ def _confidence(node: dict[str, Any]) -> float | None:
         return None
 
 
+def _normalize_passport_name(value: str) -> str:
+    """Keep passport-name letters, apostrophes and hyphens; discard OCR punctuation."""
+    cleaned = re.sub(r"[^A-Za-z' -]+", " ", value.replace("<", " "))
+    return " ".join(cleaned.split()).upper()
+
+
 def parse_azure_result(raw_result: dict[str, Any]) -> tuple[dict[str, Any], float | None, str]:
     """Return normalized fields, aggregate confidence, and review status."""
     documents = raw_result.get("analyzeResult", {}).get("documents", [])
@@ -317,8 +324,8 @@ def parse_azure_result(raw_result: dict[str, Any]) -> tuple[dict[str, Any], floa
     document = documents[0] if isinstance(documents[0], dict) else {}
     fields = document.get("fields", {}) if isinstance(document.get("fields"), dict) else {}
 
-    first_name = " ".join(_field_text(fields, "FirstName", "GivenName").replace("<", " ").split()).strip(" ,，")
-    last_name = " ".join(_field_text(fields, "LastName", "Surname").replace("<", " ").split()).strip(" ,，")
+    first_name = _normalize_passport_name(_field_text(fields, "FirstName", "GivenName"))
+    last_name = _normalize_passport_name(_field_text(fields, "LastName", "Surname"))
     # Azure FirstName is the given name and LastName is the surname.
     # For passports, keep the canonical passport/MRZ order: surname first,
     # followed by given names (for example LI XISHUN, not XISHUN LI).
@@ -339,6 +346,7 @@ def parse_azure_result(raw_result: dict[str, Any]) -> tuple[dict[str, Any], floa
         "date_of_birth": date_of_birth,
         "passport_expiry_date": passport_expiry,
         "nationality": nationality,
+        "place_of_birth": nationality,
         "gender": gender,
         "mrz": mrz,
         "document_type": str(document.get("docType", "")).lower(),

@@ -33,6 +33,7 @@ import requests
 
 LOG = logging.getLogger("gmail_pin_worker")
 WORKER_NAME = "gmail_pin"
+WORKER_VERSION = "gmail-pin-3"
 DEFAULT_SENDER = "mdac@imi.gov.my"
 DEFAULT_IMAP_HOST = "imap.gmail.com"
 
@@ -241,7 +242,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_status": status,
                 "p_hostname": socket.gethostname(),
-                "p_version": "gmail-pin-1",
+                "p_version": WORKER_VERSION,
             },
         )
 
@@ -455,17 +456,40 @@ def decide_for_item(
             error_code="PIN_NOT_FOUND",
             error_message="No matching MDAC PIN email found in the lookback window",
         )
-    if len(candidates) != 1:
-        return PinDecision(
-            status="NEEDS_REVIEW",
-            email=None,
-            confidence=None,
-            summary={**base_summary, "reason": "multiple_matching_messages"},
-            error_code="PIN_MATCH_NOT_UNIQUE",
-            error_message="Multiple matching Gmail messages require manual review",
-        )
-
     candidate = candidates[0]
+    selection_reason = "unique_passport_match"
+    if len(candidates) > 1:
+        dated_candidates: list[tuple[datetime, ParsedEmail]] = []
+        for message in candidates:
+            if message.received_at is None:
+                continue
+            try:
+                dated_candidates.append(
+                    (datetime.fromisoformat(message.received_at), message)
+                )
+            except ValueError:
+                continue
+        if len(dated_candidates) != len(candidates):
+            return PinDecision(
+                status="NEEDS_REVIEW",
+                email=None,
+                confidence=None,
+                summary={**base_summary, "reason": "multiple_matches_missing_date"},
+                error_code="PIN_MATCH_NOT_UNIQUE",
+                error_message="Multiple matching Gmail messages require manual review",
+            )
+        dated_candidates.sort(key=lambda entry: entry[0], reverse=True)
+        if dated_candidates[0][0] == dated_candidates[1][0]:
+            return PinDecision(
+                status="NEEDS_REVIEW",
+                email=None,
+                confidence=None,
+                summary={**base_summary, "reason": "multiple_matches_same_date"},
+                error_code="PIN_MATCH_NOT_UNIQUE",
+                error_message="Multiple latest Gmail messages require manual review",
+            )
+        candidate = dated_candidates[0][1]
+        selection_reason = "latest_passport_match"
     if candidate.pin is None:
         return PinDecision(
             status="PARSE_FAILED",
@@ -479,7 +503,7 @@ def decide_for_item(
         status="RECEIVED",
         email=candidate,
         confidence=1.0,
-        summary={**base_summary, "reason": "unique_passport_match"},
+        summary={**base_summary, "reason": selection_reason},
     )
 
 

@@ -88,7 +88,27 @@ class GMailPinParsingTests(unittest.TestCase):
         self.assertEqual(decision.error_code, "PIN_NOT_FOUND")
         self.assertIsNone(decision.email)
 
-    def test_multiple_matches_require_review(self) -> None:
+    def test_multiple_matches_choose_latest_received_message(self) -> None:
+        messages = [
+            parse_message(
+                self._message_bytes(
+                    "AA100", "PIN100", "one", "Tue, 26 Aug 2026 10:00:00 +0000"
+                )
+            ),
+            parse_message(
+                self._message_bytes(
+                    "AA100", "PIN200", "two", "Tue, 26 Aug 2026 10:05:00 +0000"
+                )
+            ),
+        ]
+        decision = decide_for_item(
+            {"passport_number": "AA100"}, messages, lookback_days=7
+        )
+        self.assertEqual(decision.status, "RECEIVED")
+        self.assertEqual(decision.email.pin, "PIN200")
+        self.assertEqual(decision.summary["reason"], "latest_passport_match")
+
+    def test_multiple_matches_without_dates_require_review(self) -> None:
         messages = [
             parse_message(self._message_bytes("AA100", "PIN100", "one")),
             parse_message(self._message_bytes("AA100", "PIN200", "two")),
@@ -171,11 +191,18 @@ class GMailPinParsingTests(unittest.TestCase):
         self.assertNotIn("SECRET-PIN", "\n".join(captured.output))
 
     @staticmethod
-    def _message_bytes(passport: str, pin: str | None, suffix: str) -> bytes:
+    def _message_bytes(
+        passport: str,
+        pin: str | None,
+        suffix: str,
+        date: str | None = None,
+    ) -> bytes:
         message = EmailMessage()
         message["Message-ID"] = f"<{suffix}@example.test>"
         message["From"] = "mdac@imi.gov.my"
         message["Subject"] = "MDAC PIN"
+        if date is not None:
+            message["Date"] = date
         pin_line = f"PIN : {pin}\n" if pin is not None else "Thank you\n"
         message.set_content(
             f"Name : TEST PERSON\nPassport No. : {passport}\n{pin_line}"

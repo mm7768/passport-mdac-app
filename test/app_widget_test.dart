@@ -36,7 +36,37 @@ void main() {
     await tester.tap(find.text('任务'));
     await tester.pumpAndSettle();
     expect(find.text('任务队列'), findsOneWidget);
+    await tester.tap(find.textContaining('最近批次'));
+    await tester.pumpAndSettle();
     expect(find.text('MDAC 批量注册'), findsWidgets);
+  });
+
+  testWidgets('overview statistic cards navigate with the expected filters', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MdacPilotApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('进入工作区'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('待处理资料'));
+    await tester.pumpAndSettle();
+    expect(find.text('客户档案'), findsOneWidget);
+    expect(find.text('状态：待处理'), findsOneWidget);
+
+    await tester.tap(find.text('总览'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('运行中任务'));
+    await tester.pumpAndSettle();
+    expect(find.text('任务队列'), findsOneWidget);
+
+    await tester.tap(find.text('总览'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('需要关注'));
+    await tester.pumpAndSettle();
+    expect(find.text('客户档案'), findsOneWidget);
+    expect(find.text('状态：需关注'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('customer screen exposes manual entry and edit actions', (

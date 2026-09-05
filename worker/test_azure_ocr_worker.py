@@ -36,6 +36,7 @@ class AzureResultParsingTests(unittest.TestCase):
         self.assertEqual(extracted["date_of_birth"], "1989-07-14")
         self.assertEqual(extracted["passport_expiry_date"], "2032-10-26")
         self.assertEqual(extracted["nationality"], "CHN")
+        self.assertEqual(extracted["place_of_birth"], "CHN")
         self.assertEqual(extracted["gender"], "女")
         self.assertTrue(extracted["mrz"])
         self.assertIsNotNone(confidence)
@@ -49,7 +50,7 @@ class AzureResultParsingTests(unittest.TestCase):
                         "docType": "passport",
                         "fields": {
                             "FirstName": {"valueString": "XISHUN,", "confidence": 0.99},
-                            "LastName": {"valueString": "LI", "confidence": 0.99},
+                            "LastName": {"valueString": "LI.", "confidence": 0.99},
                             "DocumentNumber": {"valueString": "TEST123", "confidence": 0.99},
                             "DateOfBirth": {"valueDate": "1990-01-02", "confidence": 0.99},
                             "DateOfExpiration": {"valueDate": "2030-01-02", "confidence": 0.99},
@@ -66,6 +67,9 @@ class AzureResultParsingTests(unittest.TestCase):
 
         self.assertEqual(status, "READY_TO_CREATE")
         self.assertEqual(extracted["full_name"], "LI XISHUN")
+        self.assertEqual(extracted["place_of_birth"], "CHN")
+        self.assertNotIn(".", extracted["full_name"])
+        self.assertNotIn(",", extracted["full_name"])
 
     def test_missing_critical_field_requires_review(self):
         raw = {

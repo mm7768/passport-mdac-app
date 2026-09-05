@@ -125,7 +125,7 @@ class SupabaseGateway {
     required String customerId,
     required Map<String, dynamic> extractedData,
   }) async {
-    await _requiredClient
+    final row = await _requiredClient
         .from('ocr_results')
         .update({
           'status': 'CREATED',
@@ -134,7 +134,12 @@ class SupabaseGateway {
           'reviewed_at': DateTime.now().toUtc().toIso8601String(),
           'extracted_data': extractedData,
         })
-        .eq('id', resultId);
+        .eq('id', resultId)
+        .select('id, created_customer_id')
+        .single();
+    if (row['created_customer_id']?.toString() != customerId) {
+      throw const FormatException('OCR 与客户关联写入失败。');
+    }
   }
 
   static Future<Map<String, dynamic>> uploadOcrBatch({
@@ -352,6 +357,100 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 Check Visit Pass 批次。');
   }
 
+  static Future<Map<String, dynamic>> createHumanQueryTask({
+    required String customerId,
+    required bool visitPass,
+    Map<String, dynamic> settingsSnapshot = const {},
+  }) async {
+    final result = await _requiredClient.rpc(
+      'create_human_query_task',
+      params: {
+        'p_customer_id': customerId,
+        'p_task_type': visitPass ? 'VISIT_PASS_CHECK' : 'REGISTRATION_CHECK',
+        'p_settings_snapshot': settingsSnapshot,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回人工查询任务。');
+  }
+
+  static Future<String> uploadHumanQueryEvidence({
+    required String itemId,
+    required Uint8List bytes,
+    String extension = 'png',
+    String contentType = 'image/png',
+  }) async {
+    if (bytes.isEmpty) throw const FormatException('查询凭证为空。');
+    final userId = currentUserId;
+    if (userId == null) throw const AuthException('登录状态已失效。');
+    final safeExtension = extension.toLowerCase() == 'pdf' ? 'pdf' : 'png';
+    final path =
+        'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
+    await _requiredClient.storage.from('passport-documents').uploadBinary(
+      path,
+      bytes,
+      fileOptions: FileOptions(
+        contentType: contentType,
+        upsert: false,
+      ),
+    );
+    return path;
+  }
+
+  static Future<Uint8List> downloadHumanQueryEvidence(String path) async {
+    if (!path.startsWith('human-query-evidence/$_requiredUserId/')) {
+      throw const AuthException('无权读取该查询凭证。');
+    }
+    return _requiredClient.storage.from('passport-documents').download(path);
+  }
+
+  static Future<Map<String, dynamic>> finishHumanQueryTask({
+    required String itemId,
+    required String outcome,
+    String? screenshotPath,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'finish_human_query_task',
+      params: {
+        'p_item_id': itemId,
+        'p_outcome': outcome,
+        'p_screenshot_path': screenshotPath,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('Supabase 未返回人工查询结果。');
+  }
+
+  static Future<List<Map<String, dynamic>>> fetchCustomerHumanEvidence(
+    String customerId,
+  ) async {
+    final registrationRows = await _requiredClient
+        .from('registration_checks')
+        .select(
+          'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
+        )
+        .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
+        .order('checked_at', ascending: false)
+        .limit(20);
+    final visitPassRows = await _requiredClient
+        .from('visit_pass_checks')
+        .select(
+          'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
+        )
+        .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
+        .order('checked_at', ascending: false)
+        .limit(20);
+    return [
+      for (final row in registrationRows)
+        {...Map<String, dynamic>.from(row), 'type': 'REGISTRATION_CHECK'},
+      for (final row in visitPassRows)
+        {...Map<String, dynamic>.from(row), 'type': 'VISIT_PASS_CHECK'},
+    ]..sort((a, b) => (b['checked_at']?.toString() ?? '')
+        .compareTo(a['checked_at']?.toString() ?? ''));
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
@@ -521,6 +620,30 @@ class SupabaseGateway {
     ];
   }
 
+  static Future<Map<String, dynamic>> cancelAutomationBatch(
+    String batchId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'cancel_automation_batch',
+      params: {'p_batch_id': batchId},
+    );
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回删除任务结果。');
+    }
+    final row = Map<String, dynamic>.from(result);
+    final rawPaths = row['storage_paths'];
+    final paths = rawPaths is List
+        ? rawPaths
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList(growable: false)
+        : const <Map<String, dynamic>>[];
+    if (paths.isNotEmpty) {
+      await removeCustomerStorageObjects(paths);
+    }
+    return row;
+  }
+
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
     final rows = await client
@@ -577,29 +700,37 @@ class SupabaseGateway {
     String businessStatus = 'PENDING',
     String? passportImagePath,
   }) async {
-    final client = _requiredClient;
-    final userId = _requiredUserId;
-    final row = await client
-        .from('customers')
-        .insert({
-          'full_name': fullName.trim().toUpperCase(),
-          'passport_number': passportNumber.trim().toUpperCase(),
-          'date_of_birth': _toIsoDate(dateOfBirth),
-          'place_of_birth': placeOfBirth.trim().toUpperCase(),
-          'nationality': nationality.trim().toUpperCase(),
-          'gender': gender.trim(),
-          'passport_expiry_date': _toIsoDate(passportExpiryDate),
-          'passport_image_path': passportImagePath,
-          'business_status': businessStatus,
-          'created_by': userId,
-        })
-        .select(
-          'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, passport_image_path, '
-          'business_status, created_by, created_at, deleted_at',
-        )
-        .single();
-    return Map<String, dynamic>.from(row);
+    final response = await _requiredClient.rpc(
+      'create_customer_with_case',
+      params: {
+        'p_full_name': fullName.trim().toUpperCase(),
+        'p_passport_number': passportNumber.trim().toUpperCase(),
+        'p_date_of_birth': _toIsoDate(dateOfBirth),
+        'p_place_of_birth': placeOfBirth.trim().toUpperCase(),
+        'p_nationality': nationality.trim().toUpperCase(),
+        'p_gender': gender.trim(),
+        'p_passport_expiry_date': _toIsoDate(passportExpiryDate),
+        'p_passport_image_path': passportImagePath,
+        'p_customer_type': 'STANDARD',
+      },
+    );
+    if (response is! Map || response['customer'] is! Map) {
+      throw const FormatException('Supabase 未返回 Customer + Passport + Case。');
+    }
+    return Map<String, dynamic>.from(response['customer'] as Map);
+  }
+
+  static Future<Map<String, dynamic>> createCaseForExistingCustomer(
+    String customerId,
+  ) async {
+    final response = await _requiredClient.rpc(
+      'create_case_for_existing_customer',
+      params: {'p_customer_id': customerId},
+    );
+    if (response is! Map || response['case'] is! Map) {
+      throw const FormatException('Supabase 未返回新 Case。');
+    }
+    return Map<String, dynamic>.from(response);
   }
 
   static Future<Map<String, dynamic>> updateCustomer({

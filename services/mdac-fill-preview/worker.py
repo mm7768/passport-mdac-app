@@ -22,6 +22,7 @@ import requests
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 LOG = logging.getLogger("mdac_fill_preview")
+WORKER_VERSION = "mdac-fill-preview-3"
 MDAC_URL = "https://imigresen-online.imi.gov.my/mdac/main?registerMain"
 
 
@@ -174,7 +175,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_status": status,
                 "p_hostname": socket.gethostname(),
-                "p_version": "mdac-fill-preview-1",
+                "p_version": WORKER_VERSION,
             },
         )
 
