@@ -5,6 +5,26 @@ import 'package:passport_mdac_app/main.dart';
 void _noop() {}
 
 void main() {
+  testWidgets(
+    'customer detail supports editing without a repeat-order action',
+    (tester) async {
+      await tester.pumpWidget(const MdacPilotApp());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('进入工作区'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('客户'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('TANG FUMING'));
+      await tester.tap(find.text('TANG FUMING'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('编辑档案'), findsOneWidget);
+      expect(find.text('再次下单'), findsNothing);
+      expect(find.text('创建新 Case'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('owner can enter the MDAC Desk workspace', (tester) async {
     await tester.pumpWidget(const MdacPilotApp());
     await tester.pumpAndSettle();

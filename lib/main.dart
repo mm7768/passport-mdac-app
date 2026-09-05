@@ -1277,26 +1277,6 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
-  Future<String?> createCaseForExistingCustomerWithSync(
-    Customer customer,
-    String actor,
-  ) async {
-    if (customer.isDeleted) return '客户已删除，不能再次下单。';
-    if (!remoteMode) {
-      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的本地 Case');
-      notifyListeners();
-      return null;
-    }
-    try {
-      await SupabaseGateway.createCaseForExistingCustomer(customer.id);
-      auditEvents.insert(0, '$actor 为常客 ${customer.fullName} 创建新的 Case');
-      notifyListeners();
-      return null;
-    } catch (exception) {
-      return '再次下单失败：$exception';
-    }
-  }
-
   Future<String?> updateCustomerWithSync(
     Customer customer,
     Map<String, String> values,
@@ -2845,9 +2825,8 @@ class OverviewScreen extends StatelessWidget {
                       caption: '可以开始下一步',
                       icon: Icons.pending_actions_rounded,
                       tint: const Color(0xFFFFEBD8),
-                      onTap: () => onOpenCustomers(
-                        businessStatusLabel('PENDING'),
-                      ),
+                      onTap: () =>
+                          onOpenCustomers(businessStatusLabel('PENDING')),
                     ),
                     StatCard(
                       width: cardWidth,
@@ -3232,40 +3211,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
-  Future<void> createCaseForExistingCustomer(Customer customer) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('确认再次下单？'),
-        content: Text(
-          '将为 ${customer.fullName} 创建一个全新的业务 Case。\n\n'
-          '客户基本资料和当前有效护照会被复用；入境日期、MDAC、Registration 和 Visit Pass 不会复用。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('创建新 Case'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    final error = await widget.repository.createCaseForExistingCustomerWithSync(
-      customer,
-      widget.actor,
-    );
-    if (!mounted) return;
-    showToast(
-      context,
-      error ?? '新 Case 已创建，可为本次订单设置日期并开始 MDAC。',
-      error: error != null,
-    );
-  }
-
   Future<void> startMdac() async {
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
@@ -3350,8 +3295,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       showToast(context, '请先选择客户。');
       return;
     }
-    if (type == TaskType.registrationCheck ||
-        type == TaskType.visitPassCheck) {
+    if (type == TaskType.registrationCheck || type == TaskType.visitPassCheck) {
       final customers = selected
           .map(widget.repository.findCustomer)
           .whereType<Customer>()
@@ -4020,8 +3964,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           onOpen: () => showCustomerDetail(
                             context,
                             customer,
-                            onNewCase: () =>
-                                createCaseForExistingCustomer(customer),
                             onEdit: () => editCustomer(customer),
                           ),
                         ),
@@ -5088,9 +5030,8 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                         label: '马来西亚州代码（固定为 JOHOR）',
                         controller: _stateController,
                         readOnly: true,
-                        validator: (value) => value == johorStateCode
-                            ? null
-                            : '州代码必须是 01（JOHOR）',
+                        validator: (value) =>
+                            value == johorStateCode ? null : '州代码必须是 01（JOHOR）',
                       ),
                     ),
                     _wideField(
@@ -5763,39 +5704,39 @@ class StatCard extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(18),
             child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: tint,
-                      borderRadius: BorderRadius.circular(12),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: tint,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(icon, color: AppTheme.ink, size: 20),
                     ),
-                    child: Icon(icon, color: AppTheme.ink, size: 20),
-                  ),
-                  const Spacer(),
-                  const Icon(Icons.more_horiz_rounded, color: AppTheme.muted),
-                ],
-              ),
-              const SizedBox(height: 18),
-              Text(value, style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 3),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: AppTheme.ink,
-                  fontWeight: FontWeight.w700,
+                    const Spacer(),
+                    const Icon(Icons.more_horiz_rounded, color: AppTheme.muted),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 7),
-              Text(
-                caption,
-                style: const TextStyle(color: AppTheme.muted, fontSize: 11),
-              ),
-            ],
+                const SizedBox(height: 18),
+                Text(value, style: Theme.of(context).textTheme.headlineMedium),
+                const SizedBox(height: 3),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppTheme.ink,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  caption,
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                ),
+              ],
             ),
           ),
         ),
@@ -6194,11 +6135,7 @@ Future<void> confirmCancelAutomationTask(
   if (confirmed != true || !context.mounted) return;
   final error = await repository.cancelAutomationTask(task.id, '当前用户');
   if (!context.mounted) return;
-  showToast(
-    context,
-    error ?? '任务记录已永久删除。',
-    error: error != null,
-  );
+  showToast(context, error ?? '任务记录已永久删除。', error: error != null);
 }
 
 bool canOpenMdacHumanReview(AutomationTask task) =>
@@ -6324,7 +6261,9 @@ class TaskRow extends StatelessWidget {
             TaskStatusPill(status: task.status),
             if (canCancelAutomationTask(task))
               IconButton(
-                tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
+                tooltip: task.status == TaskStatus.cancelled
+                    ? '永久删除任务'
+                    : '取消并删除任务',
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 onPressed: () =>
@@ -6401,8 +6340,8 @@ class TaskRow extends StatelessWidget {
                 confirmCancelAutomationTask(context, task, repository),
             icon: Icon(
               task.status == TaskStatus.cancelled
-                      ? Icons.delete_forever_outlined
-                      : Icons.cancel_outlined,
+                  ? Icons.delete_forever_outlined
+                  : Icons.cancel_outlined,
               size: 18,
               color: AppTheme.danger,
             ),
@@ -7165,8 +7104,7 @@ Future<Map<String, String>?> showCustomerForm(
   }) => TextFormField(
     controller: controllers[key],
     keyboardType: keyboardType,
-    validator: (value) => !allowEmpty &&
-            (value == null || value.trim().isEmpty)
+    validator: (value) => !allowEmpty && (value == null || value.trim().isEmpty)
         ? '请输入$label'
         : null,
     decoration: InputDecoration(
@@ -7318,7 +7256,6 @@ Future<Map<String, String>?> showCustomerForm(
 Future<void> showCustomerDetail(
   BuildContext context,
   Customer customer, {
-  VoidCallback? onNewCase,
   VoidCallback? onEdit,
 }) async {
   await showModalBottomSheet<void>(
@@ -7400,20 +7337,6 @@ Future<void> showCustomerDetail(
                 '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
-              if (onNewCase != null) ...[
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () {
-                      Navigator.pop(sheetContext);
-                      onNewCase();
-                    },
-                    icon: const Icon(Icons.add_business_rounded),
-                    label: const Text('再次下单'),
-                  ),
-                ),
-              ],
               if (onEdit != null) ...[
                 const SizedBox(height: 10),
                 SizedBox(

@@ -386,14 +386,13 @@ class SupabaseGateway {
     final safeExtension = extension.toLowerCase() == 'pdf' ? 'pdf' : 'png';
     final path =
         'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
-    await _requiredClient.storage.from('passport-documents').uploadBinary(
-      path,
-      bytes,
-      fileOptions: FileOptions(
-        contentType: contentType,
-        upsert: false,
-      ),
-    );
+    await _requiredClient.storage
+        .from('passport-documents')
+        .uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(contentType: contentType, upsert: false),
+        );
     return path;
   }
 
@@ -447,8 +446,11 @@ class SupabaseGateway {
         {...Map<String, dynamic>.from(row), 'type': 'REGISTRATION_CHECK'},
       for (final row in visitPassRows)
         {...Map<String, dynamic>.from(row), 'type': 'VISIT_PASS_CHECK'},
-    ]..sort((a, b) => (b['checked_at']?.toString() ?? '')
-        .compareTo(a['checked_at']?.toString() ?? ''));
+    ]..sort(
+      (a, b) => (b['checked_at']?.toString() ?? '').compareTo(
+        a['checked_at']?.toString() ?? '',
+      ),
+    );
   }
 
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
@@ -715,22 +717,9 @@ class SupabaseGateway {
       },
     );
     if (response is! Map || response['customer'] is! Map) {
-      throw const FormatException('Supabase 未返回 Customer + Passport + Case。');
+      throw const FormatException('Supabase 未返回客户档案。');
     }
     return Map<String, dynamic>.from(response['customer'] as Map);
-  }
-
-  static Future<Map<String, dynamic>> createCaseForExistingCustomer(
-    String customerId,
-  ) async {
-    final response = await _requiredClient.rpc(
-      'create_case_for_existing_customer',
-      params: {'p_customer_id': customerId},
-    );
-    if (response is! Map || response['case'] is! Map) {
-      throw const FormatException('Supabase 未返回新 Case。');
-    }
-    return Map<String, dynamic>.from(response);
   }
 
   static Future<Map<String, dynamic>> updateCustomer({
