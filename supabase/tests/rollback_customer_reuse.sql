@@ -51,8 +51,23 @@ begin
   end;
   if not v_blocked then raise exception 'duplicate active passport accepted'; end if;
 
-  -- Test reconstruction after removal using only the synthetic record.
-  delete from public.customers where id=v_id;
+  perform set_config('rollback_test.customer_id',v_id::text,true);
+  perform set_config('rollback_test.passport',v_passport,true);
+end $test$;
+reset role;
+-- Client DELETE is deliberately restricted: remove only this transaction's
+-- synthetic fixture as the test runner. This is not the App hard-delete test.
+delete from public.customers
+where id=current_setting('rollback_test.customer_id')::uuid
+  and full_name='ROLLBACK TEST';
+set local role authenticated;
+do $test$
+declare
+  v_id uuid := current_setting('rollback_test.customer_id')::uuid;
+  v_passport text := current_setting('rollback_test.passport');
+  v_data jsonb;
+  v_new_id uuid;
+begin
   if exists(select 1 from public.customers where id=v_id) then
     raise exception 'synthetic delete did not remove customer';
   end if;
