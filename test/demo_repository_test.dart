@@ -383,5 +383,34 @@ void main() {
 
       expect(repository.createManualCustomer(values, 'Tester'), contains('性别'));
     });
+
+    test('PickAndUploadResult accurately calculates success and failure states', () {
+      const allOk = PickAndUploadResult(
+        totalSelected: 3,
+        successCount: 3,
+        errors: [],
+      );
+      expect(allOk.isAllSuccess, isTrue);
+      expect(allOk.hasPartialSuccess, isFalse);
+      expect(allOk.isAllFailed, isFalse);
+
+      const partial = PickAndUploadResult(
+        totalSelected: 3,
+        successCount: 2,
+        errors: ['file3.jpg: 文件损坏'],
+      );
+      expect(partial.isAllSuccess, isFalse);
+      expect(partial.hasPartialSuccess, isTrue);
+      expect(partial.isAllFailed, isFalse);
+
+      const allFailed = PickAndUploadResult(
+        totalSelected: 2,
+        successCount: 0,
+        errors: ['file1.exe: 不支持', 'file2.jpg: 超过15MB'],
+      );
+      expect(allFailed.isAllSuccess, isFalse);
+      expect(allFailed.hasPartialSuccess, isFalse);
+      expect(allFailed.isAllFailed, isTrue);
+    });
   });
 }

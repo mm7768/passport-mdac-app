@@ -153,7 +153,7 @@ class SupabaseGateway {
     final safeName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
     final extension = isPdf ? 'pdf' : 'jpg';
     final path =
-        '$userId/ocr/${DateTime.now().toUtc().millisecondsSinceEpoch}_$safeName';
+        '$userId/ocr/${DateTime.now().toUtc().microsecondsSinceEpoch}_$safeName';
     final contentType = isPdf
         ? 'application/pdf'
         : safeName.toLowerCase().endsWith('.png')

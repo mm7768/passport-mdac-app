@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
@@ -417,6 +419,22 @@ class UploadRecord {
   String get fingerprint => '$fileName:$sizeBytes';
   bool get isFinished =>
       status == UploadStatus.uploaded || status == UploadStatus.failed;
+}
+
+class PickAndUploadResult {
+  const PickAndUploadResult({
+    required this.totalSelected,
+    required this.successCount,
+    required this.errors,
+  });
+
+  final int totalSelected;
+  final int successCount;
+  final List<String> errors;
+
+  bool get isAllSuccess => successCount == totalSelected && errors.isEmpty;
+  bool get hasPartialSuccess => successCount > 0 && errors.isNotEmpty;
+  bool get isAllFailed => successCount == 0 && errors.isNotEmpty;
 }
 
 class AutomationTask {
@@ -1621,46 +1639,79 @@ class DemoRepository extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  Future<String?> pickAndUploadDocument(String actor) async {
+  Future<PickAndUploadResult?> pickAndUploadDocument(String actor) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
-      allowMultiple: false,
+      allowMultiple: true,
       withData: true,
     );
     if (result == null || result.files.isEmpty) return null;
-    final file = result.files.single;
-    final bytes = file.bytes;
-    if (bytes == null || bytes.isEmpty) {
-      return '无法读取文件内容，请重新选择。';
-    }
-    final lowerName = file.name.toLowerCase();
-    final isPdf = lowerName.endsWith('.pdf');
-    final allowed =
-        isPdf ||
-        lowerName.endsWith('.jpg') ||
-        lowerName.endsWith('.jpeg') ||
-        lowerName.endsWith('.png');
-    if (!allowed) return '只支持 JPG、PNG 或 PDF 文件。';
-    if (bytes.length > 15 * 1024 * 1024) {
-      return '文件不能超过 15 MB。';
+
+    final files = result.files;
+    int successCount = 0;
+    final List<String> errors = [];
+
+    for (final file in files) {
+      Uint8List? bytes = file.bytes;
+      if ((bytes == null || bytes.isEmpty) &&
+          file.path != null &&
+          file.path!.isNotEmpty) {
+        try {
+          bytes = await File(file.path!).readAsBytes();
+        } catch (_) {}
+      }
+
+      if (bytes == null || bytes.isEmpty) {
+        errors.add('${file.name}: 无法读取文件内容，已跳过');
+        continue;
+      }
+      final lowerName = file.name.toLowerCase();
+      final isPdf = lowerName.endsWith('.pdf');
+      final allowed =
+          isPdf ||
+          lowerName.endsWith('.jpg') ||
+          lowerName.endsWith('.jpeg') ||
+          lowerName.endsWith('.png');
+      if (!allowed) {
+        errors.add('${file.name}: 只支持 JPG、PNG 或 PDF 文件');
+        continue;
+      }
+      if (bytes.length > 15 * 1024 * 1024) {
+        errors.add('${file.name}: 文件超过 15 MB 限制');
+        continue;
+      }
+
+      final contentHash = sha256.convert(bytes).toString();
+      if (_successfulUploadFingerprints.contains(contentHash)) {
+        errors.add('${file.name}: 该文件已上传过，已跳过重复提交');
+        continue;
+      }
+
+      final record = UploadRecord(
+        id: 'upload-${DateTime.now().microsecondsSinceEpoch}',
+        fileName: file.name,
+        isPdf: isPdf,
+        sizeBytes: bytes.length,
+        createdAt: DateTime.now(),
+        retryBytes: bytes,
+      );
+      uploadRecords.insert(0, record);
+      notifyListeners();
+
+      final uploadError = await _uploadRecord(record, bytes, actor, contentHash);
+      if (uploadError == null) {
+        successCount++;
+      } else {
+        errors.add('${file.name}: $uploadError');
+      }
     }
 
-    final contentHash = sha256.convert(bytes).toString();
-    final record = UploadRecord(
-      id: 'upload-${DateTime.now().microsecondsSinceEpoch}',
-      fileName: file.name,
-      isPdf: isPdf,
-      sizeBytes: bytes.length,
-      createdAt: DateTime.now(),
-      retryBytes: bytes,
+    return PickAndUploadResult(
+      totalSelected: files.length,
+      successCount: successCount,
+      errors: errors,
     );
-    if (_successfulUploadFingerprints.contains(contentHash)) {
-      return '这个文件已经上传过，已阻止重复提交。';
-    }
-    uploadRecords.insert(0, record);
-    notifyListeners();
-    return _uploadRecord(record, bytes, actor, contentHash);
   }
 
   Future<String?> retryUpload(UploadRecord record, String actor) async {
@@ -3140,14 +3191,30 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   Future<void> importDocument() async {
     if (widget.repository.remoteMode) {
-      final error = await widget.repository.pickAndUploadDocument(widget.actor);
-      if (!mounted || error == null) {
-        if (mounted && error == null) {
-          showToast(context, '文件已上传到私有 Storage，OCR 批次已建立。');
-        }
-        return;
+      final result = await widget.repository.pickAndUploadDocument(widget.actor);
+      if (!mounted || result == null) return;
+      if (result.isAllSuccess) {
+        showToast(
+          context,
+          result.totalSelected == 1
+              ? '文件已上传到私有 Storage，OCR 批次已建立。'
+              : '已成功上传 ${result.totalSelected} 个护照文件到私有 Storage，OCR 批次已建立。',
+        );
+      } else if (result.hasPartialSuccess) {
+        showToast(
+          context,
+          '成功上传 ${result.successCount} 个文件，${result.errors.length} 个失败。\n${result.errors.first}',
+          error: true,
+        );
+      } else {
+        showToast(
+          context,
+          result.errors.length == 1
+              ? result.errors.first
+              : '全部 ${result.errors.length} 个文件上传失败：\n${result.errors.first}',
+          error: true,
+        );
       }
-      showToast(context, error, error: true);
       return;
     }
 
