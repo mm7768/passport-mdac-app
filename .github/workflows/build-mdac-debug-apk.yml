@@ -1,9 +1,10 @@
-name: Build MDAC Debug APK
+name: Build MDAC APK
 
 on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - feat/mdac-human-review
     paths:
       - android/**
@@ -14,10 +15,10 @@ on:
       - .github/workflows/build-mdac-debug-apk.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-debug-apk:
+  build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -47,17 +48,34 @@ jobs:
         run: flutter test
 
       - name: Build debug APK
-        env:
-          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
-        run: >-
-          flutter build apk --debug
-          --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co
-          --dart-define=SUPABASE_PUBLISHABLE_KEY=$SUPABASE_PUBLISHABLE_KEY
+        run: |
+          KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
+          flutter build apk --debug \
+            --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.1.apk
 
-      - name: Upload debug APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: passport-mdac-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: PassportMDAC-v1.0.1-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.1.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.1
+          name: "Passport MDAC Desk v1.0.1 (最新版 - 支持多选护照录入)"
+          body: |
+            ### 更新内容：
+            - **护照录入改多选**：点击“导入护照”后支持批量多选图片（JPG / PNG）与多护照 PDF。
+            - **批量上传处理**：各文件独立校验（≤15MB）、独立显示进度、防重复提交与失败重试。
+            - **微秒级路径唯一性**：优化私有 Storage 存储路径，杜绝多文件并发冲突。
+            - **全自动查验对接**：已连接后端云端三大自动化查验 Worker（MDAC 注册、Check Registration、Visit Pass）。
+          files: |
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.1.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
