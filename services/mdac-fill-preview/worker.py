@@ -819,6 +819,7 @@ async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
     client.heartbeat(status="ONLINE")
     while True:
         try:
+            client.heartbeat(status="ONLINE")
             processed = await run_once(config, client)
             if not processed:
                 await asyncio.sleep(config.poll_seconds)
