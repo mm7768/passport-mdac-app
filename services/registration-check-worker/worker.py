@@ -249,7 +249,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_status": status,
                 "p_hostname": socket.gethostname(),
-                "p_version": "registration-check-1",
+                "p_version": "registration-check-auto-2",
             },
         )
 
@@ -815,7 +815,7 @@ class RegistrationCheckWorker:
             logging.INFO,
             step="worker_start",
             status="online",
-            result={"mode": "FILL_REVIEW", "poll_seconds": self.config.poll_seconds},
+            result={"mode": self.config.mode, "poll_seconds": self.config.poll_seconds},
         )
         while True:
             try:
