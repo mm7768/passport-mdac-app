@@ -1650,6 +1650,7 @@ class DemoRepository extends ChangeNotifier {
     final files = result.files;
     int successCount = 0;
     final List<String> errors = [];
+    final seenInBatch = <String>{};
 
     for (final file in files) {
       Uint8List? bytes = file.bytes;
@@ -1682,10 +1683,11 @@ class DemoRepository extends ChangeNotifier {
       }
 
       final contentHash = sha256.convert(bytes).toString();
-      if (_successfulUploadFingerprints.contains(contentHash)) {
-        errors.add('${file.name}: 该文件已上传过，已跳过重复提交');
+      if (seenInBatch.contains(contentHash)) {
+        errors.add('${file.name}: 本次选择中包含重复文件，已跳过');
         continue;
       }
+      seenInBatch.add(contentHash);
 
       final record = UploadRecord(
         id: 'upload-${DateTime.now().microsecondsSinceEpoch}',
@@ -1919,6 +1921,33 @@ class DemoRepository extends ChangeNotifier {
     } catch (exception) {
       return 'OCR 客户创建失败，云端未保存：$exception';
     }
+  }
+
+  void discardOcrDraft(OcrDraft draft, String actor) {
+    ocrDrafts.removeWhere((item) => item.id == draft.id);
+    auditEvents.insert(
+      0,
+      '$actor 废弃了 OCR 草稿：${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName}',
+    );
+    notifyListeners();
+  }
+
+  Future<String?> discardOcrDraftWithSync(OcrDraft draft, String actor) async {
+    ocrDrafts.removeWhere((item) => item.id == draft.id);
+    final resultId = draft.id.startsWith('remote-ocr-')
+        ? draft.id.substring('remote-ocr-'.length)
+        : null;
+    if (remoteMode && resultId != null) {
+      try {
+        await SupabaseGateway.discardOcrResult(resultId);
+      } catch (_) {}
+    }
+    auditEvents.insert(
+      0,
+      '$actor 废弃了 OCR 草稿：${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName}',
+    );
+    notifyListeners();
+    return null;
   }
 
   String? createManualCustomer(Map<String, String> values, String actor) {
@@ -4507,6 +4536,41 @@ class OcrDraftSection extends StatelessWidget {
           ),
           actions: [
             TextButton(
+              onPressed: () async {
+                final confirm = await showDialog<bool>(
+                  context: dialogContext,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('废弃此识别草稿？'),
+                    content: Text(
+                      '确定要废弃 ${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName} 的识别草稿吗？废弃后将不再显示。',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('返回'),
+                      ),
+                      FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppTheme.danger,
+                        ),
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('确认废弃'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await repository.discardOcrDraftWithSync(draft, actor);
+                  if (dialogContext.mounted) {
+                    Navigator.pop(dialogContext, false);
+                    showToast(context, '已废弃该识别草稿。');
+                  }
+                }
+              },
+              style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+              child: const Text('废弃草稿'),
+            ),
+            TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
               child: const Text('取消'),
             ),
@@ -4600,7 +4664,46 @@ class OcrDraftSection extends StatelessWidget {
                         ),
                       ),
                       ConfidencePill(value: draft.confidence),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: '废弃草稿',
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: AppTheme.danger,
+                          size: 20,
+                        ),
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('废弃此识别草稿？'),
+                              content: Text(
+                                '确定要废弃 ${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName} 的识别草稿吗？废弃后将不再显示。',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('取消'),
+                                ),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppTheme.danger,
+                                  ),
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('确认废弃'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirm == true) {
+                            await repository.discardOcrDraftWithSync(draft, actor);
+                            if (context.mounted) {
+                              showToast(context, '已废弃该识别草稿。');
+                            }
+                          }
+                        },
+                      ),
+                      const SizedBox(width: 4),
                       OutlinedButton(
                         onPressed: () => review(context, draft),
                         child: const Text('审核'),
@@ -7469,9 +7572,9 @@ class _PassportDocumentCardState extends State<PassportDocumentCard> {
       return _card(
         icon: Icons.picture_as_pdf_outlined,
         title: '护照 PDF 已录入',
-        body: '原始文件保存在私有 Storage；当前详情页显示文件卡片。',
+        body: '原始文件保存在私有 Storage；只要客户档案未删除即永久可查看。',
         child: const Text(
-          'PDF 文件不会被公开，也不会在列表中直接下载。',
+          'PDF 文件受权限保护，只要客户档案在存即可安全查看。',
           style: TextStyle(color: AppTheme.muted, fontSize: 12),
         ),
       );
@@ -7480,7 +7583,7 @@ class _PassportDocumentCardState extends State<PassportDocumentCard> {
     return _card(
       icon: Icons.badge_outlined,
       title: '护照原图 · 低分辨率预览',
-      body: '完整页面比例保留；签名预览链接 5 分钟后自动失效。',
+      body: '完整页面比例保留；客户档案在存期间永久可见。',
       child: _signedUrl == null
           ? _unavailableState()
           : FutureBuilder<String>(

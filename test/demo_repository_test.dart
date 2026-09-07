@@ -46,6 +46,18 @@ void main() {
       expect(repository.activeCustomers.length, 4);
     });
 
+    test('discardOcrDraft removes the draft from ocrDrafts and logs audit event', () {
+      final repository = DemoRepository();
+      repository.importDemoDocument(isPdf: false);
+      expect(repository.ocrDrafts.length, 1);
+      final draft = repository.ocrDrafts.single;
+
+      repository.discardOcrDraft(draft, 'Operator');
+
+      expect(repository.ocrDrafts, isEmpty);
+      expect(repository.auditEvents.first, contains('废弃了 OCR 草稿'));
+    });
+
     test(
       'manual creation keeps internal PIN spaces and trims only boundaries',
       () {

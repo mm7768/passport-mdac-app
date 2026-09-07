@@ -142,6 +142,34 @@ class SupabaseGateway {
     }
   }
 
+  static Future<void> discardOcrResult(String resultId) async {
+    final client = _requiredClient;
+    final row = await client
+        .from('ocr_results')
+        .update({
+          'status': 'FAILED',
+          'error_message': '用户手动废弃/忽略此条识别草稿',
+          'reviewed_by': _requiredUserId,
+          'reviewed_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', resultId)
+        .select('batch_id')
+        .maybeSingle();
+
+    if (row != null && row['batch_id'] != null) {
+      final batchId = row['batch_id'].toString();
+      try {
+        await client
+            .from('ocr_batches')
+            .update({
+              'status': 'FAILED',
+              'error_message': '用户手动废弃识别草稿',
+            })
+            .eq('id', batchId);
+      } catch (_) {}
+    }
+  }
+
   static Future<Map<String, dynamic>> uploadOcrBatch({
     required Uint8List bytes,
     required String fileName,
@@ -168,6 +196,15 @@ class SupabaseGateway {
           fileOptions: FileOptions(contentType: contentType, upsert: false),
         );
     try {
+      try {
+        await client
+            .from('ocr_batches')
+            .update({'status': 'FAILED', 'error_message': '已由新上传批次替代'})
+            .eq('uploaded_by', userId)
+            .filter('metadata->>content_hash', 'eq', contentHash)
+            .neq('status', 'FAILED');
+      } catch (_) {}
+
       final row = await client
           .from('ocr_batches')
           .insert({
@@ -901,7 +938,7 @@ class SupabaseGateway {
         .from('passport-documents')
         .createSignedUrl(
           normalizedPath,
-          300,
+          315360000,
           transform: const TransformOptions(
             width: 900,
             height: 1200,
