@@ -1,2 +1,4 @@
 playwright==1.55.0
 requests==2.32.5
+ddddocr>=1.4.0
+pillow>=10.0.0

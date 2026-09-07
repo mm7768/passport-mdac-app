@@ -70,6 +70,9 @@ class WorkerConfig:
     supabase_url: str
     service_role_key: str
     worker_id: str
+    mode: str
+    allow_real_submit: bool
+    headless: bool
     check_url: str
     poll_seconds: float
     lease_seconds: int
@@ -106,20 +109,30 @@ class WorkerConfig:
                 raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
-        mode = os.getenv("VISIT_PASS_CHECK_MODE", "FILL_REVIEW").strip().upper()
-        if mode != "FILL_REVIEW":
-            raise WorkerError("VISIT_PASS_CHECK_MODE 必须严格为 FILL_REVIEW")
-        allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "false").strip().lower()
-        if allow_submit != "false":
-            raise WorkerError("ALLOW_REAL_SUBMIT 必须严格为 false")
-        headless = os.getenv("VISIT_PASS_CHECK_HEADLESS", "true").strip().lower()
-        if headless != "true":
+        mode = os.getenv("VISIT_PASS_CHECK_MODE", "AUTO_SEARCH").strip().upper() or "AUTO_SEARCH"
+        if mode not in {"AUTO_SEARCH", "FILL_REVIEW"}:
+            raise WorkerError("VISIT_PASS_CHECK_MODE 必须为 AUTO_SEARCH 或 FILL_REVIEW")
+
+        raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
+        if mode == "FILL_REVIEW":
+            if raw_allow_submit and raw_allow_submit != "false":
+                raise WorkerError("FILL_REVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
+            allow_real_submit = False
+        else:
+            allow_real_submit = raw_allow_submit != "false"
+
+        raw_headless = os.getenv("VISIT_PASS_CHECK_HEADLESS", "true").strip().lower()
+        if raw_headless != "true":
             raise WorkerError("VISIT_PASS_CHECK_HEADLESS 必须严格为 true")
+        headless = True
 
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
             service_role_key=required("SUPABASE_SERVICE_ROLE_KEY"),
             worker_id=required("VISIT_PASS_CHECK_WORKER_ID"),
+            mode=mode,
+            allow_real_submit=allow_real_submit,
+            headless=headless,
             check_url=os.getenv("VISIT_PASS_CHECK_URL", DEFAULT_CHECK_URL).strip()
             or DEFAULT_CHECK_URL,
             poll_seconds=positive_float("VISIT_PASS_CHECK_POLL_SECONDS", "30", 10.0),
@@ -294,6 +307,32 @@ class SupabaseAdminClient:
             raise WorkerError("finish_visit_pass_check_item 返回格式不正确")
         return result
 
+    def finish_visit_pass_worker(
+        self,
+        *,
+        item_id: str,
+        outcome: str,
+        evidence_path: str | None = None,
+        raw_summary: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        result = self._rpc(
+            "finish_visit_pass_check_worker",
+            {
+                "p_item_id": item_id,
+                "p_worker_id": self.config.worker_id,
+                "p_outcome": outcome,
+                "p_evidence_path": evidence_path,
+                "p_raw_summary": raw_summary or {},
+                "p_error_code": error_code,
+                "p_error_message": error_message,
+            },
+        )
+        if not isinstance(result, dict):
+            raise WorkerError("finish_visit_pass_check_worker 返回格式不正确")
+        return result
+
 
 def normalize_pin(value: Any) -> str | None:
     if value is None:
@@ -371,17 +410,48 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     return ("VISIT_PASS_CHECK_WORKER_ERROR", "Check Visit Pass preview failed", True)
 
 
-async def preview_page(
+async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[str, bytes, dict[str, Any]]:
     async with async_playwright() as playwright:
         browser: Browser = await playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"],
+            headless=config.headless,
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
         )
         try:
-            page: Page = await browser.new_page()
+            page: Page = await context.new_page()
+
+            async def route_handler(route, request):
+                if not config.allow_real_submit and request.method == "POST":
+                    LOG.warning("FILL_REVIEW 模式拦截到 POST 请求，已中止: %s", request.url)
+                    await route.abort()
+                    return
+                await route.continue_()
+
+            await page.route("**/*", route_handler)
+
+            dialog_messages: list[str] = []
+
+            async def on_dialog(dialog):
+                msg = str(dialog.message)
+                dialog_messages.append(msg)
+                LOG.info("官方页面弹出 Dialog: %s", msg)
+                try:
+                    await dialog.dismiss()
+                except Exception:
+                    pass
+
+            page.on("dialog", on_dialog)
+
             await page.goto(
                 config.check_url,
                 wait_until="domcontentloaded",
@@ -410,15 +480,113 @@ async def preview_page(
 
             markup = await page.content()
             challenge_type = challenge_type_from_markup(markup)
-            screenshot = await page.screenshot(full_page=True, type="png")
-            summary = make_preview_summary(
-                challenge_type=challenge_type,
-                field_checks=field_checks,
-                screenshot_saved=True,
+
+            if config.mode == "FILL_REVIEW":
+                screenshot = await page.screenshot(full_page=True, type="png")
+                summary = make_preview_summary(
+                    challenge_type=challenge_type,
+                    field_checks=field_checks,
+                    screenshot_saved=True,
+                )
+                return ("NEEDS_REVIEW", screenshot, summary)
+
+            from slider_solver import solve_mdac_slider
+
+            slider_ok = True
+            has_slider = (
+                challenge_type == "CAPTCHA_SLIDER"
+                or await page.locator(".sliderContainer, #captcha canvas").count() > 0
             )
-            return screenshot, challenge_type, summary
+            if has_slider:
+                slider_ok = await solve_mdac_slider(page, log_func=LOG.info, max_retries=3)
+
+            if not slider_ok:
+                screenshot = await page.screenshot(full_page=True, type="png")
+                summary = make_preview_summary(
+                    challenge_type="CAPTCHA_SLIDER",
+                    field_checks=field_checks,
+                    screenshot_saved=True,
+                )
+                summary["slider_solved"] = False
+                summary["error"] = "SLIDER_SOLVER_FAILED"
+                return ("NEEDS_REVIEW", screenshot, summary)
+
+            LOG.info("滑块验证通过，准备触发 Submit 查询 Visit Pass...")
+            submit_locator = page.locator(
+                "#submit, button[type='submit'], input[type='submit'], #searchVisitPass"
+            ).first
+            if await submit_locator.is_disabled():
+                await page.wait_for_timeout(1000)
+
+            await submit_locator.click()
+            LOG.info("已点击 Submit 查询，等待结果返回...")
+
+            outcome: str | None = None
+            for _ in range(15):
+                await page.wait_for_timeout(1000)
+
+                all_dialog_text = " ".join(dialog_messages).lower()
+                if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
+                    LOG.warning("官方弹窗明确提示：PIN 无效 (PIN_INVALID)")
+                    outcome = "PIN_INVALID"
+                    break
+                if "no record" in all_dialog_text or "rekod tidak dijumpai" in all_dialog_text or "tiada rekod" in all_dialog_text:
+                    LOG.info("官方弹窗明确提示：没有找到记录 (NO_RECORD)")
+                    outcome = "NO_RECORD"
+                    break
+
+                page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+                lowered_text = page_text.lower()
+
+                if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
+                    LOG.warning("官方页面明确显示：PIN 无效 (PIN_INVALID)")
+                    outcome = "PIN_INVALID"
+                    break
+
+                if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text or "tiada rekod" in lowered_text:
+                    LOG.info("官方页面明确显示：没有找到记录 (NO_RECORD)")
+                    outcome = "NO_RECORD"
+                    break
+
+                if (
+                    "movement record" in lowered_text
+                    or "rekod pergerakan" in lowered_text
+                    or "pass type" in lowered_text
+                    or "jenis pas" in lowered_text
+                    or "date of entry" in lowered_text
+                    or "tarikh masuk" in lowered_text
+                ):
+                    LOG.info("官方页面明确显示：查到 Visit Pass 记录 (FOUND)")
+                    outcome = "FOUND"
+                    break
+
+            if outcome is None:
+                LOG.warning("未检测到明确结果或超时，标记为 NEEDS_REVIEW 供人工核对")
+                outcome = "NEEDS_REVIEW"
+
+            screenshot = await page.screenshot(full_page=True, type="png")
+            summary = {
+                "source": "MDAC_CHECK_VISIT_PASS",
+                "mode": "AUTO_SEARCH",
+                "outcome": outcome,
+                "slider_solved": True,
+                "submitted": True,
+                "result_confirmed": (outcome in {"FOUND", "NO_RECORD", "PIN_INVALID"}),
+                "dialogs": dialog_messages if dialog_messages else None,
+            }
+            return (outcome, screenshot, summary)
         finally:
             await browser.close()
+
+
+async def preview_page(
+    config: WorkerConfig,
+    runtime_input: dict[str, str],
+) -> tuple[bytes, str | None, dict[str, Any]]:
+    """Legacy helper for backward compatibility."""
+    outcome, screenshot, summary = await query_and_capture_page(config, runtime_input)
+    challenge_type = summary.get("challenge_type")
+    return screenshot, challenge_type, summary
 
 
 class VisitPassCheckWorker:
@@ -453,13 +621,14 @@ class VisitPassCheckWorker:
             )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
-                screenshot, challenge_type, summary = asyncio.run(
-                    preview_page(self.config, runtime_input)
+                outcome, screenshot, summary = asyncio.run(
+                    query_and_capture_page(self.config, runtime_input)
                 )
                 screenshot_path: str | None = None
                 try:
                     screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
-                except Exception:
+                    summary["screenshot_path"] = screenshot_path
+                except Exception as upload_err:
                     log_event(
                         logging.WARNING,
                         step="screenshot_upload",
@@ -468,38 +637,40 @@ class VisitPassCheckWorker:
                         item_id=item_id,
                         customer_id=customer_id,
                         error_code="SCREENSHOT_UPLOAD_FAILED",
-                        error_message="Visit Pass Check screenshot upload failed",
+                        error_message=str(upload_err),
                     )
                     summary["screenshot_saved"] = False
                     summary["screenshot_upload_failed"] = True
 
-                if challenge_type is not None:
-                    error_code = "MANUAL_CHALLENGE_REQUIRED"
-                    error_message = "Official CAPTCHA/slider detected; manual review required"
-                else:
-                    error_code = "NO_SUBMIT_PREVIEW"
-                    error_message = "Fields were verified but no result was queried because this worker never submits"
-                self.supabase.finish_item(
+                error_code = None
+                error_message = None
+                if outcome == "NEEDS_REVIEW":
+                    error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
+                    error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
+                elif outcome == "NO_RECORD":
+                    error_code = "NO_RECORD"
+                    error_message = "官方页面显示无记录"
+                elif outcome == "PIN_INVALID":
+                    error_code = "PIN_INVALID"
+                    error_message = "官方页面提示 PIN 错误"
+
+                self.supabase.finish_visit_pass_worker(
                     item_id=item_id,
-                    check_status="UNPARSED",
-                    normalized_status=None,
+                    outcome=outcome,
+                    evidence_path=screenshot_path,
                     raw_summary=summary,
-                    screenshot_path=screenshot_path,
-                    challenge_type=challenge_type,
-                    result_unknown=True,
-                    retryable=False,
                     error_code=error_code,
                     error_message=error_message,
                 )
                 processed += 1
                 log_event(
-                    logging.WARNING,
+                    logging.INFO,
                     step="result_writeback",
-                    status="needs_review",
+                    status="succeeded" if outcome == "FOUND" else "processed",
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
-                    result="UNPARSED",
+                    result=outcome,
                     error_code=error_code,
                     error_message=error_message,
                 )
@@ -517,23 +688,19 @@ class VisitPassCheckWorker:
                     error_message=error_message,
                 )
                 try:
-                    self.supabase.finish_item(
+                    self.supabase.finish_visit_pass_worker(
                         item_id=item_id,
-                        check_status="FAILED",
-                        normalized_status=None,
+                        outcome="NEEDS_REVIEW",
+                        evidence_path=None,
                         raw_summary={
                             "source": "MDAC_CHECK_VISIT_PASS",
-                            "mode": "FILL_REVIEW",
+                            "mode": self.config.mode,
                             "submitted": False,
                             "result_confirmed": False,
                             "captcha_bypass": False,
-                            "result_page_read": False,
                             "screenshot_saved": False,
+                            "error": error_code,
                         },
-                        screenshot_path=None,
-                        challenge_type=None,
-                        result_unknown=True,
-                        retryable=retryable,
                         error_code=error_code,
                         error_message=error_message,
                     )
@@ -573,7 +740,7 @@ class VisitPassCheckWorker:
             logging.INFO,
             step="worker_start",
             status="online",
-            result={"mode": "FILL_REVIEW", "poll_seconds": self.config.poll_seconds},
+            result={"mode": self.config.mode, "poll_seconds": self.config.poll_seconds},
         )
         while True:
             try:

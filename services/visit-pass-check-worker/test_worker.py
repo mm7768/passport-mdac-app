@@ -122,6 +122,30 @@ class VisitPassWorkerTests(unittest.TestCase):
         self.assertEqual(config.screenshot_bucket, MODULE.DEFAULT_BUCKET)
         self.assertEqual(config.poll_seconds, 30.0)
 
+    def test_config_accepts_auto_search_mode(self) -> None:
+        env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-placeholder",
+            "VISIT_PASS_CHECK_WORKER_ID": "test-worker",
+            "VISIT_PASS_CHECK_MODE": "AUTO_SEARCH",
+            "ALLOW_REAL_SUBMIT": "true",
+            "VISIT_PASS_CHECK_HEADLESS": "true",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = MODULE.WorkerConfig.from_env()
+        self.assertEqual(config.mode, "AUTO_SEARCH")
+        self.assertTrue(config.allow_real_submit)
+
+    def test_slider_solver_generate_track(self) -> None:
+        from slider_solver import generate_track
+
+        total_distance = 150.0
+        track = generate_track(total_distance)
+        self.assertGreaterEqual(len(track), 30)
+        self.assertLessEqual(len(track), 40)
+        sum_distance = sum(track)
+        self.assertAlmostEqual(sum_distance, total_distance, delta=1.0)
+
     def test_remote_failure_is_retryable_without_exposing_exception(self) -> None:
         code, message, retryable = MODULE.classify_page_failure(
             requests.Timeout("passport AB123 and PIN SECRET")
@@ -134,29 +158,32 @@ class VisitPassWorkerTests(unittest.TestCase):
     def test_process_batch_writes_review_result_with_structured_context(self) -> None:
         supabase = _FakeSupabase()
         instance = MODULE.VisitPassCheckWorker.__new__(MODULE.VisitPassCheckWorker)
-        instance.config = SimpleNamespace()
+        instance.config = SimpleNamespace(mode="AUTO_SEARCH")
         instance.supabase = supabase
 
-        async def fake_preview(config, runtime_input):
+        async def fake_query_and_capture(config, runtime_input):
             return (
+                "FOUND",
                 b"png",
-                "CAPTCHA_SLIDER",
-                MODULE.make_preview_summary(
-                    challenge_type="CAPTCHA_SLIDER",
-                    field_checks={"passNo": True},
-                    screenshot_saved=True,
-                ),
+                {
+                    "source": "MDAC_CHECK_VISIT_PASS",
+                    "mode": "AUTO_SEARCH",
+                    "outcome": "FOUND",
+                    "slider_solved": True,
+                    "submitted": True,
+                    "result_confirmed": True,
+                },
             )
 
-        with patch.object(MODULE, "preview_page", side_effect=fake_preview):
+        with patch.object(MODULE, "query_and_capture_page", side_effect=fake_query_and_capture):
             with self.assertLogs(
                 "visit_pass_check_worker", level=logging.INFO
             ) as captured:
                 processed = instance.process_batch({"id": "batch-1"})
 
         self.assertEqual(processed, 1)
-        self.assertEqual(supabase.finished[0]["check_status"], "UNPARSED")
-        self.assertTrue(supabase.finished[0]["result_unknown"])
+        self.assertEqual(supabase.finished[0]["outcome"], "FOUND")
+        self.assertEqual(supabase.finished[0]["evidence_path"], "private/path.png")
         events = [json.loads(record.getMessage()) for record in captured.records]
         item_event = next(event for event in events if event["step"] == "item_claim")
         self.assertEqual(item_event["worker"], "visit_pass_check")
@@ -192,6 +219,10 @@ class _FakeSupabase:
         return "private/path.png"
 
     def finish_item(self, **kwargs) -> dict:
+        self.finished.append(kwargs)
+        return {"ok": True}
+
+    def finish_visit_pass_worker(self, **kwargs) -> dict:
         self.finished.append(kwargs)
         return {"ok": True}
 

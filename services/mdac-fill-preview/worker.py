@@ -21,8 +21,10 @@ from typing import Any, Awaitable, Callable
 import requests
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
+from slider_solver import solve_mdac_slider
+
 LOG = logging.getLogger("mdac_fill_preview")
-WORKER_VERSION = "mdac-fill-preview-3"
+WORKER_VERSION = "mdac-auto-worker-4"
 MDAC_URL = "https://imigresen-online.imi.gov.my/mdac/main?registerMain"
 
 
@@ -72,20 +74,24 @@ class WorkerConfig:
                 raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
-        execution_mode = os.getenv("MDAC_EXECUTION_MODE", "").strip().upper()
-        if execution_mode != "FILL_PREVIEW":
-            raise WorkerError("MDAC_EXECUTION_MODE 必须严格为 FILL_PREVIEW")
+        execution_mode = os.getenv("MDAC_EXECUTION_MODE", "AUTO_SUBMIT").strip().upper() or "AUTO_SUBMIT"
+        if execution_mode not in {"AUTO_SUBMIT", "FILL_PREVIEW"}:
+            raise WorkerError("MDAC_EXECUTION_MODE 必须为 AUTO_SUBMIT 或 FILL_PREVIEW")
 
-        allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
-        if allow_submit != "false":
-            raise WorkerError("ALLOW_REAL_SUBMIT 必须严格为 false；本服务禁止真实提交")
+        raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
+        if execution_mode == "FILL_PREVIEW":
+            if raw_allow_submit and raw_allow_submit != "false":
+                raise WorkerError("FILL_PREVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
+            allow_real_submit = False
+        else:
+            allow_real_submit = raw_allow_submit != "false"
 
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
             service_role_key=required("SUPABASE_SERVICE_ROLE_KEY"),
             worker_id=required("MDAC_WORKER_ID"),
             execution_mode=execution_mode,
-            allow_real_submit=False,
+            allow_real_submit=allow_real_submit,
             mdac_url=os.getenv("MDAC_URL", MDAC_URL).strip() or MDAC_URL,
             poll_seconds=positive_float("MDAC_POLL_SECONDS", "15", 5.0),
             lease_seconds=bounded_int("MDAC_LEASE_SECONDS", "900", 60, 3600),
@@ -217,6 +223,46 @@ class SupabaseAdminClient:
         if not isinstance(result, dict):
             raise WorkerError("finish_mdac_fill_preview 返回格式不正确")
         return result
+
+    def finish_registration(
+        self,
+        *,
+        item_id: str,
+        status: str,
+        registration_no: str | None = None,
+        screenshot_path: str | None = None,
+        raw_summary: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            result = self._rpc(
+                "finish_mdac_registration_worker",
+                {
+                    "p_item_id": item_id,
+                    "p_worker_id": self.config.worker_id,
+                    "p_status": status,
+                    "p_registration_no": registration_no,
+                    "p_screenshot_path": screenshot_path,
+                    "p_raw_summary": raw_summary or {},
+                    "p_error_code": error_code,
+                    "p_error_message": error_message,
+                },
+            )
+            if isinstance(result, dict):
+                return result
+        except Exception as exc:
+            LOG.warning(
+                "调用 finish_mdac_registration_worker 异常，回退至 finish_mdac_fill_preview: %s",
+                exc,
+            )
+        return self.finish_fill_preview(
+            item_id=item_id,
+            screenshot_path=screenshot_path,
+            raw_summary=raw_summary or {},
+            error_code=error_code,
+            error_message=error_message,
+        )
 
 
 def parse_date(value: Any) -> date:
@@ -524,7 +570,7 @@ async def process_item(
     item_id = str(item["id"])
     summary: dict[str, Any] = {
         "execution_mode": config.execution_mode,
-        "preview_only": True,
+        "preview_only": not config.allow_real_submit,
         "submitted": False,
         "result_confirmed": False,
         "batch_id": batch_id,
@@ -534,6 +580,8 @@ async def process_item(
     screenshot_path: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    final_status = "NEEDS_REVIEW"
+    registration_no: str | None = None
 
     try:
         snapshot = item.get("customer_snapshot")
@@ -549,50 +597,166 @@ async def process_item(
         client.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
         page_summary = await fill_and_verify_page(page, fields, config, settings)
         summary.update(page_summary)
-        if page_summary.get("manual_review_required"):
-            error_code = "NEEDS_HUMAN_INTERVENTION"
-            error_message = (
-                "检测到 MDAC CAPTCHA/滑块；Worker 未拖动、未破解、未提交，等待人工审核"
-            )
+
+        if config.execution_mode == "AUTO_SUBMIT" and config.allow_real_submit:
+            if page_summary.get("captcha_present"):
+                LOG.info(
+                    "批次 %s 项 %s 检测到 MDAC 滑块，调用 slider_solver 自动处理...",
+                    batch_id,
+                    item_id,
+                )
+                slider_ok = await solve_mdac_slider(
+                    page, log_func=LOG.info, max_retries=3
+                )
+                summary["slider_solved"] = slider_ok
+                if not slider_ok:
+                    error_code = "SLIDER_SOLVER_FAILED"
+                    error_message = "滑块自动识别重试超限，已安全降级为人工审核"
+                    summary["manual_review_required"] = True
+                    final_status = "NEEDS_REVIEW"
+                else:
+                    LOG.info(
+                        "批次 %s 项 %s 滑块验证通过，准备触发官方 Submit...",
+                        batch_id,
+                        item_id,
+                    )
+                    submit_btn = page.locator("#submit")
+                    for _ in range(10):
+                        if not await submit_btn.is_disabled():
+                            break
+                        await page.wait_for_timeout(500)
+
+                    if await submit_btn.is_disabled():
+                        raise WorkerError("滑块通过后 Submit 按钮仍处于禁用状态")
+
+                    await submit_btn.click()
+                    LOG.info(
+                        "批次 %s 项 %s 已点击官方 Submit，等待确认官方结果...",
+                        batch_id,
+                        item_id,
+                    )
+                    summary["submitted"] = True
+
+                    success_detected = False
+                    for _ in range(15):
+                        await page.wait_for_timeout(1000)
+                        page_text = await page.evaluate(
+                            "() => document.body ? document.body.innerText : ''"
+                        )
+                        if re.search(
+                            r"SUCCESSFULLY\s+REGISTERED\.", page_text, re.IGNORECASE
+                        ):
+                            success_detected = True
+                            reg_match = re.search(
+                                r"(?:REGISTRATION\s+NO|NO\s+PENDAFTARAN)[:\s]+([A-Z0-9\-]+)",
+                                page_text,
+                                re.IGNORECASE,
+                            )
+                            if reg_match:
+                                registration_no = reg_match.group(1).strip()
+                            break
+
+                    if success_detected:
+                        LOG.info(
+                            "批次 %s 项 %s 官方注册成功！注册编号: %s",
+                            batch_id,
+                            item_id,
+                            registration_no or "未提取到",
+                        )
+                        summary["result_confirmed"] = True
+                        summary["registration_no"] = registration_no
+                        final_status = "SUCCEEDED"
+                    else:
+                        LOG.warning(
+                            "批次 %s 项 %s 提交后未能在预期时间内确认到官方成功文字，标记为 RESULT_UNKNOWN 并降级人工审核",
+                            batch_id,
+                            item_id,
+                        )
+                        error_code = "RESULT_UNKNOWN"
+                        error_message = (
+                            "已提交官方表单，但未能在超时时间内确认到 SUCCESS 文字"
+                        )
+                        final_status = "NEEDS_REVIEW"
+            else:
+                submit_btn = page.locator("#submit")
+                if not await submit_btn.is_disabled():
+                    await submit_btn.click()
+                    summary["submitted"] = True
+                    for _ in range(15):
+                        await page.wait_for_timeout(1000)
+                        page_text = await page.evaluate(
+                            "() => document.body ? document.body.innerText : ''"
+                        )
+                        if re.search(
+                            r"SUCCESSFULLY\s+REGISTERED\.", page_text, re.IGNORECASE
+                        ):
+                            summary["result_confirmed"] = True
+                            final_status = "SUCCEEDED"
+                            break
+                else:
+                    error_code = "SUBMIT_DISABLED_WITHOUT_CAPTCHA"
+                    error_message = "官方表单缺少滑块且 Submit 按钮被禁用"
+                    final_status = "NEEDS_REVIEW"
+        else:
+            if page_summary.get("manual_review_required"):
+                error_code = "NEEDS_HUMAN_INTERVENTION"
+                error_message = (
+                    "检测到 MDAC CAPTCHA/滑块；Worker 未拖动、未破解、未提交，等待人工审核"
+                )
+            final_status = "NEEDS_REVIEW"
+
     except ManualReviewRequired as exc:
         error_code = "NEEDS_HUMAN_INTERVENTION"
         error_message = _safe_text(exc)
         summary["manual_review_required"] = True
+        final_status = "NEEDS_REVIEW"
     except (ValueError, WorkerError, PlaywrightTimeoutError) as exc:
         error_code = "FILL_PREVIEW_FAILED"
         error_message = _safe_text(exc)
+        final_status = "NEEDS_REVIEW"
     except Exception as exc:  # noqa: BLE001 - final per-item containment
         error_code = "UNEXPECTED_FILL_PREVIEW_ERROR"
         error_message = _safe_text(exc)
+        final_status = "NEEDS_REVIEW"
         LOG.exception("批次 %s 项 %s 未预期错误", batch_id, item_id)
 
     try:
         screenshot = await page.screenshot(type="png", full_page=True)
+        screenshot_prefix = (
+            "mdac-submissions"
+            if final_status == "SUCCEEDED"
+            else config.screenshot_prefix
+        )
+        screenshot_name = (
+            "success.png" if final_status == "SUCCEEDED" else "preview.png"
+        )
         screenshot_path = client.upload_screenshot(
-            f"{config.screenshot_prefix}/{batch_id}/{item_id}/preview.png",
+            f"{screenshot_prefix}/{batch_id}/{item_id}/{screenshot_name}",
             screenshot,
         )
         summary["screenshot_saved"] = True
     except Exception as exc:  # noqa: BLE001 - preserve review state even if storage fails
         summary["screenshot_saved"] = False
         summary["screenshot_error"] = _safe_text(exc)
-        if error_code is None:
+        if error_code is None and final_status != "SUCCEEDED":
             error_code = "SCREENSHOT_UPLOAD_FAILED"
             error_message = _safe_text(exc)
 
-    summary["submitted"] = False
-    summary["result_confirmed"] = False
-    client.finish_fill_preview(
+    client.finish_registration(
         item_id=item_id,
+        status=final_status,
+        registration_no=registration_no,
         screenshot_path=screenshot_path,
         raw_summary=summary,
         error_code=error_code,
         error_message=error_message,
     )
     LOG.info(
-        "批次 %s 项 %s 已写回 NEEDS_REVIEW；preview_only=true submitted=false error=%s",
+        "批次 %s 项 %s 已写回；status=%s submitted=%s error=%s",
         batch_id,
         item_id,
+        final_status,
+        summary.get("submitted", False),
         error_code or "none",
     )
 
@@ -604,7 +768,12 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
 
     batch_id = str(batch["id"])
     client.heartbeat(status="BUSY", batch_id=batch_id)
-    LOG.info("已领取 MDAC 批次 %s；仅填表预览，绝不提交", batch_id)
+    LOG.info(
+        "已领取 MDAC 批次 %s；模式=%s 允许提交=%s",
+        batch_id,
+        config.execution_mode,
+        config.allow_real_submit,
+    )
 
     async with async_playwright() as playwright:
         browser: Browser | None = None
@@ -615,7 +784,8 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
                 locale="en-MY",
                 accept_downloads=False,
             )
-            await _block_form_posts(context)
+            if not config.allow_real_submit:
+                await _block_form_posts(context)
             page = await context.new_page()
             while True:
                 item = client.claim_item(batch_id)
@@ -641,7 +811,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
                 await browser.close()
 
     client.heartbeat(status="ONLINE")
-    LOG.info("批次 %s 已处理；所有项均等待人工审核，未提交", batch_id)
+    LOG.info("批次 %s 处理完成", batch_id)
     return True
 
 

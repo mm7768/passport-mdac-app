@@ -130,7 +130,7 @@ class FillPreviewWorkerTests(unittest.TestCase):
         unsafe = dict(env)
         unsafe["ALLOW_REAL_SUBMIT"] = "true"
         with patch.dict(os.environ, unsafe, clear=True):
-            with self.assertRaisesRegex(WorkerError, "必须严格为 false"):
+            with self.assertRaisesRegex(WorkerError, "ALLOW_REAL_SUBMIT 必须为 false"):
                 WorkerConfig.from_env()
 
     def test_worker_refuses_default_or_non_fill_mode(self) -> None:
@@ -142,8 +142,60 @@ class FillPreviewWorkerTests(unittest.TestCase):
             "ALLOW_REAL_SUBMIT": "false",
         }
         with patch.dict(os.environ, env, clear=True):
-            with self.assertRaisesRegex(WorkerError, "必须严格为 FILL_PREVIEW"):
+            with self.assertRaisesRegex(WorkerError, "必须为 AUTO_SUBMIT 或 FILL_PREVIEW"):
                 WorkerConfig.from_env()
+
+    def test_worker_accepts_auto_submit_mode(self) -> None:
+        env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-only",
+            "MDAC_WORKER_ID": "test-worker",
+            "MDAC_EXECUTION_MODE": "AUTO_SUBMIT",
+            "ALLOW_REAL_SUBMIT": "true",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = WorkerConfig.from_env()
+            self.assertEqual(config.execution_mode, "AUTO_SUBMIT")
+            self.assertTrue(config.allow_real_submit)
+
+    def test_slider_solver_generate_track(self) -> None:
+        from slider_solver import generate_track
+
+        total_distance = 150.0
+        track = generate_track(total_distance)
+        self.assertGreaterEqual(len(track), 30)
+        self.assertLessEqual(len(track), 40)
+        sum_distance = sum(track)
+        self.assertAlmostEqual(sum_distance, total_distance, delta=1.0)
+
+    def test_supabase_client_finish_registration_calls_rpc(self) -> None:
+        from worker import SupabaseAdminClient
+
+        config = self.base_config()
+        client = SupabaseAdminClient(config)
+        with patch.object(client, "_rpc") as mock_rpc:
+            mock_rpc.return_value = {"id": "test-item-id", "status": "SUCCEEDED"}
+            res = client.finish_registration(
+                item_id="item-123",
+                status="SUCCEEDED",
+                registration_no="MDAC12345",
+                screenshot_path="mdac-submissions/b/i/success.png",
+                raw_summary={"test": True},
+            )
+            self.assertEqual(res["status"], "SUCCEEDED")
+            mock_rpc.assert_called_once_with(
+                "finish_mdac_registration_worker",
+                {
+                    "p_item_id": "item-123",
+                    "p_worker_id": "test-worker",
+                    "p_status": "SUCCEEDED",
+                    "p_registration_no": "MDAC12345",
+                    "p_screenshot_path": "mdac-submissions/b/i/success.png",
+                    "p_raw_summary": {"test": True},
+                    "p_error_code": None,
+                    "p_error_message": None,
+                },
+            )
 
 
 if __name__ == "__main__":

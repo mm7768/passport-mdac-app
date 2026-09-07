@@ -28,6 +28,8 @@ from urllib.parse import quote
 import requests
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
+from slider_solver import solve_mdac_slider
+
 LOG = logging.getLogger("registration_check_worker")
 WORKER_NAME = "registration_check"
 DEFAULT_CHECK_URL = "https://imigresen-online.imi.gov.my/mdac/register?viewRegistration"
@@ -71,6 +73,9 @@ class WorkerConfig:
     supabase_url: str
     service_role_key: str
     worker_id: str
+    mode: str
+    allow_real_submit: bool
+    headless: bool
     check_url: str
     poll_seconds: float
     lease_seconds: int
@@ -107,20 +112,27 @@ class WorkerConfig:
                 raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
-        mode = os.getenv("REGISTRATION_CHECK_MODE", "FILL_REVIEW").strip().upper()
-        if mode != "FILL_REVIEW":
-            raise WorkerError("REGISTRATION_CHECK_MODE 必须严格为 FILL_REVIEW")
-        allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "false").strip().lower()
-        if allow_submit != "false":
-            raise WorkerError("ALLOW_REAL_SUBMIT 必须严格为 false")
-        headless = os.getenv("REGISTRATION_CHECK_HEADLESS", "true").strip().lower()
-        if headless != "true":
-            raise WorkerError("REGISTRATION_CHECK_HEADLESS 必须严格为 true")
+        mode = os.getenv("REGISTRATION_CHECK_MODE", "AUTO_SEARCH").strip().upper() or "AUTO_SEARCH"
+        if mode not in {"AUTO_SEARCH", "FILL_REVIEW"}:
+            raise WorkerError("REGISTRATION_CHECK_MODE 必须为 AUTO_SEARCH 或 FILL_REVIEW")
+
+        raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
+        if mode == "FILL_REVIEW":
+            if raw_allow_submit and raw_allow_submit != "false":
+                raise WorkerError("FILL_REVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
+            allow_real_submit = False
+        else:
+            allow_real_submit = raw_allow_submit != "false"
+
+        headless = os.getenv("REGISTRATION_CHECK_HEADLESS", "true").strip().lower() == "true"
 
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
             service_role_key=required("SUPABASE_SERVICE_ROLE_KEY"),
             worker_id=required("REGISTRATION_CHECK_WORKER_ID"),
+            mode=mode,
+            allow_real_submit=allow_real_submit,
+            headless=headless,
             check_url=os.getenv("REGISTRATION_CHECK_URL", DEFAULT_CHECK_URL).strip()
             or DEFAULT_CHECK_URL,
             poll_seconds=positive_float("REGISTRATION_CHECK_POLL_SECONDS", "30", 10.0),
@@ -241,20 +253,75 @@ class SupabaseAdminClient:
             },
         )
 
-    def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:
+    def upload_evidence(self, item_id: str, content: bytes, extension: str = "png") -> str:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         safe_item_id = re.sub(r"[^a-zA-Z0-9-]", "", item_id)
-        object_path = f"{self.config.screenshot_prefix}/{day}/{safe_item_id}.png"
+        object_path = f"{self.config.screenshot_prefix}/{day}/{safe_item_id}.{extension}"
         bucket = quote(self.config.screenshot_bucket, safe="")
         path = quote(object_path, safe="/")
+        content_type = "application/pdf" if extension == "pdf" else "image/png"
         response = self.session.post(
             f"{self.storage_url}/{bucket}/{path}",
-            headers={"Content-Type": "image/png", "x-upsert": "true"},
-            data=image_bytes,
+            headers={"Content-Type": content_type, "x-upsert": "true"},
+            data=content,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, "上传 Check Registration 私有截图")
+        self._check(response, f"上传 Check Registration 私有凭证 ({extension})")
         return object_path
+
+    def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:
+        return self.upload_evidence(item_id, image_bytes, "png")
+
+    def finish_check_worker(
+        self,
+        *,
+        item_id: str,
+        outcome: str,
+        evidence_path: str | None = None,
+        raw_summary: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            result = self._rpc(
+                "finish_registration_check_worker",
+                {
+                    "p_item_id": item_id,
+                    "p_worker_id": self.config.worker_id,
+                    "p_outcome": outcome,
+                    "p_evidence_path": evidence_path,
+                    "p_raw_summary": raw_summary or {},
+                    "p_error_code": error_code,
+                    "p_error_message": error_message,
+                },
+            )
+            if isinstance(result, dict):
+                return result
+        except Exception as exc:
+            LOG.warning(
+                "调用 finish_registration_check_worker 异常，回退至 finish_item: %s",
+                exc,
+            )
+
+        check_status = (
+            "PARSED"
+            if outcome in ("FOUND", "NO_RECORD")
+            else ("FAILED" if outcome == "PIN_INVALID" else "NEEDS_REVIEW")
+        )
+        return self.finish_item(
+            item_id=item_id,
+            check_status=check_status,
+            normalized_status=outcome
+            if outcome in ("FOUND", "NO_RECORD", "PIN_INVALID")
+            else None,
+            raw_summary=raw_summary or {},
+            screenshot_path=evidence_path,
+            challenge_type="CAPTCHA_SLIDER" if outcome == "FOUND" else None,
+            result_unknown=(outcome not in ("FOUND", "NO_RECORD", "PIN_INVALID")),
+            retryable=False,
+            error_code=error_code,
+            error_message=error_message,
+        )
 
     def finish_item(
         self,
@@ -353,17 +420,64 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     return ("REGISTRATION_CHECK_WORKER_ERROR", "Check Registration preview failed", True)
 
 
-async def preview_page(
+def date_candidates(iso_date: str | None) -> list[str]:
+    if not iso_date:
+        return []
+    text = str(iso_date).strip()
+    parts = text.split("-")
+    if len(parts) != 3:
+        return [text]
+    year, month_str, day_str = parts[0], parts[1].zfill(2), parts[2].zfill(2)
+    cands = [
+        f"{day_str}/{month_str}/{year}",
+        f"{day_str}-{month_str}-{year}",
+        f"{year}-{month_str}-{day_str}",
+        f"{day_str}.{month_str}.{year}",
+    ]
+    try:
+        month_int = int(month_str)
+        month_abbrs = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        if 1 <= month_int <= 12:
+            abbr = month_abbrs[month_int - 1]
+            day_int = int(day_str)
+            cands.append(f"{day_str} {abbr} {year}")
+            cands.append(f"{day_int} {abbr} {year}")
+    except (ValueError, IndexError):
+        pass
+    return cands
+
+
+def check_dates_match(page_text: str, entry_date: str | None, exit_date: str | None) -> bool:
+    if not entry_date or not exit_date:
+        return True
+    entry_cands = date_candidates(entry_date)
+    exit_cands = date_candidates(exit_date)
+    if not entry_cands or not exit_cands:
+        return True
+    upper_text = page_text.upper()
+    has_entry = any(c.upper() in upper_text for c in entry_cands)
+    has_exit = any(c.upper() in upper_text for c in exit_cands)
+    return has_entry and has_exit
+
+
+async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
-) -> tuple[bytes, str | None, dict[str, Any]]:
+    target_entry_date: str | None = None,
+    target_exit_date: str | None = None,
+) -> tuple[str, bytes, str, dict[str, Any]]:
     async with async_playwright() as playwright:
         browser: Browser = await playwright.chromium.launch(
-            headless=True,
+            headless=config.headless,
             args=["--no-sandbox"],
         )
+        context = await browser.new_context(
+            viewport={"width": 1440, "height": 1200},
+            locale="en-MY",
+            accept_downloads=True,
+        )
         try:
-            page: Page = await browser.new_page()
+            page: Page = await context.new_page()
             await page.goto(
                 config.check_url,
                 wait_until="domcontentloaded",
@@ -387,15 +501,160 @@ async def preview_page(
 
             markup = await page.content()
             challenge_type = challenge_type_from_markup(markup)
-            screenshot = await page.screenshot(full_page=True, type="png")
-            summary = make_preview_summary(
-                challenge_type=challenge_type,
-                field_checks=field_checks,
-                screenshot_saved=True,
-            )
-            return screenshot, challenge_type, summary
+
+            if config.mode == "AUTO_SEARCH" and config.allow_real_submit:
+                slider_ok = True
+                canvas_count = await page.locator("canvas").count()
+                if challenge_type == "CAPTCHA_SLIDER" or canvas_count >= 2:
+                    LOG.info("检测到 Check Registration 滑块，调用 slider_solver 自动处理...")
+                    slider_ok = await solve_mdac_slider(page, log_func=LOG.info, max_retries=3)
+
+                if not slider_ok:
+                    screenshot = await page.screenshot(full_page=True, type="png")
+                    summary = make_preview_summary(
+                        challenge_type="CAPTCHA_SLIDER",
+                        field_checks=field_checks,
+                        screenshot_saved=True,
+                    )
+                    summary["slider_solved"] = False
+                    summary["error"] = "SLIDER_SOLVER_FAILED"
+                    return ("NEEDS_REVIEW", screenshot, "png", summary)
+
+                LOG.info("滑块验证通过，准备触发 Submit 查询...")
+                submit_locator = page.locator(
+                    "#submit, button[type='submit'], input[type='submit'], #searchRegistration"
+                ).first
+                if await submit_locator.is_disabled():
+                    await page.wait_for_timeout(1000)
+
+                download_task = asyncio.create_task(page.wait_for_event("download", timeout=12000))
+                await submit_locator.click()
+                LOG.info("已点击 Submit 查询，等待结果返回...")
+
+                download_obj = None
+                try:
+                    download_obj = await asyncio.wait_for(download_task, timeout=4.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+
+                if download_obj is not None:
+                    try:
+                        stream = await download_obj.create_read_stream()
+                        pdf_bytes = await stream.read()
+                        if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
+                            LOG.info("成功捕获到官方 Registration PDF (%d bytes)", len(pdf_bytes))
+                            summary = {
+                                "source": "MDAC_CHECK_REGISTRATION",
+                                "mode": "AUTO_SEARCH",
+                                "evidence_type": "PDF",
+                                "slider_solved": True,
+                                "submitted": True,
+                                "result_confirmed": True,
+                            }
+                            return ("FOUND", pdf_bytes, "pdf", summary)
+                    except Exception as e:
+                        LOG.warning("读取官方下载 PDF 异常: %s", e)
+
+                for _ in range(15):
+                    await page.wait_for_timeout(1000)
+                    page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+                    lowered_text = page_text.lower()
+
+                    if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text:
+                        LOG.info("官方页面明确显示：没有找到记录 (NO_RECORD)")
+                        screenshot = await page.screenshot(full_page=True, type="png")
+                        return ("NO_RECORD", screenshot, "png", {
+                            "source": "MDAC_CHECK_REGISTRATION",
+                            "outcome": "NO_RECORD",
+                            "slider_solved": True,
+                            "submitted": True,
+                        })
+
+                    if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text:
+                        LOG.warning("官方页面明确显示：PIN 无效 (PIN_INVALID)")
+                        screenshot = await page.screenshot(full_page=True, type="png")
+                        return ("PIN_INVALID", screenshot, "png", {
+                            "source": "MDAC_CHECK_REGISTRATION",
+                            "outcome": "PIN_INVALID",
+                            "slider_solved": True,
+                            "submitted": True,
+                        })
+
+                    if ("registration no" in lowered_text or "no pendaftaran" in lowered_text
+                            or "tarikh masuk" in lowered_text or "date of arrival" in lowered_text):
+                        if not check_dates_match(page_text, target_entry_date, target_exit_date):
+                            LOG.warning("查到记录但日期与本次 MDAC 不一致，降级人工审核防止误判")
+                            screenshot = await page.screenshot(full_page=True, type="png")
+                            return ("NEEDS_REVIEW", screenshot, "png", {
+                                "source": "MDAC_CHECK_REGISTRATION",
+                                "outcome": "DATE_MISMATCH",
+                                "slider_solved": True,
+                                "submitted": True,
+                                "note": "日期与本次目标不一致，需人工核对",
+                            })
+
+                        pdf_btn = page.locator(
+                            "a[href*='pdf'], button:has-text('PDF'), button:has-text('Print'), a:has-text('PDF'), a:has-text('Download')"
+                        ).first
+                        if await pdf_btn.count() > 0 and await pdf_btn.is_visible():
+                            try:
+                                async with page.expect_download(timeout=5000) as dl_info:
+                                    await pdf_btn.click()
+                                dl = await dl_info.value
+                                stream = await dl.create_read_stream()
+                                pdf_bytes = await stream.read()
+                                if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
+                                    LOG.info("点击页面按钮成功下载官方 Registration PDF (%d bytes)", len(pdf_bytes))
+                                    return ("FOUND", pdf_bytes, "pdf", {
+                                        "source": "MDAC_CHECK_REGISTRATION",
+                                        "mode": "AUTO_SEARCH",
+                                        "evidence_type": "PDF",
+                                        "slider_solved": True,
+                                        "submitted": True,
+                                        "result_confirmed": True,
+                                    })
+                            except Exception as dl_err:
+                                LOG.warning("点击下载按钮未触发 PDF: %s，回退全页截图", dl_err)
+
+                        screenshot = await page.screenshot(full_page=True, type="png")
+                        LOG.info("成功捕获官方查询结果页截图")
+                        return ("FOUND", screenshot, "png", {
+                            "source": "MDAC_CHECK_REGISTRATION",
+                            "mode": "AUTO_SEARCH",
+                            "evidence_type": "SCREENSHOT",
+                            "slider_solved": True,
+                            "submitted": True,
+                            "result_confirmed": True,
+                        })
+
+                screenshot = await page.screenshot(full_page=True, type="png")
+                return ("NEEDS_REVIEW", screenshot, "png", {
+                    "source": "MDAC_CHECK_REGISTRATION",
+                    "outcome": "RESULT_UNKNOWN",
+                    "slider_solved": True,
+                    "submitted": True,
+                    "note": "查询后超时未识别明确状态，已截图转人工",
+                })
+
+            else:
+                screenshot = await page.screenshot(full_page=True, type="png")
+                summary = make_preview_summary(
+                    challenge_type=challenge_type,
+                    field_checks=field_checks,
+                    screenshot_saved=True,
+                )
+                return ("NEEDS_REVIEW", screenshot, "png", summary)
         finally:
             await browser.close()
+
+
+async def preview_page(
+    config: WorkerConfig,
+    runtime_input: dict[str, str],
+) -> tuple[bytes, str | None, dict[str, Any]]:
+    outcome, evidence_bytes, ext, summary = await query_and_capture_page(config, runtime_input)
+    challenge_type = "CAPTCHA_SLIDER" if summary.get("challenge_type") == "CAPTCHA_SLIDER" else None
+    return evidence_bytes, challenge_type, summary
 
 
 class RegistrationCheckWorker:
@@ -430,53 +689,64 @@ class RegistrationCheckWorker:
             )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
-                screenshot, challenge_type, summary = asyncio.run(
-                    preview_page(self.config, runtime_input)
+                snapshot = item.get("customer_snapshot") or {}
+                target_entry_date = snapshot.get("target_entry_date")
+                target_exit_date = snapshot.get("target_exit_date")
+
+                outcome, evidence_bytes, ext, summary = asyncio.run(
+                    query_and_capture_page(
+                        self.config,
+                        runtime_input,
+                        target_entry_date=target_entry_date,
+                        target_exit_date=target_exit_date,
+                    )
                 )
-                screenshot_path: str | None = None
+                evidence_path: str | None = None
                 try:
-                    screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
-                except Exception:
+                    evidence_path = self.supabase.upload_evidence(item_id, evidence_bytes, ext)
+                    summary["evidence_path"] = evidence_path
+                except Exception as upload_err:
                     log_event(
                         logging.WARNING,
-                        step="screenshot_upload",
+                        step="evidence_upload",
                         status="failed",
                         batch_id=batch_id,
                         item_id=item_id,
                         customer_id=customer_id,
-                        error_code="SCREENSHOT_UPLOAD_FAILED",
-                        error_message="Registration Check screenshot upload failed",
+                        error_code="EVIDENCE_UPLOAD_FAILED",
+                        error_message=str(upload_err),
                     )
-                    summary["screenshot_saved"] = False
-                    summary["screenshot_upload_failed"] = True
+                    summary["evidence_upload_failed"] = True
 
-                if challenge_type is not None:
-                    error_code = "MANUAL_CHALLENGE_REQUIRED"
-                    error_message = "Official CAPTCHA/slider detected; manual review required"
-                else:
-                    error_code = "NO_SUBMIT_PREVIEW"
-                    error_message = "Fields were verified but no result was queried because this worker never submits"
-                self.supabase.finish_item(
+                error_code = None
+                error_message = None
+                if outcome == "NEEDS_REVIEW":
+                    error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
+                    error_message = summary.get("note") or "Check Registration 需要人工审核"
+                elif outcome == "NO_RECORD":
+                    error_code = "NO_RECORD"
+                    error_message = "官方页面显示无记录"
+                elif outcome == "PIN_INVALID":
+                    error_code = "PIN_INVALID"
+                    error_message = "官方页面提示 PIN 错误"
+
+                self.supabase.finish_check_worker(
                     item_id=item_id,
-                    check_status="UNPARSED",
-                    normalized_status=None,
+                    outcome=outcome,
+                    evidence_path=evidence_path,
                     raw_summary=summary,
-                    screenshot_path=screenshot_path,
-                    challenge_type=challenge_type,
-                    result_unknown=True,
-                    retryable=False,
                     error_code=error_code,
                     error_message=error_message,
                 )
                 processed += 1
                 log_event(
-                    logging.WARNING,
+                    logging.INFO,
                     step="result_writeback",
-                    status="needs_review",
+                    status="succeeded" if outcome == "FOUND" else "processed",
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
-                    result="UNPARSED",
+                    result=outcome,
                     error_code=error_code,
                     error_message=error_message,
                 )
@@ -494,22 +764,18 @@ class RegistrationCheckWorker:
                     error_message=error_message,
                 )
                 try:
-                    self.supabase.finish_item(
+                    self.supabase.finish_check_worker(
                         item_id=item_id,
-                        check_status="FAILED",
-                        normalized_status=None,
+                        outcome="NEEDS_REVIEW",
+                        evidence_path=None,
                         raw_summary={
                             "source": "MDAC_CHECK_REGISTRATION",
-                            "mode": "FILL_REVIEW",
+                            "mode": self.config.mode,
                             "submitted": False,
                             "result_confirmed": False,
                             "captcha_bypass": False,
                             "screenshot_saved": False,
                         },
-                        screenshot_path=None,
-                        challenge_type=None,
-                        result_unknown=True,
-                        retryable=retryable,
                         error_code=error_code,
                         error_message=error_message,
                     )
