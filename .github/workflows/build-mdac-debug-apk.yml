@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.3-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
+          name: PassportMDAC-v1.0.4-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,16 +67,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.3
-          name: "Passport MDAC Desk v1.0.3 (支持自定义地区代码 / 废弃OCR草稿 / 解除防重锁定 / 护照长效预览)"
+          tag_name: v1.0.4
+          name: "Passport MDAC Desk v1.0.4 (导出已获取 PIN 客户 Excel/CSV/剪贴板 · 移动端一键全选 · 修复 Android 文件保存)"
           body: |
-            ### 更新内容：
-            - **MDAC 业务配置支持自定义地区代码**：地区代码支持编辑输入 1 至 4 位国家/地区区号（例如 60、86、65、852 等），不再定死固定为 60。
-            - **支持废弃/删除 OCR 识别草稿**：在 OCR 待审核卡片及审核弹窗中新增「废弃草稿」按钮，可彻底移除重复或错误草稿，杜绝审核卡死。
-            - **解除防重复上传锁定**：优化文件去重策略，允许用户重新导入已删除客户或已废弃草稿的护照文件。
-            - **护照原图永久长效查看**：将客户档案中的护照图片签名链接有效期调整为永久长效（10年），直到客户档案被主动删除为止。
-            - **批量 30 本 Gmail PIN 队列与云端自动化稳定性升级**：已上线 Gmail PIN 批量 30 本无阻塞租约与精确隔离机制。
+            ### v1.0.4 更新内容：
+            - **导出已获取 PIN 客户清单**：
+              - 严格按 5 列标准输出：`A:名字`、`B:护照号`、`C:pin`、`D:注册使用的gmail`、`E:注册使用的手机号码`。
+              - 支持直接保存为标准 Excel（`.xls`）、带 BOM UTF-8 CSV（`.csv`），以及一键复制为制表符表格直接粘贴。
+              - 仅限已获取 PIN 的客户导出；混合多选时自动过滤并提示排除无 PIN 客户。
+            - **移动端一键全选与快捷筛选**：
+              - 新增「只看已获取 PIN」筛选标签。
+              - 修复手机屏幕下表头全选框被隐藏的问题，在卡片顶部与筛选栏均新增显式「全选 / 取消全选」控件。
+            - **修复 Android 文件保存 PathNotFoundException 错误**：
+              - 解决 Android SAF (Storage Access Framework) 返回虚拟路径导致的保存报错问题。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

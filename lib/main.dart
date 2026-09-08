@@ -3911,17 +3911,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
           bytes: bytes,
         );
         if (path != null) {
-          final f = File(path);
-          if (!await f.exists() || (await f.length()) == 0) {
-            await f.writeAsBytes(bytes);
-          }
           if (mounted) {
             widget.repository.recordExport(
               withPinCustomers.map((c) => c.id).toList(),
               widget.actor,
             );
             Navigator.of(context, rootNavigator: true).pop();
-            showToast(context, '导出成功！文件已保存至：$path');
+            showToast(context, '导出成功！已保存文件：$fileName');
           }
         }
       } catch (e) {
@@ -4277,6 +4273,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           });
                         },
                       ),
+                      ActionChip(
+                        avatar: Icon(
+                          list.isNotEmpty && list.every((c) => selected.contains(c.id))
+                              ? Icons.check_box_rounded
+                              : Icons.select_all_rounded,
+                          size: 16,
+                          color: AppTheme.teal,
+                        ),
+                        label: Text(
+                          list.isNotEmpty && list.every((c) => selected.contains(c.id))
+                              ? '取消全选 (${list.length})'
+                              : '全选当前 (${list.length})',
+                        ),
+                        onPressed: list.isEmpty ? null : () => toggleAll(list),
+                      ),
                       if (hasCategoryFilters)
                         TextButton.icon(
                           onPressed: clearCustomerFilters,
@@ -4305,43 +4316,54 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 padding: EdgeInsets.zero,
                 child: Column(
                   children: [
-                    if (!compact)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 14,
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 14 : 18,
+                        vertical: compact ? 10 : 14,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFF9FBFA),
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(20),
                         ),
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFF9FBFA),
-                          borderRadius: BorderRadius.vertical(
-                            top: Radius.circular(20),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 30,
-                              child: Checkbox(
-                                value:
-                                    list.isNotEmpty &&
-                                    list.every(
-                                      (customer) =>
-                                          selected.contains(customer.id),
-                                    ),
-                                onChanged: (_) => toggleAll(list),
-                              ),
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 30,
+                            child: Checkbox(
+                              value:
+                                  list.isNotEmpty &&
+                                  list.every(
+                                    (customer) =>
+                                        selected.contains(customer.id),
+                                  ),
+                              tristate: list.isNotEmpty &&
+                                  list.any((c) => selected.contains(c.id)) &&
+                                  !list.every((c) => selected.contains(c.id)),
+                              onChanged: (_) => toggleAll(list),
                             ),
-                            const Expanded(
-                              flex: 3,
+                          ),
+                          const SizedBox(width: 6),
+                          InkWell(
+                            onTap: () => toggleAll(list),
+                            borderRadius: BorderRadius.circular(4),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
                               child: Text(
-                                '客户',
+                                list.isNotEmpty && list.every((c) => selected.contains(c.id))
+                                    ? '取消全选 (${list.length})'
+                                    : '全选 (${list.length} 位客户)',
                                 style: TextStyle(
-                                  color: AppTheme.muted,
-                                  fontSize: 12,
+                                  color: AppTheme.ink,
+                                  fontSize: compact ? 13 : 12,
                                   fontWeight: FontWeight.w700,
                                 ),
                               ),
                             ),
+                          ),
+                          if (!compact) ...[
+                            const SizedBox(width: 12),
                             const Expanded(
                               flex: 2,
                               child: Text(
@@ -4375,9 +4397,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 ),
                               ),
                             ),
+                          ] else ...[
+                            const Spacer(),
+                            if (selected.isNotEmpty)
+                              Text(
+                                '已选 ${selected.length} 人',
+                                style: const TextStyle(
+                                  color: AppTheme.teal,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                           ],
-                        ),
+                        ],
                       ),
+                    ),
                     if (list.isEmpty)
                       const Padding(
                         padding: EdgeInsets.all(32),
