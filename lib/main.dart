@@ -1042,10 +1042,23 @@ class DemoRepository extends ChangeNotifier {
             entryDate: _parseRemoteDate(row['entry_date']),
             exitDate: _parseRemoteDate(row['exit_date']),
             status: status,
-            successCount:
-                int.tryParse(row['success_count']?.toString() ?? '') ?? 0,
-            failedCount:
-                int.tryParse(row['failed_count']?.toString() ?? '') ?? 0,
+            successCount: () {
+              final remote =
+                  int.tryParse(row['success_count']?.toString() ?? '') ?? 0;
+              final fromItems = items
+                  .where((it) =>
+                      it['status'] == 'SUCCEEDED' ||
+                      it['status'] == 'NEEDS_REVIEW')
+                  .length;
+              return remote > fromItems ? remote : fromItems;
+            }(),
+            failedCount: () {
+              final remote =
+                  int.tryParse(row['failed_count']?.toString() ?? '') ?? 0;
+              final fromItems =
+                  items.where((it) => it['status'] == 'FAILED').length;
+              return remote > fromItems ? remote : fromItems;
+            }(),
             note: row['note']?.toString() ?? '',
           ),
         );

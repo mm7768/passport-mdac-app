@@ -187,6 +187,14 @@ begin
      set locked_by = case when v_has_more then b.locked_by else null end,
          locked_at = case when v_has_more then b.locked_at else null end,
          lease_expires_at = case when v_has_more then now() + interval '15 minutes' else null end,
+         success_count = (
+           select count(*) from public.automation_items i
+            where i.batch_id = b.id and i.status in ('SUCCEEDED', 'NEEDS_REVIEW')
+         ),
+         failed_count = (
+           select count(*) from public.automation_items i
+            where i.batch_id = b.id and i.status = 'FAILED'
+         ),
          status = case
            when not v_has_more and exists (
              select 1 from public.automation_items i
@@ -195,7 +203,8 @@ begin
            ) then 'NEEDS_REVIEW'::public.automation_status
            when not v_has_more then 'SUCCEEDED'::public.automation_status
            else b.status
-         end
+         end,
+         updated_at = now()
    where b.id = v_item.batch_id
      and b.locked_by = p_worker_id;
 
@@ -397,7 +406,7 @@ begin
          lease_expires_at = case when v_has_more then now() + interval '15 minutes' else null end,
          success_count = (
            select count(*) from public.automation_items i
-            where i.batch_id = b.id and i.status = 'SUCCEEDED'
+            where i.batch_id = b.id and i.status in ('SUCCEEDED', 'NEEDS_REVIEW')
          ),
          failed_count = (
            select count(*) from public.automation_items i
@@ -416,10 +425,81 @@ begin
              else 'SUCCEEDED'::public.automation_status
            end
            else b.status
-         end
+         end,
+         updated_at = now()
    where b.id = v_item.batch_id
      and b.locked_by = p_worker_id;
 
   return v_item;
 end;
 $$;
+
+create or replace function private.sync_automation_batch_counts()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_batch uuid;
+  total_items integer;
+  succeeded_items integer;
+  failed_items integer;
+  running_items integer;
+  queued_items integer;
+  review_items integer;
+  next_status public.automation_status;
+begin
+  target_batch := coalesce(new.batch_id, old.batch_id);
+
+  select count(*)::integer,
+         count(*) filter (where status in ('SUCCEEDED', 'NEEDS_REVIEW'))::integer,
+         count(*) filter (where status = 'FAILED')::integer,
+         count(*) filter (where status in ('CLAIMED', 'RUNNING'))::integer,
+         count(*) filter (where status = 'QUEUED')::integer,
+         count(*) filter (where status = 'NEEDS_REVIEW')::integer
+    into total_items,
+         succeeded_items,
+         failed_items,
+         running_items,
+         queued_items,
+         review_items
+    from public.automation_items
+   where batch_id = target_batch;
+
+  select status
+    into next_status
+    from public.automation_batches
+   where id = target_batch;
+
+  if total_items > 0 then
+    if running_items > 0 then
+      next_status := 'RUNNING';
+    elsif queued_items > 0 then
+      next_status := 'QUEUED';
+    elsif review_items > 0 then
+      next_status := 'NEEDS_REVIEW';
+    elsif failed_items = total_items then
+      next_status := 'FAILED';
+    elsif succeeded_items = total_items then
+      next_status := 'SUCCEEDED';
+    elsif succeeded_items + failed_items = total_items then
+      next_status := 'PARTIAL_SUCCESS';
+    end if;
+  end if;
+
+  update public.automation_batches
+     set total_count = total_items,
+         success_count = succeeded_items,
+         failed_count = failed_items,
+         status = next_status,
+         updated_at = now()
+   where id = target_batch;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
