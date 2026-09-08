@@ -6329,7 +6329,10 @@ Future<void> confirmCancelAutomationTask(
 
 bool canOpenMdacHumanReview(AutomationTask task) =>
     task.type == TaskType.mdacRegistration &&
-    task.status == TaskStatus.needsReview;
+    (task.status == TaskStatus.needsReview ||
+        task.status == TaskStatus.partialSuccess ||
+        task.status == TaskStatus.failed ||
+        task.failedCount > 0);
 
 Future<void> openMdacHumanReview(
   BuildContext context,
@@ -6413,82 +6416,106 @@ class TaskRow extends StatelessWidget {
   }
 
   Widget _buildCompact(BuildContext context) {
-    return Row(
+    final needsIntervention = canOpenMdacHumanReview(task);
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _taskIcon(),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                taskTypeLabel(task.type),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.ink,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                '${task.customerIds.length} 位客户 · ${formatDateTime(task.createdAt)}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: AppTheme.muted, fontSize: 10),
-              ),
-              const SizedBox(height: 9),
-              _progress(),
-            ],
-          ),
-        ),
-        const SizedBox(width: 8),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TaskStatusPill(status: task.status),
-            if (canCancelAutomationTask(task))
-              IconButton(
-                tooltip: task.status == TaskStatus.cancelled
-                    ? '永久删除任务'
-                    : '取消并删除任务',
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                onPressed: () =>
-                    confirmCancelAutomationTask(context, task, repository),
-                icon: Icon(
-                  task.status == TaskStatus.cancelled
-                      ? Icons.delete_forever_outlined
-                      : Icons.cancel_outlined,
-                  size: 18,
-                  color: AppTheme.danger,
+            _taskIcon(),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    taskTypeLabel(task.type),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${task.customerIds.length} 位客户 · ${formatDateTime(task.createdAt)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 10),
+                  ),
+                  const SizedBox(height: 9),
+                  _progress(),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                TaskStatusPill(status: task.status),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (canCancelAutomationTask(task))
+                      IconButton(
+                        tooltip: task.status == TaskStatus.cancelled
+                            ? '永久删除任务'
+                            : '取消并删除任务',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        onPressed: () =>
+                            confirmCancelAutomationTask(context, task, repository),
+                        icon: Icon(
+                          task.status == TaskStatus.cancelled
+                              ? Icons.delete_forever_outlined
+                              : Icons.cancel_outlined,
+                          size: 18,
+                          color: AppTheme.danger,
+                        ),
+                      ),
+                    IconButton(
+                      tooltip: '查看详情',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      onPressed: () => showTaskDetail(context, task, repository),
+                      icon: const Icon(
+                        Icons.open_in_new_rounded,
+                        size: 18,
+                        color: AppTheme.muted,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            if (canOpenMdacHumanReview(task))
-              IconButton(
-                tooltip: '打开待验证页面',
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                onPressed: () => openMdacHumanReview(context, task, repository),
-                icon: const Icon(
-                  Icons.touch_app_outlined,
-                  size: 18,
-                  color: AppTheme.teal,
-                ),
-              ),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              onPressed: () => showTaskDetail(context, task, repository),
-              icon: const Icon(
-                Icons.open_in_new_rounded,
-                size: 18,
-                color: AppTheme.muted,
-              ),
+              ],
             ),
           ],
         ),
+        if (needsIntervention) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.tonalIcon(
+              onPressed: () => openMdacHumanReview(context, task, repository),
+              icon: const Icon(Icons.touch_app_outlined, size: 16),
+              label: Text(
+                task.status == TaskStatus.needsReview
+                    ? '人工介入处理 / 查看待审核项'
+                    : '人工介入处理 / 查看未成功项',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFECE6FA),
+                foregroundColor: const Color(0xFF6750A4),
+                padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -6522,6 +6549,23 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 18),
         SizedBox(width: 92, child: TaskStatusPill(status: task.status)),
         const SizedBox(width: 10),
+        if (canOpenMdacHumanReview(task)) ...[
+          FilledButton.tonalIcon(
+            onPressed: () => openMdacHumanReview(context, task, repository),
+            icon: const Icon(Icons.touch_app_outlined, size: 16),
+            label: const Text(
+              '人工介入处理',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFECE6FA),
+              foregroundColor: const Color(0xFF6750A4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
         if (canCancelAutomationTask(task))
           IconButton(
             tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
@@ -6535,17 +6579,8 @@ class TaskRow extends StatelessWidget {
               color: AppTheme.danger,
             ),
           ),
-        if (canOpenMdacHumanReview(task))
-          IconButton(
-            tooltip: '打开待验证页面',
-            onPressed: () => openMdacHumanReview(context, task, repository),
-            icon: const Icon(
-              Icons.touch_app_outlined,
-              size: 18,
-              color: AppTheme.teal,
-            ),
-          ),
         IconButton(
+          tooltip: '查看详情',
           onPressed: () => showTaskDetail(context, task, repository),
           icon: const Icon(
             Icons.open_in_new_rounded,
@@ -7785,60 +7820,67 @@ Future<void> showTaskDetail(
       ),
       content: SizedBox(
         width: 440,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              task.id,
-              style: const TextStyle(color: AppTheme.muted, fontSize: 12),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('批次状态', style: TextStyle(color: AppTheme.muted)),
-                TaskStatusPill(status: task.status),
-              ],
-            ),
-            const SizedBox(height: 12),
-            LinearProgressIndicator(
-              value: task.progress,
-              minHeight: 7,
-              borderRadius: BorderRadius.circular(8),
-              color: taskStatusColor(task.status),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功 · ${task.failedCount} 失败',
-            ),
-            const SizedBox(height: 14),
-            Text(
-              task.note,
-              style: const TextStyle(color: AppTheme.muted, height: 1.4),
-            ),
-            if (task.entryDate != null) ...[
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                task.id,
+                style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('批次状态', style: TextStyle(color: AppTheme.muted)),
+                  TaskStatusPill(status: task.status),
+                ],
+              ),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(
+                value: task.progress,
+                minHeight: 7,
+                borderRadius: BorderRadius.circular(8),
+                color: taskStatusColor(task.status),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功 · ${task.failedCount} 失败',
+              ),
               const SizedBox(height: 14),
               Text(
-                '日期快照：${formatDate(task.entryDate!)} → ${formatDate(task.exitDate!)}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.ink,
-                ),
+                task.note,
+                style: const TextStyle(color: AppTheme.muted, height: 1.4),
               ),
+              if (task.entryDate != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  '日期快照：${formatDate(task.entryDate!)} → ${formatDate(task.exitDate!)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.ink,
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [
-        if (canOpenMdacHumanReview(task))
+        if (task.type == TaskType.mdacRegistration &&
+            task.status != TaskStatus.queued)
           FilledButton.icon(
             onPressed: () async {
               await openMdacHumanReview(context, task, repository);
               if (context.mounted) Navigator.pop(context);
             },
             icon: const Icon(Icons.touch_app_outlined),
-            label: const Text('打开待验证页面'),
+            label: Text(
+              canOpenMdacHumanReview(task)
+                  ? '人工介入处理 / 查看待审核项'
+                  : '查看批次填报详情',
+            ),
           ),
         TextButton(
           onPressed: () => Navigator.pop(context),

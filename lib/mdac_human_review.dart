@@ -860,11 +860,15 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
                       ? Icons.check_circle_rounded
                       : item.resultUnknown
                       ? Icons.help_outline_rounded
+                      : item.canOpenReview
+                      ? Icons.error_outline_rounded
                       : Icons.person_outline_rounded,
                   color: item.isSucceeded
                       ? _teal
                       : item.resultUnknown
                       ? _warning
+                      : item.canOpenReview
+                      ? _danger
                       : _ink,
                 ),
                 title: Text(
@@ -1173,11 +1177,13 @@ class _MdacHumanItem {
     return '${value.substring(0, 2)}••••${value.substring(value.length - 2)}';
   }
 
-  bool get isSucceeded => itemStatus == 'SUCCEEDED';
+  bool get isSucceeded =>
+      itemStatus == 'SUCCEEDED' || registrationStatus == 'SUCCEEDED';
   bool get canOpenReview =>
-      itemStatus == 'NEEDS_REVIEW' &&
+      (itemStatus == 'NEEDS_REVIEW' || itemStatus == 'FAILED') &&
       !resultUnknown &&
-      registrationStatus != 'RESULT_UNKNOWN';
+      registrationStatus != 'RESULT_UNKNOWN' &&
+      !isSucceeded;
   bool get canOpenForm => canOpenReview && registrationStatus != 'SUBMITTED';
 
   String get statusLabel {
@@ -1185,6 +1191,7 @@ class _MdacHumanItem {
     if (resultUnknown || registrationStatus == 'RESULT_UNKNOWN') return '结果未知';
     if (registrationStatus == 'SUBMITTED') return '已提交待确认';
     if (itemStatus == 'NEEDS_REVIEW') return '待人工处理';
+    if (itemStatus == 'FAILED') return '失败待处理';
     return itemStatus;
   }
 }

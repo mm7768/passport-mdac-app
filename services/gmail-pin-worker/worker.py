@@ -70,6 +70,28 @@ class WorkerError(RuntimeError):
     """Expected worker or remote-service failure."""
 
 
+def _load_env_file() -> None:
+    env_file = os.getenv("ENV_FILE", "").strip()
+    candidates = [env_file] if env_file else [".env.local", ".env"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for c in candidates:
+        if not c:
+            continue
+        path = c if os.path.isabs(c) else os.path.join(script_dir, c)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8-sig") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("\"'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            break
+
+
 @dataclass(frozen=True)
 class WorkerConfig:
     supabase_url: str
@@ -88,6 +110,7 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
+        _load_env_file()
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
@@ -393,10 +416,11 @@ def extract_fields(body: str) -> dict[str, str | None]:
         match = re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE)
         return match.group(1).strip() if match else None
 
-    name = first(r"^[ \t]*Name[ \t]*[:：][ \t]*(.+?)[ \t]*$")
-    passport = first(r"^[ \t]*Passport[ \t]+No\.?[ \t]*[:：][ \t]*([A-Za-z0-9]+)[ \t]*$")
+    # Matches both single-line ("Name: LI NA") and multi-line HTML table text ("Name\n:\nLI NA")
+    name = first(r"Name\s*[:：]\s*([^\n\r]+)")
+    passport = first(r"Passport\s+No\.?\s*[:：]\s*([A-Za-z0-9]+)")
     pin = first(
-        r"^[ \t]*PIN[ \t]*[:：][ \t]*([A-Za-z0-9][A-Za-z0-9 \t\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})[ \t]*$"
+        r"PIN\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})"
     )
     return {
         "name": name,
@@ -705,6 +729,13 @@ class GmailPinWorker:
         gmail_address = resolve_gmail_address(gmail_settings)
         messages: list[ParsedEmail] = []
         credential_error: str | None = None
+        if gmail_address is None:
+            try:
+                runtime_creds = self.supabase.get_gmail_runtime_credentials()
+                gmail_address = runtime_creds.get("gmail_address")
+            except Exception:
+                pass
+
         if gmail_address is None:
             credential_error = "gmail_address_snapshot_missing_or_invalid"
             log_event(
