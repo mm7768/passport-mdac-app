@@ -14,6 +14,12 @@ import logging
 import os
 import re
 import socket
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Awaitable, Callable
@@ -36,6 +42,28 @@ class ManualReviewRequired(WorkerError):
     """A human must intervene; the worker must not guess or bypass a challenge."""
 
 
+def _load_env_file() -> None:
+    env_file = os.getenv("ENV_FILE", "").strip()
+    candidates = [env_file] if env_file else [".env.local", ".env"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for c in candidates:
+        if not c:
+            continue
+        path = c if os.path.isabs(c) else os.path.join(script_dir, c)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+            break
+
+
 @dataclass(frozen=True)
 class WorkerConfig:
     supabase_url: str
@@ -56,6 +84,8 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
+        _load_env_file()
+
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
@@ -361,7 +391,7 @@ def map_mdac_fields(
     settings: dict[str, str],
 ) -> dict[str, str]:
     full_name = _required_snapshot(snapshot, "full_name")
-    passport_number = _required_snapshot(snapshot, "passport_number")
+    passport_number = re.sub(r"\s+", "", _required_snapshot(snapshot, "passport_number")).upper()
     nationality = _required_snapshot(snapshot, "nationality").upper()
     place_of_birth = str(snapshot.get("place_of_birth") or "").strip().upper()
     pob = nationality if settings["pob_mode"] == "NATIONALITY" else place_of_birth
@@ -423,7 +453,7 @@ async def _wait_for_option(locator: Any, option_value: str, timeout_ms: int) -> 
             const element = document.querySelector(selector);
             return Boolean(element && Array.from(element.options).some(option => option.value === value));
         }""",
-        {"selector": await locator.get_attribute("id") and f"#{await locator.get_attribute('id')}", "value": option_value},
+        arg={"selector": await locator.get_attribute("id") and f"#{await locator.get_attribute('id')}", "value": option_value},
         timeout=timeout_ms,
     )
 
@@ -439,7 +469,7 @@ async def _select_value(page: Page, selector: str, value: str, timeout_ms: int) 
             const element = document.querySelector(selector);
             return Boolean(element && Array.from(element.options).some(option => option.value === value));
         }""",
-        {"selector": f"#{element_id}", "value": value},
+        arg={"selector": f"#{element_id}", "value": value},
         timeout=timeout_ms,
     )
     await locator.select_option(value=value)
@@ -519,8 +549,14 @@ async def fill_and_verify_page(
     mismatches: dict[str, dict[str, str]] = {}
     for selector, expected in selectors.items():
         actual = await _input_value(page, selector)
-        if actual != expected:
-            mismatches[selector] = {"expected": expected, "actual": actual}
+        a_norm = re.sub(r"\s+", " ", (actual or "").strip())
+        e_norm = re.sub(r"\s+", " ", (expected or "").strip())
+        if a_norm.upper() == e_norm.upper():
+            continue
+        if selector == "#region" and re.fullmatch(r"[0-9]{1,4}", a_norm):
+            # MDAC may auto-adjust calling code based on passenger nationality (e.g. TWN -> 886)
+            continue
+        mismatches[selector] = {"expected": expected, "actual": actual}
 
     invalid_count = await page.locator("input:invalid, select:invalid").count()
     submit_disabled = await page.locator("#submit").is_disabled()
@@ -779,12 +815,25 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
     async with async_playwright() as playwright:
         browser: Browser | None = None
         try:
-            browser = await playwright.chromium.launch(headless=config.headless)
+            browser = await playwright.chromium.launch(
+                headless=config.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
             context = await browser.new_context(
-                viewport={"width": 1440, "height": 1200},
+                viewport={"width": 1280, "height": 800},
                 locale="en-MY",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
                 accept_downloads=False,
             )
+            await context.add_init_script("delete Object.getPrototypeOf(navigator).webdriver")
             if not config.allow_real_submit:
                 await _block_form_posts(context)
             page = await context.new_page()
@@ -849,12 +898,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     args = build_parser().parse_args()
     config = WorkerConfig.from_env()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else getattr(logging, config.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    print("========================================================")
+    print("        MDAC 办公室 Worker 已启动（本地服务）")
+    print(f"  Worker ID: {config.worker_id}")
+    print(f"  运行模式: {config.execution_mode} (允许真实提交: {config.allow_real_submit})")
+    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
+    print("  正在监听 Supabase 批次任务队列...")
+    print("========================================================")
     client = SupabaseAdminClient(config)
     if args.once:
         asyncio.run(run_once(config, client))

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -2321,7 +2322,7 @@ class DemoRepository extends ChangeNotifier {
   void recordExport(List<String> ids, String actor) {
     auditEvents.insert(
       0,
-      '$actor 导出选定客户 Excel 演示清单，共 ${ids.length} 位；字段：姓名、护照号码',
+      '$actor 导出选定客户 Excel/CSV 清单，共 ${ids.length} 位（已获 PIN）；字段：姓名、护照号、PIN、注册 Gmail、注册手机号',
     );
     notifyListeners();
   }
@@ -3092,6 +3093,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
   DateTimeRange? createdDateRange;
+  bool onlyWithPinFilter = false;
 
   @override
   void initState() {
@@ -3134,7 +3136,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
       final matchesNationality =
           nationalityFilter == '全部国家' ||
           customer.nationality.trim().toUpperCase() == nationalityFilter;
-      return matchesQuery && matchesStatus && matchesDate && matchesNationality;
+      final matchesPin =
+          !onlyWithPinFilter || (customer.pin ?? '').trim().isNotEmpty;
+      return matchesQuery &&
+          matchesStatus &&
+          matchesDate &&
+          matchesNationality &&
+          matchesPin;
     }).toList();
     result.sort((left, right) => right.createdAt.compareTo(left.createdAt));
     return result;
@@ -3184,6 +3192,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       createdDateFilter = '全部日期';
       nationalityFilter = '全部国家';
       createdDateRange = null;
+      onlyWithPinFilter = false;
     });
   }
 
@@ -3729,107 +3738,396 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  String _formatMdacPhone(MdacSettings? settings) {
+    if (settings == null) return '';
+    final rawPhone = settings.mdacPhone.trim();
+    final region = settings.regionCode.trim().replaceAll('+', '');
+    if (rawPhone.isEmpty) return '';
+    if (region.isEmpty) return rawPhone;
+    if (rawPhone.startsWith('+')) return rawPhone;
+    if (rawPhone.startsWith(region)) return '+$rawPhone';
+    return '+$region $rawPhone';
+  }
+
+  String _escapeXml(String value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
+  }
+
+  String _escapeCsv(String value) {
+    if (value.contains(',') ||
+        value.contains('"') ||
+        value.contains('\n') ||
+        value.contains('\r')) {
+      return '"${value.replaceAll('"', '""')}"';
+    }
+    return value;
+  }
+
   Future<void> exportSelected() async {
     if (selected.isEmpty) {
-      showToast(context, '请先选择客户。');
+      showToast(context, '请先在列表中勾选需要导出的客户。');
       return;
     }
-    final exportable = widget.repository.activeCustomers
-        .where(
-          (customer) =>
-              selected.contains(customer.id) &&
-              customer.fullName.isNotEmpty &&
-              customer.passportNumber.isNotEmpty,
-        )
+    final selectedCustomers = widget.repository.activeCustomers
+        .where((customer) => selected.contains(customer.id))
         .toList();
-    if (exportable.length != selected.length) {
-      showToast(context, '部分客户缺少姓名或护照号码，已阻止导出。', error: true);
+    final withPinCustomers = selectedCustomers
+        .where((customer) => (customer.pin ?? '').trim().isNotEmpty)
+        .toList();
+
+    if (withPinCustomers.isEmpty) {
+      showToast(
+        context,
+        '选中的 ${selectedCustomers.length} 位客户均未获取 PIN。此导出功能仅限于已获取 PIN 的客户。',
+        error: true,
+      );
       return;
     }
-    final confirmed = await showDialog<bool>(
+
+    final excludedCount = selectedCustomers.length - withPinCustomers.length;
+    final settings = widget.repository.mdacSettings;
+    final mdacEmail = (settings?.mdacEmail ?? '').trim();
+    final formattedPhone = _formatMdacPhone(settings);
+
+    // 1. 生成 TSV (用于剪贴板直接粘贴 Excel)
+    final tsvBuffer = StringBuffer();
+    tsvBuffer.writeln('名字\t护照号\tpin\t注册使用的gmail\t注册使用的手机号码');
+    for (final c in withPinCustomers) {
+      tsvBuffer.writeln(
+        '${c.fullName}\t${c.passportNumber}\t${c.pin!.trim()}\t$mdacEmail\t$formattedPhone',
+      );
+    }
+    final tsvContent = tsvBuffer.toString();
+
+    // 2. 生成 CSV (UTF-8 with BOM)
+    final csvBuffer = StringBuffer();
+    csvBuffer.write('\uFEFF');
+    csvBuffer.writeln('名字,护照号,pin,注册使用的gmail,注册使用的手机号码');
+    for (final c in withPinCustomers) {
+      csvBuffer.writeln(
+        '${_escapeCsv(c.fullName)},'
+        '${_escapeCsv(c.passportNumber)},'
+        '${_escapeCsv(c.pin!.trim())},'
+        '${_escapeCsv(mdacEmail)},'
+        '${_escapeCsv(formattedPhone)}',
+      );
+    }
+    final csvBytes = Uint8List.fromList(utf8.encode(csvBuffer.toString()));
+
+    // 3. 生成 Excel XML (.xls)
+    final xmlBuffer = StringBuffer();
+    xmlBuffer.writeln('<?xml version="1.0" encoding="UTF-8"?>');
+    xmlBuffer.writeln('<?mso-application progid="Excel.Sheet"?>');
+    xmlBuffer.writeln(
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"',
+    );
+    xmlBuffer.writeln(' xmlns:o="urn:schemas-microsoft-com:office:office"');
+    xmlBuffer.writeln(' xmlns:x="urn:schemas-microsoft-com:office:excel"');
+    xmlBuffer.writeln(' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"');
+    xmlBuffer.writeln(' xmlns:html="http://www.w3.org/TR/REC-html40">');
+    xmlBuffer.writeln(' <Styles>');
+    xmlBuffer.writeln('  <Style ss:ID="Default" ss:Name="Normal">');
+    xmlBuffer.writeln('   <Alignment ss:Vertical="Center"/>');
+    xmlBuffer.writeln('   <Font ss:FontName="Microsoft YaHei" ss:Size="10"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln('  <Style ss:ID="Header">');
+    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
+    xmlBuffer.writeln('   <Borders>');
+    xmlBuffer.writeln(
+      '    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CCCCCC"/>',
+    );
+    xmlBuffer.writeln('   </Borders>');
+    xmlBuffer.writeln(
+      '   <Font ss:FontName="Microsoft YaHei" ss:Size="11" ss:Bold="1" ss:Color="#0F172A"/>',
+    );
+    xmlBuffer.writeln('   <Interior ss:Color="#F1F5F9" ss:Pattern="Solid"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln('  <Style ss:ID="TextCell">');
+    xmlBuffer.writeln('   <Alignment ss:Vertical="Center"/>');
+    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln('  <Style ss:ID="CenterCell">');
+    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
+    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln('  <Style ss:ID="PinCell">');
+    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
+    xmlBuffer.writeln(
+      '   <Font ss:FontName="Consolas" ss:Size="10" ss:Bold="1" ss:Color="#0F766E"/>',
+    );
+    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln('  <Style ss:ID="PassportCell">');
+    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
+    xmlBuffer.writeln('   <Font ss:FontName="Consolas" ss:Size="10" ss:Bold="1"/>');
+    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
+    xmlBuffer.writeln('  </Style>');
+    xmlBuffer.writeln(' </Styles>');
+    xmlBuffer.writeln(' <Worksheet ss:Name="PIN客户列表">');
+    xmlBuffer.writeln('  <Table>');
+    xmlBuffer.writeln('   <Column ss:Width="140"/>');
+    xmlBuffer.writeln('   <Column ss:Width="120"/>');
+    xmlBuffer.writeln('   <Column ss:Width="100"/>');
+    xmlBuffer.writeln('   <Column ss:Width="200"/>');
+    xmlBuffer.writeln('   <Column ss:Width="160"/>');
+    xmlBuffer.writeln('   <Row ss:Height="26">');
+    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">名字</Data></Cell>');
+    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">护照号</Data></Cell>');
+    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">pin</Data></Cell>');
+    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">注册使用的gmail</Data></Cell>');
+    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">注册使用的手机号码</Data></Cell>');
+    xmlBuffer.writeln('   </Row>');
+    for (final c in withPinCustomers) {
+      xmlBuffer.writeln('   <Row ss:Height="22">');
+      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(c.fullName)}</Data></Cell>');
+      xmlBuffer.writeln('    <Cell ss:StyleID="PassportCell"><Data ss:Type="String">${_escapeXml(c.passportNumber)}</Data></Cell>');
+      xmlBuffer.writeln('    <Cell ss:StyleID="PinCell"><Data ss:Type="String">${_escapeXml(c.pin!.trim())}</Data></Cell>');
+      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(mdacEmail)}</Data></Cell>');
+      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(formattedPhone)}</Data></Cell>');
+      xmlBuffer.writeln('   </Row>');
+    }
+    xmlBuffer.writeln('  </Table>');
+    xmlBuffer.writeln(' </Worksheet>');
+    xmlBuffer.writeln('</Workbook>');
+    final xlsBytes = Uint8List.fromList(utf8.encode(xmlBuffer.toString()));
+
+    final now = DateTime.now();
+    final dateSuffix = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+    final fileNameXls = 'mdac_pin_customers_$dateSuffix.xls';
+    final fileNameCsv = 'mdac_pin_customers_$dateSuffix.csv';
+
+    Future<void> saveExportFile(String fileName, Uint8List bytes, String ext) async {
+      try {
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: '保存 $fileName',
+          fileName: fileName,
+          type: FileType.custom,
+          allowedExtensions: [ext],
+          bytes: bytes,
+        );
+        if (path != null) {
+          final f = File(path);
+          if (!await f.exists() || (await f.length()) == 0) {
+            await f.writeAsBytes(bytes);
+          }
+          if (mounted) {
+            widget.repository.recordExport(
+              withPinCustomers.map((c) => c.id).toList(),
+              widget.actor,
+            );
+            Navigator.of(context, rootNavigator: true).pop();
+            showToast(context, '导出成功！文件已保存至：$path');
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          showToast(context, '保存文件失败：$e', error: true);
+        }
+      }
+    }
+
+    await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('导出客户 Excel'),
+      builder: (dialogCtx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.table_chart_rounded, color: AppTheme.teal),
+            const SizedBox(width: 8),
+            const Text('导出客户 PIN 清单'),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppTheme.teal.withValues(alpha: .12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${withPinCustomers.length} 位已获取 PIN',
+                style: const TextStyle(
+                  color: AppTheme.teal,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
         content: SizedBox(
-          width: 420,
+          width: 580,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('将导出 ${exportable.length} 位客户。'),
-              const SizedBox(height: 12),
+              if (excludedCount > 0) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline_rounded, size: 18, color: Color(0xFFD97706)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '勾选的 ${selectedCustomers.length} 位客户中，有 $excludedCount 位未获取 PIN，已自动排除。',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF92400E),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: AppTheme.canvas,
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.line),
                 ),
-                child: const Text(
-                  '工作表：Customers\n字段：姓名、护照号码\n文件：customers_YYYYMMDD_HHmm.xlsx',
-                  style: TextStyle(color: AppTheme.muted, height: 1.6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '导出字段对照（严格固定 5 列）：',
+                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text('A 列 (名字)：客户姓名', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                    const Text('B 列 (护照号)：客户护照号码', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                    const Text('C 列 (pin)：已获取的 6 位 PIN 码', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                    Text(
+                      'D 列 (注册使用的gmail)：${mdacEmail.isEmpty ? "未配置" : mdacEmail}',
+                      style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                    ),
+                    Text(
+                      'E 列 (注册使用的手机号码)：${formattedPhone.isEmpty ? "未配置" : formattedPhone}',
+                      style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
-                '演示版本将生成导出预览并记录审计日志；Android 文件保存/分享面板在真实存储接入后启用。',
-                style: TextStyle(color: AppTheme.muted, fontSize: 12),
+              const Text('数据预览（前 5 条）：', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                constraints: const BoxConstraints(maxHeight: 160),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.line),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: withPinCustomers.take(5).map((c) {
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: const BoxDecoration(
+                          border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: Text(
+                                c.fullName,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+                              ),
+                            ),
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                c.passportNumber,
+                                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.teal.withValues(alpha: .1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                c.pin!.trim(),
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.teal,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
               ),
+              if (withPinCustomers.length > 5) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    '… 还有 ${withPinCustomers.length - 5} 条数据未展开',
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(dialogCtx),
             child: const Text('取消'),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认导出'),
+          OutlinedButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: tsvContent));
+              if (dialogCtx.mounted) {
+                widget.repository.recordExport(
+                  withPinCustomers.map((c) => c.id).toList(),
+                  widget.actor,
+                );
+                Navigator.pop(dialogCtx);
+                showToast(
+                  context,
+                  '已复制 ${withPinCustomers.length} 条数据到剪贴板！可在 Excel/WPS 直接按 Ctrl+V 粘贴。',
+                );
+              }
+            },
+            icon: const Icon(Icons.copy_rounded, size: 16),
+            label: const Text('复制表格'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => saveExportFile(fileNameCsv, csvBytes, 'csv'),
+            icon: const Icon(Icons.description_outlined, size: 16),
+            label: const Text('保存 CSV'),
+          ),
+          FilledButton.icon(
+            onPressed: () => saveExportFile(fileNameXls, xlsBytes, 'xls'),
+            icon: const Icon(Icons.table_chart_rounded, size: 16),
+            label: const Text('保存 Excel (.xls)'),
           ),
         ],
       ),
     );
-    if (confirmed == true && mounted) {
-      widget.repository.recordExport(
-        exportable.map((customer) => customer.id).toList(),
-        widget.actor,
-      );
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('导出预览已生成'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: exportable
-                  .map(
-                    (customer) => Row(
-                      children: [
-                        Expanded(child: Text(customer.fullName)),
-                        Text(
-                          customer.passportNumber,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.teal,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('完成'),
-            ),
-          ],
-        ),
-      );
-    }
   }
 
   @override
@@ -3938,17 +4236,47 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       ),
                     ),
                   );
+                  final withPinTotal = widget.repository.activeCustomers
+                      .where((c) => (c.pin ?? '').trim().isNotEmpty)
+                      .length;
                   final hasCategoryFilters =
                       businessStatusFilter != '全部' ||
                       createdDateFilter != '全部日期' ||
-                      nationalityFilter != '全部国家';
+                      nationalityFilter != '全部国家' ||
+                      onlyWithPinFilter;
                   final categoryFilters = Wrap(
                     spacing: 8,
                     runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       statusMenu,
                       dateMenu,
                       countryMenu,
+                      FilterChip(
+                        selected: onlyWithPinFilter,
+                        showCheckmark: true,
+                        avatar: Icon(
+                          Icons.vpn_key_rounded,
+                          size: 16,
+                          color: onlyWithPinFilter
+                              ? Colors.white
+                              : AppTheme.teal,
+                        ),
+                        label: Text('只看已获取 PIN ($withPinTotal)'),
+                        selectedColor: AppTheme.teal,
+                        labelStyle: TextStyle(
+                          color: onlyWithPinFilter
+                              ? Colors.white
+                              : AppTheme.ink,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                        onSelected: (val) {
+                          setState(() {
+                            onlyWithPinFilter = val;
+                          });
+                        },
+                      ),
                       if (hasCategoryFilters)
                         TextButton.icon(
                           onPressed: clearCustomerFilters,
