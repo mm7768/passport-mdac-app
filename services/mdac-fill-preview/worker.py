@@ -242,6 +242,7 @@ class SupabaseAdminClient:
                     "p_item_id": item_id,
                     "p_worker_id": self.config.worker_id,
                     "p_status": status,
+                    "p_registration_number": registration_no,
                     "p_registration_no": registration_no,
                     "p_screenshot_path": screenshot_path,
                     "p_raw_summary": raw_summary or {},
@@ -456,7 +457,7 @@ async def fill_and_verify_page(
 ) -> dict[str, Any]:
     timeout_ms = config.page_timeout_ms
     await page.goto(config.mdac_url, wait_until="domcontentloaded", timeout=timeout_ms)
-    await page.set_default_timeout(timeout_ms)
+    page.set_default_timeout(timeout_ms)
     await page.locator("#name").wait_for(state="visible", timeout=timeout_ms)
 
     password_count = await page.locator('input[type="password"]').count()

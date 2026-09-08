@@ -227,6 +227,7 @@ class FillPreviewWorkerTests(unittest.TestCase):
                     "p_item_id": "item-123",
                     "p_worker_id": "test-worker",
                     "p_status": "SUCCEEDED",
+                    "p_registration_number": "MDAC12345",
                     "p_registration_no": "MDAC12345",
                     "p_screenshot_path": "mdac-submissions/b/i/success.png",
                     "p_raw_summary": {"test": True},
