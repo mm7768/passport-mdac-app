@@ -310,8 +310,8 @@ def normalize_mdac_settings(raw: Any) -> dict[str, str]:
         raise WorkerError("MDAC 设置快照的邮箱格式不正确")
     phone = value("mdac_phone")
     region_code = value("region_code")
-    if region_code != "60":
-        raise WorkerError("MDAC 设置快照的地区代码必须是 60")
+    if not re.fullmatch(r"[0-9]{1,4}", region_code):
+        raise WorkerError("MDAC 设置快照的地区代码必须是 1 到 4 位数字代码")
     travel_mode = value("travel_mode")
     if travel_mode not in {"1", "2", "3"}:
         raise WorkerError("MDAC 设置快照的交通方式无效")

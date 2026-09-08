@@ -4958,18 +4958,18 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
   }
 
   MdacSettings _settingsFromForm() => MdacSettings(
-    mdacEmail: _emailController.text,
-    mdacPhone: _phoneController.text,
-    regionCode: _regionController.text,
+    mdacEmail: _emailController.text.trim(),
+    mdacPhone: _phoneController.text.trim(),
+    regionCode: _regionController.text.trim(),
     travelMode: _travelMode,
-    embarkCountry: _embarkController.text,
-    vessel: _vesselController.text,
+    embarkCountry: _embarkController.text.trim().toUpperCase(),
+    vessel: _vesselController.text.trim(),
     accommodationStay: _accommodationStay,
-    address1: _address1Controller.text,
-    address2: _address2Controller.text,
+    address1: _address1Controller.text.trim(),
+    address2: _address2Controller.text.trim(),
     stateCode: johorStateCode,
     cityCode: _cityController.text,
-    postcode: _postcodeController.text,
+    postcode: _postcodeController.text.trim(),
     pobMode: _pobMode,
   );
 
@@ -5067,12 +5067,19 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                     _wideField(
                       fieldWidth,
                       _textField(
-                        label: '地区代码（当前规则固定为 60）',
+                        label: 'MDAC 地区代码',
+                        hint: '例如 60、86、65、852',
                         controller: _regionController,
                         keyboardType: TextInputType.number,
-                        readOnly: true,
-                        validator: (value) =>
-                            value?.trim() == '60' ? null : '地区代码必须是 60',
+                        readOnly: false,
+                        validator: (value) {
+                          final text = value?.trim() ?? '';
+                          if (text.isEmpty) return 'MDAC 地区代码不能为空';
+                          if (!RegExp(r'^[0-9]{1,4}$').hasMatch(text)) {
+                            return '请输入 1 至 4 位数字地区代码（如 60、86）';
+                          }
+                          return null;
+                        },
                       ),
                     ),
                     _wideField(

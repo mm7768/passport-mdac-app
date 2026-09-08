@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.2.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.2-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.2.apk
+          name: PassportMDAC-v1.0.3-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,15 +67,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.2
-          name: "Passport MDAC Desk v1.0.2 (支持废弃OCR草稿 / 解除防重锁定 / 护照预览长效可查看)"
+          tag_name: v1.0.3
+          name: "Passport MDAC Desk v1.0.3 (支持自定义地区代码 / 废弃OCR草稿 / 解除防重锁定 / 护照长效预览)"
           body: |
             ### 更新内容：
+            - **MDAC 业务配置支持自定义地区代码**：地区代码支持编辑输入 1 至 4 位国家/地区区号（例如 60、86、65、852 等），不再定死固定为 60。
             - **支持废弃/删除 OCR 识别草稿**：在 OCR 待审核卡片及审核弹窗中新增「废弃草稿」按钮，可彻底移除重复或错误草稿，杜绝审核卡死。
             - **解除防重复上传锁定**：优化文件去重策略，允许用户重新导入已删除客户或已废弃草稿的护照文件。
-            - **护照原图永久长效查看**：将客户档案中的护照图片签名链接有效期由 5 分钟调整为永久长效（10年），直到客户档案被主动删除为止。
-            - **多选护照录入与全自动查验联动**：已包含批量多选录入与云端三大自动化查验 Worker 实时对接。
+            - **护照原图永久长效查看**：将客户档案中的护照图片签名链接有效期调整为永久长效（10年），直到客户档案被主动删除为止。
+            - **批量 30 本 Gmail PIN 队列与云端自动化稳定性升级**：已上线 Gmail PIN 批量 30 本无阻塞租约与精确隔离机制。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.2.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.3.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

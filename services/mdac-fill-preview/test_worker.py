@@ -58,6 +58,44 @@ class FillPreviewWorkerTests(unittest.TestCase):
             }
         )
 
+    def test_custom_region_code_accepted(self) -> None:
+        for code in ["60", "86", "65", "852", "1"]:
+            raw = {
+                "mdac_email": "operator@example.test",
+                "mdac_phone": "13800138000",
+                "region_code": code,
+                "travel_mode": "2",
+                "embark_country": "CHN",
+                "vessel": "TEST FLIGHT",
+                "accommodation_stay": "02",
+                "address1": "TEST ADDRESS 1",
+                "state_code": "01",
+                "city_code": "0100",
+                "postcode": "50000",
+                "pob_mode": "NATIONALITY",
+            }
+            res = normalize_mdac_settings(raw)
+            self.assertEqual(res["region_code"], code)
+
+    def test_invalid_region_code_rejected(self) -> None:
+        for invalid_code in ["abc", "12345", "60a"]:
+            raw = {
+                "mdac_email": "operator@example.test",
+                "mdac_phone": "13800138000",
+                "region_code": invalid_code,
+                "travel_mode": "2",
+                "embark_country": "CHN",
+                "vessel": "TEST FLIGHT",
+                "accommodation_stay": "02",
+                "address1": "TEST ADDRESS 1",
+                "state_code": "01",
+                "city_code": "0100",
+                "postcode": "50000",
+                "pob_mode": "NATIONALITY",
+            }
+            with self.assertRaisesRegex(WorkerError, "地区代码"):
+                normalize_mdac_settings(raw)
+
     def test_maps_snapshot_to_official_selectors(self) -> None:
         snapshot = {
             "full_name": "  TEST PERSON ",
