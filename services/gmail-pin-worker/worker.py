@@ -33,7 +33,7 @@ import requests
 
 LOG = logging.getLogger("gmail_pin_worker")
 WORKER_NAME = "gmail_pin"
-WORKER_VERSION = "gmail-pin-3"
+WORKER_VERSION = "gmail-pin-4"
 DEFAULT_SENDER = "mdac@imi.gov.my"
 DEFAULT_IMAP_HOST = "imap.gmail.com"
 
@@ -317,6 +317,17 @@ def normalize_passport(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def is_name_compatible(email_name: str | None, snapshot_name: str | None) -> bool:
+    """Compare extracted email name with customer name. Returns False on definitive mismatch."""
+    if not email_name or not snapshot_name:
+        return True
+    email_tokens = set(re.findall(r"[A-Za-z0-9]+", email_name.upper()))
+    snap_tokens = set(re.findall(r"[A-Za-z0-9]+", snapshot_name.upper()))
+    if not email_tokens or not snap_tokens:
+        return True
+    return bool(email_tokens & snap_tokens)
+
+
 def resolve_gmail_address(snapshot: Any) -> str | None:
     if not isinstance(snapshot, dict):
         return None
@@ -382,9 +393,11 @@ def extract_fields(body: str) -> dict[str, str | None]:
         match = re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE)
         return match.group(1).strip() if match else None
 
-    name = first(r"^\s*Name\s*:\s*(.+?)\s*$")
-    passport = first(r"^\s*Passport\s+No\.\s*:\s*([A-Za-z0-9]+)\s*$")
-    pin = first(r"^\s*PIN\s*:\s*(.*?)\s*$")
+    name = first(r"^[ \t]*Name[ \t]*[:：][ \t]*(.+?)[ \t]*$")
+    passport = first(r"^[ \t]*Passport[ \t]+No\.?[ \t]*[:：][ \t]*([A-Za-z0-9]+)[ \t]*$")
+    pin = first(
+        r"^[ \t]*PIN[ \t]*[:：][ \t]*([A-Za-z0-9][A-Za-z0-9 \t\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})[ \t]*$"
+    )
     return {
         "name": name,
         "passport_number": passport.upper() if passport else None,
@@ -434,6 +447,31 @@ def decide_for_item(
             error_message="Customer snapshot does not contain a passport number",
         )
 
+    # Determine registration cutoff timestamp if available
+    registration_cutoff: datetime | None = None
+    cutoff_source: str | None = None
+    for key in ("latest_mdac_submitted_at", "customer_created_at", "item_created_at"):
+        val = snapshot.get(key)
+        if val:
+            try:
+                dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                # Allow a 30-minute grace window for clock skew / registration delay
+                registration_cutoff = dt - timedelta(minutes=30)
+                cutoff_source = key
+                break
+            except (ValueError, TypeError):
+                continue
+
+    previous_pin = normalize_pin(snapshot.get("previous_pin_value"))
+    previous_received_at: datetime | None = None
+    if snapshot.get("previous_pin_received_at"):
+        try:
+            previous_received_at = datetime.fromisoformat(
+                str(snapshot.get("previous_pin_received_at")).replace("Z", "+00:00")
+            )
+        except (ValueError, TypeError):
+            pass
+
     candidates = [
         message
         for message in messages
@@ -456,11 +494,63 @@ def decide_for_item(
             error_code="PIN_NOT_FOUND",
             error_message="No matching MDAC PIN email found in the lookback window",
         )
-    candidate = candidates[0]
+
+    # Partition candidates into fresh and stale based on registration cutoff and historical PIN
+    fresh_candidates: list[ParsedEmail] = []
+    stale_candidates: list[ParsedEmail] = []
+
+    for msg in candidates:
+        msg_dt: datetime | None = None
+        if msg.received_at:
+            try:
+                msg_dt = datetime.fromisoformat(msg.received_at)
+            except ValueError:
+                pass
+
+        is_stale = False
+        if registration_cutoff and msg_dt and msg_dt < registration_cutoff:
+            is_stale = True
+        elif previous_pin and msg.pin == previous_pin:
+            if previous_received_at and msg_dt and msg_dt <= previous_received_at:
+                is_stale = True
+            elif registration_cutoff and msg_dt and msg_dt <= registration_cutoff:
+                is_stale = True
+
+        if is_stale:
+            stale_candidates.append(msg)
+        else:
+            fresh_candidates.append(msg)
+
+    if not fresh_candidates:
+        if stale_candidates:
+            return PinDecision(
+                status="NOT_FOUND",
+                email=None,
+                confidence=None,
+                summary={
+                    **base_summary,
+                    "reason": "stale_emails_ignored_waiting_for_new",
+                    "stale_candidate_count": len(stale_candidates),
+                    "cutoff": registration_cutoff.isoformat() if registration_cutoff else None,
+                    "cutoff_source": cutoff_source,
+                },
+                error_code="PIN_NOT_FOUND_STALE_IGNORED",
+                error_message="Only historical PIN emails from earlier registration found; waiting for new registration email",
+            )
+        return PinDecision(
+            status="NOT_FOUND",
+            email=None,
+            confidence=None,
+            summary=base_summary,
+            error_code="PIN_NOT_FOUND",
+            error_message="No matching MDAC PIN email found in the lookback window",
+        )
+
+    candidate = fresh_candidates[0]
     selection_reason = "unique_passport_match"
-    if len(candidates) > 1:
+    if len(fresh_candidates) > 1:
         dated_candidates: list[tuple[datetime, ParsedEmail]] = []
-        for message in candidates:
+        for message in fresh_candidates:
             if message.received_at is None:
                 continue
             try:
@@ -469,7 +559,7 @@ def decide_for_item(
                 )
             except ValueError:
                 continue
-        if len(dated_candidates) != len(candidates):
+        if len(dated_candidates) != len(fresh_candidates):
             return PinDecision(
                 status="NEEDS_REVIEW",
                 email=None,
@@ -479,17 +569,24 @@ def decide_for_item(
                 error_message="Multiple matching Gmail messages require manual review",
             )
         dated_candidates.sort(key=lambda entry: entry[0], reverse=True)
-        if dated_candidates[0][0] == dated_candidates[1][0]:
+        if (
+            dated_candidates[0][0] == dated_candidates[1][0]
+            and dated_candidates[0][1].pin != dated_candidates[1][1].pin
+        ):
             return PinDecision(
                 status="NEEDS_REVIEW",
                 email=None,
                 confidence=None,
-                summary={**base_summary, "reason": "multiple_matches_same_date"},
+                summary={
+                    **base_summary,
+                    "reason": "multiple_matches_same_date_differing_pin",
+                },
                 error_code="PIN_MATCH_NOT_UNIQUE",
-                error_message="Multiple latest Gmail messages require manual review",
+                error_message="Multiple latest Gmail messages with differing PINs require manual review",
             )
         candidate = dated_candidates[0][1]
         selection_reason = "latest_passport_match"
+
     if candidate.pin is None:
         return PinDecision(
             status="PARSE_FAILED",
@@ -499,6 +596,23 @@ def decide_for_item(
             error_code="PIN_NOT_PARSED",
             error_message="Matching Gmail message does not contain a readable PIN",
         )
+
+    customer_name = snapshot.get("full_name")
+    if candidate.name and customer_name and not is_name_compatible(candidate.name, customer_name):
+        return PinDecision(
+            status="NEEDS_REVIEW",
+            email=candidate,
+            confidence=None,
+            summary={
+                **base_summary,
+                "reason": "name_mismatch",
+                "email_name": candidate.name,
+                "customer_name": customer_name,
+            },
+            error_code="PIN_NAME_MISMATCH",
+            error_message="Passport matched but email Name does not match customer Name",
+        )
+
     return PinDecision(
         status="RECEIVED",
         email=candidate,
@@ -653,6 +767,9 @@ class GmailPinWorker:
                 customer_id=customer_id,
             )
             snapshot = item.get("customer_snapshot")
+            if isinstance(snapshot, dict) and "item_created_at" not in snapshot and item.get("created_at"):
+                snapshot = dict(snapshot)
+                snapshot["item_created_at"] = item.get("created_at")
             if not isinstance(snapshot, dict):
                 decision = PinDecision(
                     status="PARSE_FAILED",
