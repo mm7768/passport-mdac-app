@@ -706,7 +706,7 @@ async def query_and_capture_page(
                 or await page.locator(".sliderContainer, #captcha canvas").count() > 0
             )
             if has_slider:
-                slider_ok = await solve_mdac_slider(page, log_func=LOG.info, max_retries=3)
+                slider_ok = await solve_mdac_slider(page, log_func=LOG.info, max_retries=5)
 
             if not slider_ok:
                 screenshot = await page.screenshot(full_page=True, type="png")
