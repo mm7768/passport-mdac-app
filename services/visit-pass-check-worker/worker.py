@@ -20,7 +20,7 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -352,6 +352,67 @@ class SupabaseAdminClient:
             raise WorkerError("finish_visit_pass_check_worker 返回格式不正确")
         return result
 
+    def get_customer_entry_date(self, customer_id: str) -> str | None:
+        if not customer_id:
+            return None
+        try:
+            # 优先查找该客户最新成功的 MDAC 登记入境日期
+            resp = self.session.get(
+                f"{self.rest_url}/mdac_registrations",
+                params={
+                    "customer_id": f"eq.{customer_id}",
+                    "registration_status": "eq.SUCCEEDED",
+                    "order": "registered_at.desc",
+                    "limit": "1",
+                    "select": "entry_date",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if resp.ok:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0 and data[0].get("entry_date"):
+                    return str(data[0]["entry_date"]).strip()
+
+            # 若没有成功的，尝试读取任意最新登记的 entry_date
+            resp2 = self.session.get(
+                f"{self.rest_url}/mdac_registrations",
+                params={
+                    "customer_id": f"eq.{customer_id}",
+                    "order": "created_at.desc",
+                    "limit": "1",
+                    "select": "entry_date",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if resp2.ok:
+                data2 = resp2.json()
+                if isinstance(data2, list) and len(data2) > 0 and data2[0].get("entry_date"):
+                    return str(data2[0]["entry_date"]).strip()
+        except Exception as exc:
+            LOG.warning("查询客户 %s 入境日期失败: %s", customer_id, exc)
+        return None
+
+
+def entry_window_candidates(iso_date: str | None) -> list[str]:
+    """根据登记入境日期生成 [当天, +1天, +2天] 的多种日期格式字符串"""
+    if not iso_date:
+        return []
+    try:
+        clean = str(iso_date).strip().split("T")[0]
+        base = datetime.fromisoformat(clean).date()
+    except Exception:
+        return []
+    candidates: list[str] = []
+    for i in range(3):
+        d = base + timedelta(days=i)
+        candidates.extend([
+            d.strftime("%d/%m/%Y"),
+            d.strftime("%d-%m-%Y"),
+            d.strftime("%Y-%m-%d"),
+            d.strftime("%d.%m.%Y"),
+        ])
+    return list(dict.fromkeys(candidates))
+
 
 def normalize_pin(value: Any) -> str | None:
     if value is None:
@@ -432,6 +493,7 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
 async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
+    target_entry_date: str | None = None,
 ) -> tuple[str, bytes, dict[str, Any]]:
     async with async_playwright() as playwright:
         browser: Browser = await playwright.chromium.launch(
@@ -567,7 +629,7 @@ async def query_and_capture_page(
                     outcome = "NO_RECORD"
                     break
 
-                if (
+                has_vp_table = (
                     "visit pass information" in lowered_text
                     or "type of pass" in lowered_text
                     or "date of pass expiry" in lowered_text
@@ -578,20 +640,107 @@ async def query_and_capture_page(
                     or "social visit pass" in lowered_text
                     or "date of entry" in lowered_text
                     or "tarikh masuk" in lowered_text
-                ):
-                    LOG.info("官方页面明确显示：查到 Visit Pass 记录 (FOUND)")
-                    outcome = "FOUND"
+                )
+                if has_vp_table:
                     break
 
+            entry_window = entry_window_candidates(target_entry_date)
+            matched_box = None
             if outcome is None:
-                LOG.warning("未检测到明确结果或超时，标记为 NEEDS_REVIEW 供人工核对")
-                outcome = "NEEDS_REVIEW"
+                page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+                lowered_text = page_text.lower()
+                has_vp_table = (
+                    "visit pass information" in lowered_text
+                    or "type of pass" in lowered_text
+                    or "date of pass expiry" in lowered_text
+                    or "movement record" in lowered_text
+                    or "rekod pergerakan" in lowered_text
+                    or "pass type" in lowered_text
+                    or "jenis pas" in lowered_text
+                    or "social visit pass" in lowered_text
+                    or "date of entry" in lowered_text
+                    or "tarikh masuk" in lowered_text
+                )
+                if has_vp_table:
+                    matched_box = await page.evaluate(
+                        """(windowDates) => {
+                            const rows = Array.from(document.querySelectorAll('table tr'));
+                            let matchedRow = null;
+                            if (windowDates && windowDates.length > 0) {
+                                for (const r of rows) {
+                                    const text = (r.innerText || '').toUpperCase();
+                                    if (windowDates.some(d => text.includes(d.toUpperCase()))) {
+                                        matchedRow = r;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matchedRow && (!windowDates || windowDates.length === 0)) {
+                                const tables = Array.from(document.querySelectorAll('table'));
+                                for (const t of tables) {
+                                    if ((t.innerText || '').toUpperCase().includes('VISIT PASS INFORMATION')) {
+                                        matchedRow = t;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (matchedRow) {
+                                const rect = matchedRow.getBoundingClientRect();
+                                return {
+                                    x: rect.x + window.scrollX,
+                                    y: rect.y + window.scrollY,
+                                    width: rect.width,
+                                    height: rect.height,
+                                    bottom: rect.y + window.scrollY + rect.height,
+                                    matchedText: (matchedRow.innerText || '').slice(0, 100).replace(/\\s+/g, ' ').trim(),
+                                };
+                            }
+                            return null;
+                        }""",
+                        entry_window,
+                    )
+                    if entry_window:
+                        if matched_box:
+                            LOG.info(
+                                "官方页面查到匹配目标入境日期范围 %s 的记录 (FOUND): %s",
+                                entry_window,
+                                matched_box.get("matchedText", ""),
+                            )
+                            outcome = "FOUND"
+                        else:
+                            LOG.warning(
+                                "官方页面存在记录，但未匹配目标入境日期范围 %s，标记为 NEEDS_REVIEW 供人工复核",
+                                entry_window,
+                            )
+                            outcome = "NEEDS_REVIEW"
+                    else:
+                        LOG.info("官方页面查到 Visit Pass 记录 (FOUND)")
+                        outcome = "FOUND"
+                else:
+                    LOG.warning("未检测到明确结果或超时，标记为 NEEDS_REVIEW 供人工核对")
+                    outcome = "NEEDS_REVIEW"
 
-            screenshot = await page.screenshot(full_page=True, type="png")
+            # 方案 B 精准截图：保留页面上方输入框、滑块与表格目标行，严格裁掉目标行以下的内容
+            screenshot: bytes
+            doc_height = await page.evaluate("() => document.documentElement.scrollHeight || document.body.scrollHeight || 1000")
+            if outcome == "FOUND" and matched_box and matched_box.get("bottom"):
+                clip_bottom = int(matched_box["bottom"] + 20)
+                clip_height = min(max(clip_bottom, 300), doc_height)
+                LOG.info("方案 B 精准截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
+                screenshot = await page.screenshot(
+                    clip={"x": 0, "y": 0, "width": 1280, "height": clip_height},
+                    type="png",
+                )
+            else:
+                screenshot = await page.screenshot(full_page=True, type="png")
+
             summary = {
                 "source": "MDAC_CHECK_VISIT_PASS",
                 "mode": "AUTO_SEARCH",
                 "outcome": outcome,
+                "target_entry_date": target_entry_date,
+                "entry_window": entry_window if entry_window else None,
+                "target_matched": (matched_box is not None if entry_window else None),
                 "slider_solved": True,
                 "submitted": True,
                 "result_confirmed": (outcome in {"FOUND", "NO_RECORD", "PIN_INVALID"}),
@@ -605,9 +754,12 @@ async def query_and_capture_page(
 async def preview_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
+    target_entry_date: str | None = None,
 ) -> tuple[bytes, str | None, dict[str, Any]]:
     """Legacy helper for backward compatibility."""
-    outcome, screenshot, summary = await query_and_capture_page(config, runtime_input)
+    outcome, screenshot, summary = await query_and_capture_page(
+        config, runtime_input, target_entry_date=target_entry_date
+    )
     challenge_type = summary.get("challenge_type")
     return screenshot, challenge_type, summary
 
@@ -644,9 +796,11 @@ class VisitPassCheckWorker:
             )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
+                target_entry_date = self.supabase.get_customer_entry_date(customer_id) if customer_id else None
                 outcome, screenshot, summary = asyncio.run(
-                    query_and_capture_page(self.config, runtime_input)
+                    query_and_capture_page(self.config, runtime_input, target_entry_date=target_entry_date)
                 )
+
                 screenshot_path: str | None = None
                 try:
                     screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)

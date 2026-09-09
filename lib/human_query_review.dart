@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -147,10 +148,46 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     return candidates.isEmpty ? '未设置' : candidates.first;
   }
 
+  List<String> _entryWindowCandidates(String? isoDate) {
+    if (isoDate == null || isoDate.isEmpty) return const [];
+    try {
+      final base = DateTime.parse(isoDate);
+      final set = <String>{};
+      for (int i = 0; i <= 2; i++) {
+        final d = base.add(Duration(days: i));
+        final y = d.year.toString();
+        final m = d.month.toString().padLeft(2, '0');
+        final day = d.day.toString().padLeft(2, '0');
+        set.addAll([
+          '$day/$m/$y',
+          '$day-$m-$y',
+          '$y-$m-$day',
+          '$day.$m.$y',
+        ]);
+      }
+      return set.toList();
+    } catch (_) {
+      return _dateCandidates(isoDate);
+    }
+  }
+
   Future<bool> _officialPageMatchesTargetDates() async {
-    if (_visitPass) return true;
     final controller = _controller;
     if (controller == null) return false;
+
+    if (_visitPass) {
+      final entryWindow = _entryWindowCandidates(_targetEntryDate);
+      if (entryWindow.isEmpty) return true; // 若未关联到MDAC则不阻断
+      final result = await controller.evaluateJavascript(source: '''
+(() => {
+  const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').toUpperCase();
+  const windowDates = ${jsonEncode(entryWindow)};
+  return windowDates.some(val => text.includes(val.toUpperCase()));
+})()
+''');
+      return result == true || result?.toString().toLowerCase() == 'true';
+    }
+
     final entry = _dateCandidates(_targetEntryDate);
     final exit = _dateCandidates(_targetExitDate);
     if (entry.isEmpty || exit.isEmpty) return false;
@@ -354,17 +391,93 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     return null;
   }
 
+  Future<double?> _getVisitPassMatchBottomY() async {
+    final controller = _controller;
+    if (controller == null) return null;
+    final entryWindow = _entryWindowCandidates(_targetEntryDate);
+    final script = '''
+(() => {
+  const windowDates = ${jsonEncode(entryWindow)};
+  const rows = Array.from(document.querySelectorAll('table tr'));
+  let matchedRow = null;
+  for (const r of rows) {
+    const text = (r.innerText || '').toUpperCase();
+    if (windowDates.some(d => text.includes(d.toUpperCase()))) {
+      matchedRow = r;
+      break;
+    }
+  }
+  if (!matchedRow) {
+    const tables = Array.from(document.querySelectorAll('table'));
+    for (const t of tables) {
+      if ((t.innerText || '').toUpperCase().includes('VISIT PASS INFORMATION')) {
+        matchedRow = t;
+        break;
+      }
+    }
+  }
+  if (matchedRow) {
+    const rect = matchedRow.getBoundingClientRect();
+    const docHeight = document.documentElement.scrollHeight || document.body.scrollHeight || 1;
+    // 返回匹配行底部占整个文档高度的比例 (0.0 ~ 1.0)，额外留出 16px 边距
+    return {
+      bottomFraction: Math.min(1.0, (window.scrollY + rect.bottom + 16) / docHeight)
+    };
+  }
+  return null;
+})()
+''';
+    try {
+      final res = await controller.evaluateJavascript(source: script);
+      if (res is Map && res['bottomFraction'] != null) {
+        return double.tryParse(res['bottomFraction'].toString());
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<Uint8List?> _cropImageTopToY(Uint8List sourceBytes, double fraction) async {
+    try {
+      final codec = await ui.instantiateImageCodec(sourceBytes);
+      final frame = await codec.getNextFrame();
+      final original = frame.image;
+      final origWidth = original.width;
+      final origHeight = original.height;
+
+      int targetHeight = (origHeight * fraction).round();
+      if (targetHeight < 100 || targetHeight >= origHeight) {
+        return null;
+      }
+
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, origWidth.toDouble(), targetHeight.toDouble()));
+      canvas.drawImageRect(
+        original,
+        Rect.fromLTWH(0, 0, origWidth.toDouble(), targetHeight.toDouble()),
+        Rect.fromLTWH(0, 0, origWidth.toDouble(), targetHeight.toDouble()),
+        Paint(),
+      );
+      final picture = recorder.endRecording();
+      final croppedImage = await picture.toImage(origWidth, targetHeight);
+      final byteData = await croppedImage.toByteData(format: ui.ImageByteFormat.png);
+      return byteData?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _finish(String outcome) async {
     if (_finishing || _itemId == null || !_pageLoaded) return;
-    if (outcome == 'FOUND' && !_visitPass) {
+    if (outcome == 'FOUND') {
       try {
         final matches = await _officialPageMatchesTargetDates();
         if (!matches) {
           if (!mounted) return;
           setState(() {
-            _error =
-                '当前官方结果没有同时显示本次目标日期：入境 ${_displayDate(_targetEntryDate)}，'
-                '离境 ${_displayDate(_targetExitDate)}。可能是历史记录，不能确认成功。';
+            _error = _visitPass
+                ? '当前官方结果没有显示目标入境日期：${_displayDate(_targetEntryDate)}（或后延2天内）。不能确认本次记录。'
+                : '当前官方结果没有同时显示本次目标日期：入境 ${_displayDate(_targetEntryDate)}，'
+                    '离境 ${_displayDate(_targetExitDate)}。可能是历史记录，不能确认成功。';
           });
           return;
         }
@@ -397,7 +510,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
             contentType: 'application/pdf',
           );
         } else {
-          final Uint8List? image = await _controller?.takeScreenshot(
+          Uint8List? image = await _controller?.takeScreenshot(
             screenshotConfiguration: ScreenshotConfiguration(
               compressFormat: CompressFormat.PNG,
               quality: 100,
@@ -407,10 +520,26 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
           if (image == null || image.isEmpty) {
             throw const FormatException('网页截图为空，请保持结果页打开后重试。');
           }
-          screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
-            itemId: _itemId!,
-            bytes: image,
-          );
+
+          // 若为 Visit Pass，精准将截图底部裁剪到匹配行之下（裁掉下方多余页脚与空白）
+          if (_visitPass && outcome == 'FOUND') {
+            try {
+              final cropY = await _getVisitPassMatchBottomY();
+              if (cropY != null && cropY > 100) {
+                final cropped = await _cropImageTopToY(image, cropY);
+                if (cropped != null && cropped.isNotEmpty) {
+                  image = cropped;
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (image != null) {
+            screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
+              itemId: _itemId!,
+              bytes: image,
+            );
+          }
         }
       }
       await SupabaseGateway.finishHumanQueryTask(

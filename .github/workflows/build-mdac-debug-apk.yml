@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.13.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.12-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
+          name: PassportMDAC-v1.0.13-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.13.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,16 +67,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.12
-          name: "Passport MDAC Desk v1.0.12 (客户档案支持删除查询凭证与截图)"
+          tag_name: v1.0.13
+          name: "Passport MDAC Desk v1.0.13 (Visit Pass 入境日期+2天范围校验与方案B精准截屏)"
           body: |
-            ### v1.0.12 更新内容：
-            - **客户档案支持手动删除查询截图与 PDF 凭证**：
-              - 在客户档案底部的【官方查询凭证】列表中，每条凭证增加删除操作按钮与二次确认弹窗。
-              - 点击删除后，自动从数据库及私有 Storage 中清理对应凭证文件，方便用户移除误存的截图或历史残留凭证。
-            - **手机端人工核验原生桥接直出官方原版 PDF**：
-              - 采用原生消息桥接，确保 Registration 查询核验 100% 提取防伪印章与条形码的官方 %PDF 凭证。
+            ### v1.0.13 更新内容：
+            - **Check Visit Pass 目标判定严格限定在登记入境日期当天及后延 2 天内**：
+              - 目标匹配窗口严格锁定为 `[EntryDate, EntryDate + 1, EntryDate + 2]`（共3天）。
+              - 官方页面中的历史移动记录或不在此窗口内的记录均不判定为成功 (`FOUND`)，手机端将提示日期不符，自动化 Worker 自动转人工复核 (`NEEDS_REVIEW`)。
+            - **Visit Pass 方案 B 精准截图裁切**：
+              - 手机端人工核对与后台 Worker 均实现精准截屏裁切：保留页面上方输入框与滑块区域，下方严格裁断至目标 Visit Pass 记录行，过滤多余空白与下方历史记录。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.13.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
