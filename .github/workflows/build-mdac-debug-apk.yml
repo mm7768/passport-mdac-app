@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.6.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.5-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
+          name: PassportMDAC-v1.0.6-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.6.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,18 +67,21 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.5
-          name: "Passport MDAC Desk v1.0.5 (全自动 Check Registration 与 Visit Pass · 接入后台 Worker 自动滑块与 PDF 下载)"
+          tag_name: v1.0.6
+          name: "Passport MDAC Desk v1.0.6 (任务明细与具体失败原因透出 · 待确认人工核验介入口 · 一键重试排队 · 拦截云端抢单)"
           body: |
-            ### v1.0.5 更新内容：
-            - **自动接入后台 Worker（彻底移除手机人工滑块限制）**：
-              - 点击「🔍 查 Registration」与「🪪 查 Visit Pass」不再弹出人工滑块弹窗或在手机逐位打开 WebView。
-              - 自动校验所选客户是否已具备 6 位 PIN 码及环境配置。
-              - 一键将查询任务排队下发至 Supabase，由本地/云端部署的自动化 Worker（Playwright）在后台并发自动填表、识别并滑过验证码拼图、核对最近 MDAC 记录并自动保存官方凭证 PDF。
-            - **界面操作与排队交互优化**：
-              - 增强确认对话框，清晰展示任务步骤及自动化执行提示。
-              - 提交后自动刷新任务列表并重置选择状态，直观反馈执行进度。
+            ### v1.0.6 更新内容：
+            - **透出客户明细与具体失败原因**：
+              - 点击批次卡片或详情，清晰列出批次内每位客户的姓名、护照号、独立状态标签。
+              - 直观展示官方返回的具体原因（如：官方页面加载超时、官方查无记录、PIN码无效、日期不一致、滑块验证未通过等），不再显示模糊的“失败”。
+            - **待确认/未成功客户人工核验介入口**：
+              - 任务卡片新增「✋ 人工介入处理 / 查看明细与待核验项」入口（覆盖 Registration 与 Visit Pass）。
+              - 针对超时未识别或需复核的客户，每行均提供「人工核验 / 滑块」按钮，一键调出官方验证页，自动带入客户凭据并由操作员核验或拖动滑块。
+            - **一键重新自动排队此批次**：
+              - 详情弹窗新增「一键重新自动排队」按钮，可将批次重置并立即交由本地 Worker 重新自动执行。
+            - **数据库端拦截 Railway 抢任务**：
+              - 数据库 RPC 严格拦截 `railway` 云端 Worker 认领查询批次，防止海外机房 IP 访问超时导致任务失败，100% 确保由本地住宅宽带 Worker 稳定执行。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.6.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

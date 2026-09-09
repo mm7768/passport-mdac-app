@@ -450,6 +450,7 @@ class AutomationTask {
     this.successCount = 0,
     this.failedCount = 0,
     this.note = '',
+    this.items = const <Map<String, dynamic>>[],
   });
 
   final String id;
@@ -463,10 +464,16 @@ class AutomationTask {
   int successCount;
   int failedCount;
   String note;
+  final List<Map<String, dynamic>> items;
 
-  int get totalCount => customerIds.length;
-  int get completedCount => successCount + failedCount;
-  double get progress => totalCount == 0 ? 0 : completedCount / totalCount;
+  int get needsReviewCount =>
+      items.where((it) => it['status'] == 'NEEDS_REVIEW').length;
+  int get totalCount =>
+      customerIds.isNotEmpty ? customerIds.length : (items.isNotEmpty ? items.length : 0);
+  int get completedCount =>
+      successCount + failedCount + (status == TaskStatus.needsReview ? needsReviewCount : 0);
+  double get progress =>
+      totalCount == 0 ? 0 : (completedCount / totalCount).clamp(0.0, 1.0);
 }
 
 class CustomerHardDeletePreview {
@@ -1015,6 +1022,20 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> requeueAutomationTask(String batchId, String actor) async {
+    if (!remoteMode) return null;
+    try {
+      await SupabaseGateway.requeueAutomationBatch(batchId);
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 重新排队任务 $batchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '重新排队失败：$exception';
+    }
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -1047,20 +1068,22 @@ class DemoRepository extends ChangeNotifier {
               final remote =
                   int.tryParse(row['success_count']?.toString() ?? '') ?? 0;
               final fromItems = items
-                  .where((it) =>
-                      it['status'] == 'SUCCEEDED' ||
-                      it['status'] == 'NEEDS_REVIEW')
+                  .where((it) => it['status'] == 'SUCCEEDED')
                   .length;
               return remote > fromItems ? remote : fromItems;
             }(),
             failedCount: () {
               final remote =
                   int.tryParse(row['failed_count']?.toString() ?? '') ?? 0;
-              final fromItems =
-                  items.where((it) => it['status'] == 'FAILED').length;
+              final fromItems = items
+                  .where((it) =>
+                      it['status'] == 'FAILED' ||
+                      it['status'] == 'NEEDS_REVIEW')
+                  .length;
               return remote > fromItems ? remote : fromItems;
             }(),
             note: row['note']?.toString() ?? '',
+            items: items,
           ),
         );
       }
@@ -6665,12 +6688,28 @@ Future<void> confirmCancelAutomationTask(
   showToast(context, error ?? '任务记录已永久删除。', error: error != null);
 }
 
-bool canOpenMdacHumanReview(AutomationTask task) =>
-    task.type == TaskType.mdacRegistration &&
-    (task.status == TaskStatus.needsReview ||
-        task.status == TaskStatus.partialSuccess ||
-        task.status == TaskStatus.failed ||
-        task.failedCount > 0);
+bool canOpenHumanIntervention(AutomationTask task) =>
+    task.status == TaskStatus.needsReview ||
+    task.status == TaskStatus.partialSuccess ||
+    task.status == TaskStatus.failed ||
+    task.failedCount > 0 ||
+    task.items.any((it) =>
+        it['status'] == 'NEEDS_REVIEW' ||
+        it['status'] == 'FAILED');
+
+bool canOpenMdacHumanReview(AutomationTask task) => canOpenHumanIntervention(task);
+
+Future<void> openTaskHumanIntervention(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository,
+) async {
+  if (task.type == TaskType.mdacRegistration) {
+    await openMdacHumanReview(context, task, repository);
+  } else {
+    await showTaskDetail(context, task, repository);
+  }
+}
 
 Future<void> openMdacHumanReview(
   BuildContext context,
@@ -6835,11 +6874,11 @@ class TaskRow extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: FilledButton.tonalIcon(
-              onPressed: () => openMdacHumanReview(context, task, repository),
+              onPressed: () => openTaskHumanIntervention(context, task, repository),
               icon: const Icon(Icons.touch_app_outlined, size: 16),
               label: Text(
                 task.status == TaskStatus.needsReview
-                    ? '人工介入处理 / 查看待审核项'
+                    ? '人工介入处理 / 查看明细与待核验项'
                     : '人工介入处理 / 查看未成功项',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
               ),
@@ -6887,12 +6926,13 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 18),
         SizedBox(width: 92, child: TaskStatusPill(status: task.status)),
         const SizedBox(width: 10),
-        if (canOpenMdacHumanReview(task)) ...[
+        if (canOpenHumanIntervention(task)) ...[
           FilledButton.tonalIcon(
-            onPressed: () => openMdacHumanReview(context, task, repository),
+            onPressed: () => openTaskHumanIntervention(context, task, repository),
             icon: const Icon(Icons.touch_app_outlined, size: 16),
             label: const Text(
               '人工介入处理',
+
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
             style: FilledButton.styleFrom(
@@ -8141,6 +8181,30 @@ class DetailChip extends StatelessWidget {
   );
 }
 
+String formatItemErrorReason(Map<String, dynamic> item) {
+  final msg = item['error_message']?.toString() ?? '';
+  final code = item['error_code']?.toString() ?? '';
+  final regCheck = item['registration_check'] as Map<String, dynamic>?;
+  final rawSummary = (regCheck?['raw_summary'] ?? item['raw_summary']) as Map<String, dynamic>?;
+  final note = rawSummary?['note']?.toString() ?? '';
+  final outcome = rawSummary?['outcome']?.toString() ?? '';
+
+  if (msg.contains('Official Check Registration page did not become ready in time') ||
+      msg.contains('Official Check Visit Pass page did not become ready in time') ||
+      code == 'PAGE_TIMEOUT') {
+    return '官方页面加载超时 (PAGE_TIMEOUT)';
+  }
+  if (note.isNotEmpty) return note;
+  if (code == 'NO_RECORD' || outcome == 'NO_RECORD') return '官方系统查无记录 (NO_RECORD)';
+  if (code == 'PIN_INVALID' || outcome == 'PIN_INVALID') return 'PIN 码无效，请核对';
+  if (code == 'DATE_MISMATCH' || outcome == 'DATE_MISMATCH') return '查到记录但出入境日期不一致';
+  if (code == 'SLIDER_SOLVER_FAILED') return '官方滑块拼图验证未通过';
+  if (code == 'RESULT_UNKNOWN' || outcome == 'NEEDS_REVIEW') return '查询超时未识别明确状态，建议人工核验';
+  if (msg.isNotEmpty) return msg;
+  if (code.isNotEmpty) return code;
+  return '';
+}
+
 Future<void> showTaskDetail(
   BuildContext context,
   AutomationTask task,
@@ -8148,7 +8212,7 @@ Future<void> showTaskDetail(
 ) async {
   await showDialog<void>(
     context: context,
-    builder: (context) => AlertDialog(
+    builder: (dialogContext) => AlertDialog(
       title: Row(
         children: [
           Icon(taskTypeIcon(task.type), color: taskTypeColor(task.type)),
@@ -8157,7 +8221,7 @@ Future<void> showTaskDetail(
         ],
       ),
       content: SizedBox(
-        width: 440,
+        width: 480,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -8165,7 +8229,7 @@ Future<void> showTaskDetail(
             children: [
               Text(
                 task.id,
-                style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                style: const TextStyle(color: AppTheme.muted, fontSize: 11),
               ),
               const SizedBox(height: 16),
               Row(
@@ -8184,44 +8248,272 @@ Future<void> showTaskDetail(
               ),
               const SizedBox(height: 10),
               Text(
-                '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功 · ${task.failedCount} 失败',
+                '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功'
+                '${task.needsReviewCount > 0 ? ' · ${task.needsReviewCount} 待人工核验' : ''}'
+                ' · ${task.failedCount} 失败',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
               ),
-              const SizedBox(height: 14),
-              Text(
-                task.note,
-                style: const TextStyle(color: AppTheme.muted, height: 1.4),
-              ),
-              if (task.entryDate != null) ...[
-                const SizedBox(height: 14),
+              if (task.note.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.canvas,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    task.note,
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
+                  ),
+                ),
+              ],
+              if (task.entryDate != null && task.exitDate != null) ...[
+                const SizedBox(height: 12),
                 Text(
                   '日期快照：${formatDate(task.entryDate!)} → ${formatDate(task.exitDate!)}',
                   style: const TextStyle(
                     fontWeight: FontWeight.w700,
                     color: AppTheme.ink,
+                    fontSize: 12,
                   ),
                 ),
+              ],
+              if (task.items.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                Text(
+                  '客户明细清单 (${task.items.length} 位)',
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                ),
+                const SizedBox(height: 10),
+                ...task.items.map((item) {
+                  final customerId = item['customer_id']?.toString() ?? '';
+                  final customer = repository.findCustomer(customerId);
+                  final snapshot = (item['customer_snapshot'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+                  final name = customer?.fullName ?? snapshot['full_name']?.toString() ?? '未知姓名';
+                  final passport = customer?.passportNumber ?? snapshot['passport_number']?.toString() ?? '未知护照';
+                  final statusStr = item['status']?.toString() ?? 'QUEUED';
+                  final errorReason = formatItemErrorReason(item);
+                  final isSucceeded = statusStr == 'SUCCEEDED';
+                  final isNeedsReview = statusStr == 'NEEDS_REVIEW';
+                  final isFailed = statusStr == 'FAILED';
+                  final screenshotPath = item['registration_check']?['screenshot_path']?.toString() ??
+                      item['screenshot_path']?.toString() ?? '';
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isNeedsReview
+                          ? const Color(0xFFFBF8FF)
+                          : isFailed
+                              ? const Color(0xFFFFF5F5)
+                              : isSucceeded
+                                  ? const Color(0xFFF4FBF7)
+                                  : AppTheme.canvas,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isNeedsReview
+                            ? const Color(0xFFD0BCFF)
+                            : isFailed
+                                ? const Color(0xFFFFCDD2)
+                                : isSucceeded
+                                    ? const Color(0xFFC8E6C9)
+                                    : AppTheme.line,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Avatar(name: name),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                                  ),
+                                  Text(
+                                    passport,
+                                    style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: isSucceeded
+                                    ? const Color(0xFFE8F5E9)
+                                    : isNeedsReview
+                                        ? const Color(0xFFECE6FA)
+                                        : isFailed
+                                            ? const Color(0xFFFFEBEE)
+                                            : const Color(0xFFE3F2FD),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                isSucceeded
+                                    ? '成功'
+                                    : isNeedsReview
+                                        ? '待人工核验'
+                                        : isFailed
+                                            ? '失败'
+                                            : '处理中',
+                                style: TextStyle(
+                                  color: isSucceeded
+                                      ? const Color(0xFF2E7D32)
+                                      : isNeedsReview
+                                          ? const Color(0xFF6750A4)
+                                          : isFailed
+                                              ? const Color(0xFFC62828)
+                                              : const Color(0xFF1565C0),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (errorReason.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                isNeedsReview ? Icons.help_outline_rounded : Icons.error_outline_rounded,
+                                size: 14,
+                                color: isNeedsReview ? const Color(0xFF7C4DFF) : AppTheme.danger,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  errorReason,
+                                  style: TextStyle(
+                                    color: isNeedsReview ? const Color(0xFF6750A4) : AppTheme.danger,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
+                            (isNeedsReview || isFailed || !isSucceeded)) ...[
+                          const SizedBox(height: 10),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              if (screenshotPath.isNotEmpty)
+                                TextButton.icon(
+                                  onPressed: () async {
+                                    try {
+                                      final url = await SupabaseGateway.createSignedPassportImageUrl(screenshotPath);
+                                      if (!context.mounted) return;
+                                      await Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => PrivateEvidencePreviewPage(
+                                            url: url,
+                                            isPdf: screenshotPath.toLowerCase().endsWith('.pdf'),
+                                            title: '$name 查询凭证',
+                                          ),
+                                        ),
+                                      );
+                                    } catch (e) {
+                                      if (context.mounted) showToast(context, '凭证加载失败：$e', error: true);
+                                    }
+                                  },
+                                  icon: const Icon(Icons.image_outlined, size: 14),
+                                  label: const Text('查看截图', style: TextStyle(fontSize: 11)),
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                ),
+                              const SizedBox(width: 6),
+                              FilledButton.tonalIcon(
+                                onPressed: () async {
+                                  final pin = customer?.pin ?? '';
+                                  if (pin.isEmpty) {
+                                    showToast(context, '$name 尚未获取 PIN，无法人工核验。', error: true);
+                                    return;
+                                  }
+                                  await Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => HumanQueryReviewPage(
+                                        kind: task.type == TaskType.visitPassCheck
+                                            ? HumanQueryKind.visitPass
+                                            : HumanQueryKind.registration,
+                                        customerId: customer?.id ?? customerId,
+                                        customerName: name,
+                                        passportNumber: passport,
+                                        nationality: customer?.nationality ?? snapshot['nationality']?.toString() ?? 'CHN',
+                                        pin: pin,
+                                        email: repository.mdacSettings?.mdacEmail ?? '',
+                                        regionCode: repository.mdacSettings?.regionCode ?? '',
+                                        mobile: repository.mdacSettings?.mdacPhone ?? '',
+                                      ),
+                                    ),
+                                  );
+                                  await repository.syncAutomationTasksFromSupabase();
+                                  await repository.syncCustomersFromSupabase();
+                                },
+                                icon: const Icon(Icons.touch_app_rounded, size: 14),
+                                label: const Text('人工核验 / 滑块', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFFECE6FA),
+                                  foregroundColor: const Color(0xFF6750A4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                }),
               ],
             ],
           ),
         ),
       ),
       actions: [
-        if (task.type == TaskType.mdacRegistration &&
-            task.status != TaskStatus.queued)
+        if (task.type == TaskType.mdacRegistration && task.status != TaskStatus.queued)
           FilledButton.icon(
             onPressed: () async {
               await openMdacHumanReview(context, task, repository);
-              if (context.mounted) Navigator.pop(context);
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
             },
             icon: const Icon(Icons.touch_app_outlined),
             label: Text(
-              canOpenMdacHumanReview(task)
-                  ? '人工介入处理 / 查看待审核项'
-                  : '查看批次填报详情',
+              canOpenHumanIntervention(task) ? '人工介入处理 / 查看待审核项' : '查看批次填报详情',
             ),
           ),
+        if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
+            (task.status == TaskStatus.needsReview || task.status == TaskStatus.failed || task.failedCount > 0))
+          FilledButton.tonalIcon(
+            onPressed: () async {
+              final error = await repository.requeueAutomationTask(task.id, '当前用户');
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (error != null) {
+                showToast(context, error, error: true);
+              } else {
+                showToast(context, '批次已重新排队，本地 Worker 将自动重试。');
+              }
+            },
+            icon: const Icon(Icons.refresh_rounded, size: 16),
+            label: const Text('一键重新自动排队'),
+          ),
         TextButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: () => Navigator.pop(dialogContext),
           child: const Text('关闭'),
         ),
       ],

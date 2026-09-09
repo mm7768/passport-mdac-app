@@ -458,7 +458,7 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
       final url = await SupabaseGateway.createSignedPassportImageUrl(path);
       if (!mounted) return;
       await Navigator.of(context).push<void>(MaterialPageRoute(
-        builder: (_) => _PrivateEvidencePreviewPage(
+        builder: (_) => PrivateEvidencePreviewPage(
           url: url,
           isPdf: path.toLowerCase().endsWith('.pdf'),
           title: row['type'] == 'VISIT_PASS_CHECK'
@@ -534,8 +534,9 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
   }
 }
 
-class _PrivateEvidencePreviewPage extends StatelessWidget {
-  const _PrivateEvidencePreviewPage({
+class PrivateEvidencePreviewPage extends StatelessWidget {
+  const PrivateEvidencePreviewPage({
+    super.key,
     required this.url,
     required this.isPdf,
     required this.title,

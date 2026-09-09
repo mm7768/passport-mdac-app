@@ -466,7 +466,6 @@ class SupabaseGateway {
           'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
         )
         .eq('customer_id', customerId)
-        .not('screenshot_path', 'is', null)
         .order('checked_at', ascending: false)
         .limit(20);
     final visitPassRows = await _requiredClient
@@ -475,7 +474,6 @@ class SupabaseGateway {
           'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
         )
         .eq('customer_id', customerId)
-        .not('screenshot_path', 'is', null)
         .order('checked_at', ascending: false)
         .limit(20);
     return [
@@ -681,6 +679,17 @@ class SupabaseGateway {
       await removeCustomerStorageObjects(paths);
     }
     return row;
+  }
+
+  static Future<Map<String, dynamic>> requeueAutomationBatch(
+    String batchId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'requeue_automation_batch',
+      params: {'p_batch_id': batchId},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return <String, dynamic>{'id': batchId};
   }
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
