@@ -549,35 +549,10 @@ async def query_and_capture_page(
                 if await submit_locator.is_disabled():
                     await page.wait_for_timeout(1000)
 
-                download_task = asyncio.create_task(page.wait_for_event("download", timeout=12000))
                 await submit_locator.click()
                 LOG.info("已点击 Submit 查询，等待结果返回...")
 
-                download_obj = None
-                try:
-                    download_obj = await asyncio.wait_for(download_task, timeout=4.0)
-                except (asyncio.TimeoutError, Exception):
-                    pass
-
-                if download_obj is not None:
-                    try:
-                        stream = await download_obj.create_read_stream()
-                        pdf_bytes = await stream.read()
-                        if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
-                            LOG.info("成功捕获到官方 Registration PDF (%d bytes)", len(pdf_bytes))
-                            summary = {
-                                "source": "MDAC_CHECK_REGISTRATION",
-                                "mode": "AUTO_SEARCH",
-                                "evidence_type": "PDF",
-                                "slider_solved": True,
-                                "submitted": True,
-                                "result_confirmed": True,
-                            }
-                            return ("FOUND", pdf_bytes, "pdf", summary)
-                    except Exception as e:
-                        LOG.warning("读取官方下载 PDF 异常: %s", e)
-
-                for _ in range(15):
+                for _ in range(20):
                     await page.wait_for_timeout(1000)
                     page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
                     lowered_text = page_text.lower()
@@ -603,7 +578,8 @@ async def query_and_capture_page(
                         })
 
                     if ("registration no" in lowered_text or "no pendaftaran" in lowered_text
-                            or "tarikh masuk" in lowered_text or "date of arrival" in lowered_text):
+                            or "tarikh masuk" in lowered_text or "date of arrival" in lowered_text
+                            or "traveling information" in lowered_text or "trip id" in lowered_text):
                         if not check_dates_match(page_text, target_entry_date, target_exit_date):
                             LOG.warning("查到记录但日期与本次 MDAC 不一致，降级人工审核防止误判")
                             screenshot = await page.screenshot(full_page=True, type="png")
@@ -615,31 +591,70 @@ async def query_and_capture_page(
                                 "note": "日期与本次目标不一致，需人工核对",
                             })
 
-                        pdf_btn = page.locator(
-                            "a[href*='pdf'], button:has-text('PDF'), button:has-text('Print'), a:has-text('PDF'), a:has-text('Download')"
-                        ).first
-                        if await pdf_btn.count() > 0 and await pdf_btn.is_visible():
-                            try:
-                                async with page.expect_download(timeout=5000) as dl_info:
-                                    await pdf_btn.click()
-                                dl = await dl_info.value
-                                stream = await dl.create_read_stream()
-                                pdf_bytes = await stream.read()
-                                if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
-                                    LOG.info("点击页面按钮成功下载官方 Registration PDF (%d bytes)", len(pdf_bytes))
-                                    return ("FOUND", pdf_bytes, "pdf", {
-                                        "source": "MDAC_CHECK_REGISTRATION",
-                                        "mode": "AUTO_SEARCH",
-                                        "evidence_type": "PDF",
-                                        "slider_solved": True,
-                                        "submitted": True,
-                                        "result_confirmed": True,
-                                    })
-                            except Exception as dl_err:
-                                LOG.warning("点击下载按钮未触发 PDF: %s，回退全页截图", dl_err)
+                        # 尝试定位对应行程并下载官方 MDAC Slip PDF
+                        pdf_downloaded: bytes | None = None
+                        target_trip_id: str | None = None
+                        try:
+                            rows = await page.locator("table tr:has(td)").all()
+                            target_row = None
+
+                            entry_cands = date_candidates(target_entry_date) if target_entry_date else []
+                            for row in rows:
+                                row_text = await row.inner_text()
+                                if any(c.upper() in row_text.upper() for c in entry_cands):
+                                    target_row = row
+                                    break
+
+                            if target_row is None and rows:
+                                target_row = rows[0]
+
+                            if target_row is not None:
+                                row_text = await target_row.inner_text()
+                                trip_match = re.search(r"(\d{15,30})", row_text)
+                                if trip_match:
+                                    target_trip_id = trip_match.group(1)
+
+                                download_trigger = target_row.locator(
+                                    "a[onclick*='printSlip'], a:has(img), img[src*='adobe' i], img[src*='pdf' i], td:last-child a, td:last-child img"
+                                ).first
+
+                                if await download_trigger.count() > 0:
+                                    LOG.info("找到官方 MDAC Slip PDF 下载图标/链接 (Trip ID: %s)，正在触发下载...", target_trip_id or "首行")
+                                    async with page.expect_download(timeout=20000) as dl_info:
+                                        await download_trigger.click()
+                                    dl = await dl_info.value
+                                    temp_path = await dl.path()
+                                    with open(temp_path, "rb") as f:
+                                        content = f.read()
+                                    if len(content) >= 4 and content.startswith(b"%PDF"):
+                                        pdf_downloaded = content
+                                elif target_trip_id:
+                                    LOG.info("尝试通过执行 printSlip('%s') 触发官方 PDF 下载...", target_trip_id)
+                                    async with page.expect_download(timeout=20000) as dl_info:
+                                        await page.evaluate("ti => printSlip(ti)", target_trip_id)
+                                    dl = await dl_info.value
+                                    temp_path = await dl.path()
+                                    with open(temp_path, "rb") as f:
+                                        content = f.read()
+                                    if len(content) >= 4 and content.startswith(b"%PDF"):
+                                        pdf_downloaded = content
+                        except Exception as dl_err:
+                            LOG.warning("尝试下载官方 MDAC PDF 失败: %s，将回退全页截图", dl_err)
+
+                        if pdf_downloaded is not None:
+                            LOG.info("成功获取官方 MDAC Slip PDF (%d bytes)", len(pdf_downloaded))
+                            return ("FOUND", pdf_downloaded, "pdf", {
+                                "source": "MDAC_CHECK_REGISTRATION",
+                                "mode": "AUTO_SEARCH",
+                                "evidence_type": "PDF",
+                                "trip_id": target_trip_id,
+                                "slider_solved": True,
+                                "submitted": True,
+                                "result_confirmed": True,
+                            })
 
                         screenshot = await page.screenshot(full_page=True, type="png")
-                        LOG.info("成功捕获官方查询结果页截图")
+                        LOG.info("成功捕获官方查询结果页截图 (备用凭证)")
                         return ("FOUND", screenshot, "png", {
                             "source": "MDAC_CHECK_REGISTRATION",
                             "mode": "AUTO_SEARCH",

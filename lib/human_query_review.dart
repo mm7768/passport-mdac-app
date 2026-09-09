@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'supabase_gateway.dart';
@@ -547,13 +548,35 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.copy_rounded),
+            tooltip: '复制凭证直链',
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: url));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('凭证直链已复制到剪贴板，可粘贴至浏览器直接下载或查看'),
+                    duration: Duration(seconds: 3),
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
       body: isPdf
           ? InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri(url)),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 supportZoom: true,
+                builtInZoomControls: true,
+                displayZoomControls: false,
+                useHybridComposition: true,
               ),
             )
           : InteractiveViewer(

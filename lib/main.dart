@@ -8403,75 +8403,89 @@ Future<void> showTaskDetail(
                             ],
                           ),
                         ],
-                        if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
-                            (isNeedsReview || isFailed || !isSucceeded)) ...[
+                        final bool hasEvidence = screenshotPath.isNotEmpty;
+                        final bool canHumanReview = (task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
+                            (isNeedsReview || isFailed || !isSucceeded);
+                        if (hasEvidence || canHumanReview) ...[
                           const SizedBox(height: 10),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
-                              if (screenshotPath.isNotEmpty)
-                                TextButton.icon(
-                                  onPressed: () async {
-                                    try {
-                                      final url = await SupabaseGateway.createSignedPassportImageUrl(screenshotPath);
-                                      if (!context.mounted) return;
-                                      await Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) => PrivateEvidencePreviewPage(
-                                            url: url,
-                                            isPdf: screenshotPath.toLowerCase().endsWith('.pdf'),
-                                            title: '$name 查询凭证',
-                                          ),
-                                        ),
-                                      );
-                                    } catch (e) {
-                                      if (context.mounted) showToast(context, '凭证加载失败：$e', error: true);
-                                    }
+                              if (hasEvidence) ...[
+                                Builder(
+                                  builder: (context) {
+                                    final rawSummary = item['raw_summary'];
+                                    final isPdf = screenshotPath.toLowerCase().endsWith('.pdf') ||
+                                        (rawSummary is Map && rawSummary['evidence_type'] == 'PDF');
+                                    return FilledButton.tonalIcon(
+                                      onPressed: () async {
+                                        try {
+                                          final url = await SupabaseGateway.createSignedPassportImageUrl(screenshotPath);
+                                          if (!context.mounted) return;
+                                          await Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                              builder: (_) => PrivateEvidencePreviewPage(
+                                                url: url,
+                                                isPdf: isPdf,
+                                                title: isPdf ? '$name 官方 MDAC PDF' : '$name 查询截图',
+                                              ),
+                                            ),
+                                          );
+                                        } catch (e) {
+                                          if (context.mounted) showToast(context, '凭证加载失败：$e', error: true);
+                                        }
+                                      },
+                                      icon: Icon(isPdf ? Icons.picture_as_pdf_rounded : Icons.image_outlined, size: 14),
+                                      label: Text(isPdf ? '查看官方 PDF' : '查看截图', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: isPdf ? const Color(0xFFE8F5E9) : const Color(0xFFF1F3F4),
+                                        foregroundColor: isPdf ? const Color(0xFF1B5E20) : const Color(0xFF3C4043),
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                    );
                                   },
-                                  icon: const Icon(Icons.image_outlined, size: 14),
-                                  label: const Text('查看截图', style: TextStyle(fontSize: 11)),
-                                  style: TextButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                ),
+                              ],
+                              if (canHumanReview) ...[
+                                if (hasEvidence) const SizedBox(width: 6),
+                                FilledButton.tonalIcon(
+                                  onPressed: () async {
+                                    final pin = customer?.pin ?? '';
+                                    if (pin.isEmpty) {
+                                      showToast(context, '$name 尚未获取 PIN，无法人工核验。', error: true);
+                                      return;
+                                    }
+                                    await Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => HumanQueryReviewPage(
+                                          kind: task.type == TaskType.visitPassCheck
+                                              ? HumanQueryKind.visitPass
+                                              : HumanQueryKind.registration,
+                                          customerId: customer?.id ?? customerId,
+                                          customerName: name,
+                                          passportNumber: passport,
+                                          nationality: customer?.nationality ?? snapshot['nationality']?.toString() ?? 'CHN',
+                                          pin: pin,
+                                          email: repository.mdacSettings?.mdacEmail ?? '',
+                                          regionCode: repository.mdacSettings?.regionCode ?? '',
+                                          mobile: repository.mdacSettings?.mdacPhone ?? '',
+                                        ),
+                                      ),
+                                    );
+                                    await repository.syncAutomationTasksFromSupabase();
+                                    await repository.syncCustomersFromSupabase();
+                                  },
+                                  icon: const Icon(Icons.touch_app_rounded, size: 14),
+                                  label: const Text('人工核验 / 滑块', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: const Color(0xFFECE6FA),
+                                    foregroundColor: const Color(0xFF6750A4),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                                     visualDensity: VisualDensity.compact,
                                   ),
                                 ),
-                              const SizedBox(width: 6),
-                              FilledButton.tonalIcon(
-                                onPressed: () async {
-                                  final pin = customer?.pin ?? '';
-                                  if (pin.isEmpty) {
-                                    showToast(context, '$name 尚未获取 PIN，无法人工核验。', error: true);
-                                    return;
-                                  }
-                                  await Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) => HumanQueryReviewPage(
-                                        kind: task.type == TaskType.visitPassCheck
-                                            ? HumanQueryKind.visitPass
-                                            : HumanQueryKind.registration,
-                                        customerId: customer?.id ?? customerId,
-                                        customerName: name,
-                                        passportNumber: passport,
-                                        nationality: customer?.nationality ?? snapshot['nationality']?.toString() ?? 'CHN',
-                                        pin: pin,
-                                        email: repository.mdacSettings?.mdacEmail ?? '',
-                                        regionCode: repository.mdacSettings?.regionCode ?? '',
-                                        mobile: repository.mdacSettings?.mdacPhone ?? '',
-                                      ),
-                                    ),
-                                  );
-                                  await repository.syncAutomationTasksFromSupabase();
-                                  await repository.syncCustomersFromSupabase();
-                                },
-                                icon: const Icon(Icons.touch_app_rounded, size: 14),
-                                label: const Text('人工核验 / 滑块', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: const Color(0xFFECE6FA),
-                                  foregroundColor: const Color(0xFF6750A4),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                  visualDensity: VisualDensity.compact,
-                                ),
-                              ),
+                              ],
                             ],
                           ),
                         ],
