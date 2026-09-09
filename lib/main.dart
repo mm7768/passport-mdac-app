@@ -8195,7 +8195,8 @@ String formatItemErrorReason(Map<String, dynamic> item) {
     return '官方页面加载超时 (PAGE_TIMEOUT)';
   }
   if (note.isNotEmpty) return note;
-  if (code == 'NO_RECORD' || outcome == 'NO_RECORD') return '官方系统查无记录 (NO_RECORD)';
+  if (code == 'NO_MATCHING_RECORD' || msg == '未找到符合记录') return '未找到符合记录';
+  if (code == 'NO_RECORD' || outcome == 'NO_RECORD') return '未找到符合记录';
   if (code == 'PIN_INVALID' || outcome == 'PIN_INVALID') return 'PIN 码无效，请核对';
   if (code == 'DATE_MISMATCH' || outcome == 'DATE_MISMATCH') return '查到记录但出入境日期不一致';
   if (code == 'SLIDER_SOLVER_FAILED') return '官方滑块拼图验证未通过';
@@ -8297,7 +8298,8 @@ Future<void> showTaskDetail(
                   final isSucceeded = statusStr == 'SUCCEEDED';
                   final isNeedsReview = statusStr == 'NEEDS_REVIEW';
                   final isFailed = statusStr == 'FAILED';
-                  final screenshotPath = item['registration_check']?['screenshot_path']?.toString() ??
+                  final screenshotPath = item['visit_pass_check']?['screenshot_path']?.toString() ??
+                      item['registration_check']?['screenshot_path']?.toString() ??
                       item['screenshot_path']?.toString() ?? '';
                   final hasEvidence = screenshotPath.isNotEmpty;
                   final canHumanReview = (task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&

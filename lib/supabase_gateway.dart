@@ -509,6 +509,36 @@ class SupabaseGateway {
     }
   }
 
+  static Future<void> deleteCustomerOldVisitPassScreenshots({
+    required String customerId,
+    required String currentScreenshotPath,
+  }) async {
+    final client = _requiredClient;
+    try {
+      final rows = await client
+          .from('visit_pass_checks')
+          .select('id, screenshot_path')
+          .eq('customer_id', customerId)
+          .not('screenshot_path', 'is', null);
+
+      for (final row in rows) {
+        final checkId = row['id']?.toString() ?? '';
+        final oldPath = row['screenshot_path']?.toString() ?? '';
+        if (oldPath.isEmpty || oldPath == currentScreenshotPath) continue;
+
+        try {
+          await client.storage.from('passport-documents').remove([oldPath]);
+        } catch (_) {}
+
+        try {
+          await client.from('visit_pass_checks').update({
+            'screenshot_path': null,
+          }).eq('id', checkId);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')
@@ -658,6 +688,22 @@ class SupabaseGateway {
         if (row['batch_item_id'] != null)
           row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
     };
+    final visitPassCheckRows = itemIds.isEmpty
+        ? <dynamic>[]
+        : await client
+              .from('visit_pass_checks')
+              .select(
+                'batch_item_id, checked_at, result_status, raw_summary, '
+                'normalized_status, error_message, screenshot_path, '
+                'challenge_type, submitted, result_confirmed, updated_at',
+              )
+              .inFilter('batch_item_id', itemIds)
+              .limit(500);
+    final visitPassCheckByItem = <String, Map<String, dynamic>>{
+      for (final row in visitPassCheckRows)
+        if (row['batch_item_id'] != null)
+          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
+    };
     final itemsByBatch = <String, List<Map<String, dynamic>>>{};
     for (final item in items) {
       final batchId = item['batch_id']?.toString();
@@ -666,6 +712,7 @@ class SupabaseGateway {
         ...item,
         'registration': registrationByItem[item['id']?.toString()],
         'registration_check': registrationCheckByItem[item['id']?.toString()],
+        'visit_pass_check': visitPassCheckByItem[item['id']?.toString()],
       });
     }
     return [

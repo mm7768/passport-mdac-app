@@ -392,6 +392,58 @@ class SupabaseAdminClient:
             LOG.warning("查询客户 %s 入境日期失败: %s", customer_id, exc)
         return None
 
+    def delete_customer_old_visit_pass_screenshots(
+        self, customer_id: str, current_screenshot_path: str | None = None
+    ) -> list[str]:
+        """找到新记录后，删除该客户以往所有的旧 Visit Pass 截图文件及数据库引用"""
+        if not customer_id:
+            return []
+        deleted_paths: list[str] = []
+        try:
+            resp = self.session.get(
+                f"{self.rest_url}/visit_pass_checks",
+                params={
+                    "customer_id": f"eq.{customer_id}",
+                    "screenshot_path": "not.is.null",
+                    "select": "id, screenshot_path",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if not resp.ok:
+                return []
+            rows = resp.json()
+            bucket = quote(self.config.screenshot_bucket, safe="")
+            for row in rows:
+                old_path = row.get("screenshot_path")
+                check_id = row.get("id")
+                if not old_path or old_path == current_screenshot_path:
+                    continue
+                # 1. 从 Storage 中删除旧截图文件
+                try:
+                    del_resp = self.session.delete(
+                        f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
+                        timeout=self.config.request_timeout_seconds,
+                    )
+                    if del_resp.ok or del_resp.status_code == 404:
+                        deleted_paths.append(old_path)
+                        LOG.info("已删除客户 %s 旧 Visit Pass 截图文件: %s", customer_id, old_path)
+                except Exception as e:
+                    LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
+
+                # 2. 将旧核验记录中的 screenshot_path 置空
+                try:
+                    self.session.patch(
+                        f"{self.rest_url}/visit_pass_checks",
+                        params={"id": f"eq.{check_id}"},
+                        json={"screenshot_path": None},
+                        timeout=self.config.request_timeout_seconds,
+                    )
+                except Exception as e:
+                    LOG.warning("清空旧记录 %s screenshot_path 失败: %s", check_id, e)
+        except Exception as exc:
+            LOG.warning("清理客户 %s 旧 Visit Pass 截图异常: %s", customer_id, exc)
+        return deleted_paths
+
 
 def entry_window_candidates(iso_date: str | None) -> list[str]:
     """根据登记入境日期生成 [当天, +1天, +2天] 的多种日期格式字符串"""
@@ -709,18 +761,18 @@ async def query_and_capture_page(
                             outcome = "FOUND"
                         else:
                             LOG.warning(
-                                "官方页面存在记录，但未匹配目标入境日期范围 %s，标记为 NEEDS_REVIEW 供人工复核",
+                                "官方页面存在记录，但未匹配目标入境日期范围 %s，标记为 NO_RECORD (未找到符合记录)",
                                 entry_window,
                             )
-                            outcome = "NEEDS_REVIEW"
+                            outcome = "NO_RECORD"
                     else:
                         LOG.info("官方页面查到 Visit Pass 记录 (FOUND)")
                         outcome = "FOUND"
                 else:
-                    LOG.warning("未检测到明确结果或超时，标记为 NEEDS_REVIEW 供人工核对")
-                    outcome = "NEEDS_REVIEW"
+                    LOG.warning("未检测到记录或官方页面无记录，标记为 NO_RECORD (未找到符合记录)")
+                    outcome = "NO_RECORD"
 
-            # 方案 B 精准截图：保留页面上方输入框、滑块与表格目标行，严格裁掉目标行以下的内容
+            # 方案 B 精准截图：若找到目标记录，保留页面上方输入框、滑块与表格目标行，严格裁掉目标行以下的内容
             screenshot: bytes
             doc_height = await page.evaluate("() => document.documentElement.scrollHeight || document.body.scrollHeight || 1000")
             if outcome == "FOUND" and matched_box and matched_box.get("bottom"):
@@ -745,6 +797,11 @@ async def query_and_capture_page(
                 "submitted": True,
                 "result_confirmed": (outcome in {"FOUND", "NO_RECORD", "PIN_INVALID"}),
                 "dialogs": dialog_messages if dialog_messages else None,
+                "note": (
+                    "未找到符合记录"
+                    if outcome == "NO_RECORD" and entry_window and not matched_box
+                    else None
+                ),
             }
             return (outcome, screenshot, summary)
         finally:
@@ -825,8 +882,8 @@ class VisitPassCheckWorker:
                     error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
                     error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
                 elif outcome == "NO_RECORD":
-                    error_code = "NO_RECORD"
-                    error_message = "官方页面显示无记录"
+                    error_code = "NO_MATCHING_RECORD"
+                    error_message = summary.get("note") or "未找到符合记录"
                 elif outcome == "PIN_INVALID":
                     error_code = "PIN_INVALID"
                     error_message = "官方页面提示 PIN 错误"
@@ -839,7 +896,18 @@ class VisitPassCheckWorker:
                     error_code=error_code,
                     error_message=error_message,
                 )
+
+                # 找到记录后返回目标截图，并将该客户以往所有的旧截图删掉
+                if outcome == "FOUND" and customer_id and screenshot_path:
+                    try:
+                        self.supabase.delete_customer_old_visit_pass_screenshots(
+                            customer_id, current_screenshot_path=screenshot_path
+                        )
+                    except Exception as clean_err:
+                        LOG.warning("清理客户 %s 旧 Visit Pass 截图失败: %s", customer_id, clean_err)
+
                 processed += 1
+
                 log_event(
                     logging.INFO,
                     step="result_writeback",

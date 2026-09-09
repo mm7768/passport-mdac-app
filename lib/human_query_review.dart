@@ -495,7 +495,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
 
     String? screenshotPath;
     try {
-      if (outcome == 'FOUND' || outcome == 'PAGE_ERROR') {
+      if (outcome == 'FOUND' || outcome == 'PAGE_ERROR' || (_visitPass && outcome == 'NO_RECORD')) {
         if (!_visitPass && outcome == 'FOUND') {
           if (_officialPdfBytes == null) {
             _officialPdfBytes = await _extractPdfFromPage();
@@ -521,7 +521,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
             throw const FormatException('网页截图为空，请保持结果页打开后重试。');
           }
 
-          // 若为 Visit Pass，精准将截图底部裁剪到匹配行之下（裁掉下方多余页脚与空白）
+          // 若为 Visit Pass 且查到记录，精准将截图底部裁剪到匹配行之下（裁掉下方多余页脚与空白）
           if (_visitPass && outcome == 'FOUND') {
             try {
               final cropY = await _getVisitPassMatchBottomY();
@@ -547,6 +547,17 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
         outcome: outcome,
         screenshotPath: screenshotPath,
       );
+
+      // 若 Visit Pass 查到记录，自动删除该客户以往所有的旧截图
+      if (_visitPass && outcome == 'FOUND' && screenshotPath != null && widget.customerId.isNotEmpty) {
+        try {
+          await SupabaseGateway.deleteCustomerOldVisitPassScreenshots(
+            customerId: widget.customerId,
+            currentScreenshotPath: screenshotPath,
+          );
+        } catch (_) {}
+      }
+
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (exception) {
@@ -667,7 +678,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
                         ),
                         OutlinedButton(
                           onPressed: _pageLoaded ? () => _finish('NO_RECORD') : null,
-                          child: const Text('没有记录'),
+                          child: Text(_visitPass ? '未找到符合记录' : '没有记录'),
                         ),
                         OutlinedButton(
                           onPressed: _pageLoaded ? () => _finish('PIN_INVALID') : null,
@@ -820,9 +831,15 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
                   title: Text(row['type'] == 'VISIT_PASS_CHECK'
                       ? 'Check Visit Pass'
                       : 'Check Registration'),
-                  subtitle: Text(
-                    '${row['normalized_status'] ?? ''} · ${row['checked_at'] ?? ''}',
-                  ),
+                  subtitle: Builder(builder: (context) {
+                    final norm = row['normalized_status']?.toString() ?? '';
+                    final normText = norm == 'FOUND'
+                        ? '查到有效记录'
+                        : (norm == 'NO_RECORD' ? '未找到符合记录' : norm);
+                    return Text(
+                      '$normText · ${row['checked_at'] ?? ''}',
+                    );
+                  }),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
