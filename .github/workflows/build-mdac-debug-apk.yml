@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.8.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.8-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.8.apk
+          name: PassportMDAC-v1.0.9-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,16 +67,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.8
-          name: "Passport MDAC Desk v1.0.8 (修复 PDF 签名直链免图片缩放 · 修复 400 Unsupported Rendering 报错)"
+          tag_name: v1.0.9
+          name: "Passport MDAC Desk v1.0.9 (内置 PDF.js 原生排版渲染 · 彻底告别黑屏 · 增加手机浏览器直开)"
           body: |
-            ### v1.0.8 更新内容：
-            - **彻底修复 PDF 签名直链报错**：
-              - 修复了 Supabase Storage 默认对 PDF 凭据调用图片缩放服务导致的 `400 The source image is invalid or unsupported for rendering` 错误。
-              - 针对 `.pdf` 凭据使用原生签名直链直出，确保 Android WebView 与外部浏览器可 100% 完整加载解析 107KB 的官方 MDAC Slip 原生 PDF。
-            - **优化凭证预览页底部友好提示**：
-              - 针对移动端 PDF 渲染增加直链一键复制及底部操作指引。
+            ### v1.0.9 更新内容：
+            - **内置 PDF.js Canvas 原生排版渲染，解决 Android WebView 黑屏**：
+              - 针对安卓系统 WebView 无法原生排版渲染 PDF 导致黑屏的问题，全面引入 Mozilla PDF.js 引擎。
+              - 将官方 MDAC Slip PDF 原件在应用内逐页高清晰度绘制为 Canvas，双指可自由缩放查看，完美呈现印章、排版与条码。
+            - **顶部新增「手机浏览器打开」快捷入口**：
+              - 一键调用手机默认浏览器或外部 PDF 查看器直接打开/保存原生 PDF 文件。
+            - **已同步更新 WU JUN 官方原生 MDAC Slip PDF**：
+              - 数据库与存储已同步入库 WU JUN 的官方原生 PDF 凭证，重新查看即可享受完整 PDF 原件排版。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.8.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

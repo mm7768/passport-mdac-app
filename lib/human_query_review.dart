@@ -545,12 +545,126 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
   final String url;
   final bool isPdf;
   final String title;
+
+  String _buildPdfViewerHtml(String pdfUrl) {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=4.0, user-scalable=yes">
+  <title>MDAC Slip Preview</title>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background-color: #323639;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      min-height: 100vh;
+    }
+    #loading {
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      margin-top: 50px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    canvas {
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      border-radius: 4px;
+      background-color: #ffffff;
+    }
+    #error-box {
+      display: none;
+      color: #ff8080;
+      background: rgba(255,0,0,0.1);
+      padding: 16px;
+      border-radius: 8px;
+      margin-top: 30px;
+      text-align: center;
+      font-family: sans-serif;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    <span>正在排版渲染官方 PDF 凭证...</span>
+  </div>
+  <div id="error-box"></div>
+  <div id="pdf-container"></div>
+
+  <script>
+    const pdfUrl = "$pdfUrl";
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+    const loadingTask = pdfjsLib.getDocument(pdfUrl);
+    loadingTask.promise.then(function(pdf) {
+      document.getElementById('loading').style.display = 'none';
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        pdf.getPage(pageNum).then(function(page) {
+          const scale = 2.0;
+          const viewport = page.getViewport({ scale: scale });
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          document.getElementById('pdf-container').appendChild(canvas);
+          page.render({ canvasContext: context, viewport: viewport });
+        });
+      }
+    }).catch(function(error) {
+      document.getElementById('loading').style.display = 'none';
+      const errBox = document.getElementById('error-box');
+      errBox.style.display = 'block';
+      errBox.innerText = '渲染 PDF 异常：' + error.message;
+    });
+  </script>
+</body>
+</html>
+''';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
         actions: [
+          if (isPdf)
+            IconButton(
+              icon: const Icon(Icons.open_in_browser_rounded),
+              tooltip: '手机浏览器打开',
+              onPressed: () async {
+                try {
+                  await InAppBrowser.openWithSystemBrowser(url: WebUri(url));
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('打开浏览器失败：$e')),
+                    );
+                  }
+                }
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.copy_rounded),
             tooltip: '复制凭证直链',
@@ -575,11 +689,11 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
               child: const SafeArea(
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline, size: 16, color: Color(0xFF5F6368)),
+                    Icon(Icons.touch_app_outlined, size: 16, color: Color(0xFF5F6368)),
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '提示：若手机未排版显示 PDF，可点右上角复制直链并在浏览器中直接打开。',
+                        '双指手势可缩放浏览 · 右上角支持一键在手机浏览器打开或复制直链。',
                         style: TextStyle(fontSize: 11, color: Color(0xFF5F6368)),
                       ),
                     ),
@@ -590,7 +704,11 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
           : null,
       body: isPdf
           ? InAppWebView(
-              initialUrlRequest: URLRequest(url: WebUri(url)),
+              initialData: InAppWebViewInitialData(
+                data: _buildPdfViewerHtml(url),
+                mimeType: 'text/html',
+                encoding: 'utf-8',
+              ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 supportZoom: true,
