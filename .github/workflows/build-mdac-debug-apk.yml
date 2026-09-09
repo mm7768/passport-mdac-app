@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.10.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.9-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
+          name: PassportMDAC-v1.0.10-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.10.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,18 +67,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.9
-          name: "Passport MDAC Desk v1.0.9 (内置 PDF.js 原生排版渲染 · 彻底告别黑屏 · 增加手机浏览器直开)"
+          tag_name: v1.0.10
+          name: "Passport MDAC Desk v1.0.10 (手机端人工核验直出官方 PDF · 修复闭环流转)"
           body: |
-            ### v1.0.9 更新内容：
-            - **内置 PDF.js Canvas 原生排版渲染，解决 Android WebView 黑屏**：
-              - 针对安卓系统 WebView 无法原生排版渲染 PDF 导致黑屏的问题，全面引入 Mozilla PDF.js 引擎。
-              - 将官方 MDAC Slip PDF 原件在应用内逐页高清晰度绘制为 Canvas，双指可自由缩放查看，完美呈现印章、排版与条码。
-            - **顶部新增「手机浏览器打开」快捷入口**：
-              - 一键调用手机默认浏览器或外部 PDF 查看器直接打开/保存原生 PDF 文件。
-            - **已同步更新 WU JUN 官方原生 MDAC Slip PDF**：
-              - 数据库与存储已同步入库 WU JUN 的官方原生 PDF 凭证，重新查看即可享受完整 PDF 原件排版。
+            ### v1.0.10 更新内容：
+            - **手机端人工核验直接提取官方原版 PDF**：
+              - 在手机人工核验界面完成滑块并点击【查到记录】时，App 自动通过当前验证会话直接提取官方原版 PDF 并上传。
+              - 摆脱截图降级，手机端人工介入核验也能 100% 产出带有防伪印章和条码的官方原版 MDAC PDF。
+            - **优化人工核验提示**：
+              - 修复初始加载时的下载嗅探误报，消除误导性的红字提示。
+            - **批量任务联动闭环**：
+              - 手机端核验确认后，原任务批次自动标记为完成并同步更新统计。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.9.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.10.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -609,35 +609,46 @@ async def query_and_capture_page(
                                 target_row = rows[0]
 
                             if target_row is not None:
-                                row_text = await target_row.inner_text()
-                                trip_match = re.search(r"(\d{15,30})", row_text)
-                                if trip_match:
-                                    target_trip_id = trip_match.group(1)
+                                # 优先从目标行的 onclick="return printSlip('...');" 提取完整的官方 Trip ID（包含护照前缀字母）
+                                link_locator = target_row.locator("a[onclick*='printSlip']").first
+                                if await link_locator.count() > 0:
+                                    onclick_attr = await link_locator.get_attribute("onclick") or ""
+                                    m = re.search(r"printSlip\(['\"]?([a-zA-Z0-9_-]+)['\"]?\)", onclick_attr)
+                                    if m:
+                                        target_trip_id = m.group(1)
 
-                                download_trigger = target_row.locator(
-                                    "a[onclick*='printSlip'], a:has(img), img[src*='adobe' i], img[src*='pdf' i], td:last-child a, td:last-child img"
-                                ).first
+                                if not target_trip_id:
+                                    row_text = await target_row.inner_text()
+                                    trip_match = re.search(r"([A-Za-z0-9]{15,35})", row_text)
+                                    if trip_match:
+                                        target_trip_id = trip_match.group(1)
 
-                                if await download_trigger.count() > 0:
-                                    LOG.info("找到官方 MDAC Slip PDF 下载图标/链接 (Trip ID: %s)，正在触发下载...", target_trip_id or "首行")
-                                    async with page.expect_download(timeout=20000) as dl_info:
-                                        await download_trigger.click()
-                                    dl = await dl_info.value
-                                    temp_path = await dl.path()
-                                    with open(temp_path, "rb") as f:
-                                        content = f.read()
-                                    if len(content) >= 4 and content.startswith(b"%PDF"):
-                                        pdf_downloaded = content
-                                elif target_trip_id:
-                                    LOG.info("尝试通过执行 printSlip('%s') 触发官方 PDF 下载...", target_trip_id)
-                                    async with page.expect_download(timeout=20000) as dl_info:
-                                        await page.evaluate("ti => printSlip(ti)", target_trip_id)
-                                    dl = await dl_info.value
-                                    temp_path = await dl.path()
-                                    with open(temp_path, "rb") as f:
-                                        content = f.read()
-                                    if len(content) >= 4 and content.startswith(b"%PDF"):
-                                        pdf_downloaded = content
+                                LOG.info("通过 requestSubmit(cetakSlip) 触发官方 PDF 下载 (Trip ID: %s)...", target_trip_id or "首行")
+                                async with page.expect_download(timeout=25000) as dl_info:
+                                    await page.evaluate("""ti => {
+                                        let trip = ti;
+                                        if (!trip) {
+                                            const a = document.querySelector("a[onclick*='printSlip']");
+                                            if (a) {
+                                                const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
+                                                if (m) trip = m[1];
+                                            }
+                                        }
+                                        const h = document.getElementById('hTripId');
+                                        if (h && trip) { h.value = trip; }
+                                        const c = document.getElementById('cetakSlip');
+                                        if (c && c.form) {
+                                            c.form.requestSubmit(c);
+                                        } else if (window.printSlip && trip) {
+                                            window.printSlip(trip);
+                                        }
+                                    }""", target_trip_id or "")
+                                dl = await dl_info.value
+                                temp_path = await dl.path()
+                                with open(temp_path, "rb") as f:
+                                    content = f.read()
+                                if len(content) >= 4 and content.startswith(b"%PDF"):
+                                    pdf_downloaded = content
                         except Exception as dl_err:
                             LOG.warning("尝试下载官方 MDAC PDF 失败: %s，将回退全页截图", dl_err)
 

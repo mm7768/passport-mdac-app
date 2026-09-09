@@ -167,6 +167,10 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
 
   Future<void> _captureOfficialPdf(DownloadStartRequest request) async {
     if (_visitPass || _capturingPdf) return;
+    final urlStr = request.url.toString().toLowerCase();
+    if (!urlStr.contains('slip') && !urlStr.contains('.pdf') && !urlStr.contains('print')) {
+      return;
+    }
     setState(() {
       _capturingPdf = true;
       _error = null;
@@ -199,11 +203,10 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
         _officialPdfName = request.suggestedFilename ?? 'registration.pdf';
         _capturingPdf = false;
       });
-    } catch (exception) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _capturingPdf = false;
-        _error = '自动保存官方 PDF 失败：$exception。仍可使用结果页截图作为备用凭证。';
       });
     } finally {
       client.close(force: true);
@@ -237,6 +240,56 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
         true;
   }
 
+  Future<Uint8List?> _extractPdfFromPage() async {
+    final controller = _controller;
+    if (controller == null) return null;
+    try {
+      const script = '''
+(async () => {
+  try {
+    const a = document.querySelector("a[onclick*='printSlip']");
+    let trip = null;
+    if (a) {
+      const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
+      if (m) trip = m[1];
+    }
+    if (!trip) {
+      const h = document.getElementById('hTripId');
+      if (h && h.value) trip = h.value;
+    }
+    if (!trip) return null;
+    const fd = new FormData();
+    fd.append('hTripId', trip);
+    const resp = await fetch('https://imigresen-online.imi.gov.my/mdac/register?printSlip', {
+      method: 'POST',
+      body: fd,
+      credentials: 'include'
+    });
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    if (bytes.length < 4 || bytes[0] !== 0x25 || bytes[1] !== 0x50 || bytes[2] !== 0x44 || bytes[3] !== 0x46) {
+      return null;
+    }
+    let binary = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  } catch (e) {
+    return null;
+  }
+})()
+''';
+      final dynamic base64Result = await controller.evaluateJavascript(source: script);
+      if (base64Result != null && base64Result is String && base64Result.isNotEmpty) {
+        return base64Decode(base64Result);
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Future<void> _finish(String outcome) async {
     if (_finishing || _itemId == null || !_pageLoaded) return;
     if (outcome == 'FOUND' && !_visitPass) {
@@ -266,16 +319,10 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     String? screenshotPath;
     try {
       if (outcome == 'FOUND' || outcome == 'PAGE_ERROR') {
-        final Uint8List? image = await _controller?.takeScreenshot(
-          screenshotConfiguration: ScreenshotConfiguration(
-            compressFormat: CompressFormat.PNG,
-            quality: 100,
-            afterScreenUpdates: true,
-          ),
-        );
-        if (image == null || image.isEmpty) {
-          throw const FormatException('网页截图为空，请保持结果页打开后重试。');
+        if (!_visitPass && outcome == 'FOUND' && _officialPdfBytes == null) {
+          _officialPdfBytes = await _extractPdfFromPage();
         }
+
         if (!_visitPass && outcome == 'FOUND' && _officialPdfBytes != null) {
           screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
             itemId: _itemId!,
@@ -284,6 +331,16 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
             contentType: 'application/pdf',
           );
         } else {
+          final Uint8List? image = await _controller?.takeScreenshot(
+            screenshotConfiguration: ScreenshotConfiguration(
+              compressFormat: CompressFormat.PNG,
+              quality: 100,
+              afterScreenUpdates: true,
+            ),
+          );
+          if (image == null || image.isEmpty) {
+            throw const FormatException('网页截图为空，请保持结果页打开后重试。');
+          }
           screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
             itemId: _itemId!,
             bytes: image,
