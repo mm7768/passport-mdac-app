@@ -234,20 +234,95 @@ class SupabaseAdminClient:
         return dict(rows[0])
 
     def get_runtime_input(self, item_id: str) -> dict[str, str]:
-        rows = self._rpc(
-            "get_visit_pass_check_runtime_input",
-            {"p_item_id": item_id, "p_worker_id": self.config.worker_id},
+        # 1. 优先尝试调用 RPC
+        try:
+            rows = self._rpc(
+                "get_visit_pass_check_runtime_input",
+                {"p_item_id": item_id, "p_worker_id": self.config.worker_id},
+            )
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                row = dict(rows[0])
+                return {
+                    "passport_number": normalize_passport(row.get("passport_number")),
+                    "nationality": normalize_nationality(row.get("nationality")),
+                    "email": normalize_email(row.get("email")),
+                    "region_code": normalize_region_code(row.get("region_code")),
+                    "mobile": normalize_mobile(row.get("mobile")),
+                    "pin_value": normalize_pin(row.get("pin_value")),
+                }
+        except Exception:
+            pass
+
+        # 2. 若 RPC 不存在，直接通过服务角色权限查询对应表
+        item_resp = self.session.get(
+            f"{self.rest_url}/automation_items",
+            params={"id": f"eq.{item_id}", "select": "id, batch_id, customer_id, customer_snapshot"},
+            timeout=self.config.request_timeout_seconds,
         )
-        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            raise WorkerError("Check Visit Pass 运行时输入返回格式不正确")
-        row = dict(rows[0])
+        if not item_resp.ok or not item_resp.json():
+            raise WorkerError(f"无法读取任务项 {item_id}")
+        item = item_resp.json()[0]
+        batch_id = item.get("batch_id")
+        customer_id = item.get("customer_id")
+        snapshot = item.get("customer_snapshot") or {}
+
+        passport = snapshot.get("passport_number") or ""
+        nationality = snapshot.get("nationality") or ""
+
+        # 若快照中缺少护照或国籍，从 customers 表补充
+        if (not passport or not nationality) and customer_id:
+            c_resp = self.session.get(
+                f"{self.rest_url}/customers",
+                params={"id": f"eq.{customer_id}", "select": "passport_number, nationality"},
+                timeout=self.config.request_timeout_seconds,
+            )
+            if c_resp.ok and c_resp.json():
+                cust = c_resp.json()[0]
+                passport = passport or cust.get("passport_number")
+                nationality = nationality or cust.get("nationality")
+
+        # 从 batch 的 settings_snapshot 读取联系信息
+        email = ""
+        region_code = ""
+        mobile = ""
+        if batch_id:
+            b_resp = self.session.get(
+                f"{self.rest_url}/automation_batches",
+                params={"id": f"eq.{batch_id}", "select": "visit_pass_settings_snapshot, mdac_settings_snapshot"},
+                timeout=self.config.request_timeout_seconds,
+            )
+            if b_resp.ok and b_resp.json():
+                b_data = b_resp.json()[0]
+                vp_s = b_data.get("visit_pass_settings_snapshot") or {}
+                mdac_s = b_data.get("mdac_settings_snapshot") or {}
+                email = vp_s.get("email") or mdac_s.get("email") or ""
+                region_code = vp_s.get("region_code") or mdac_s.get("region_code") or ""
+                mobile = vp_s.get("mobile") or mdac_s.get("mobile") or ""
+
+        # 读取该客户最新的有效 PIN
+        pin_val = None
+        if customer_id:
+            p_resp = self.session.get(
+                f"{self.rest_url}/email_pin_records",
+                params={
+                    "customer_id": f"eq.{customer_id}",
+                    "status": "eq.RECEIVED",
+                    "order": "received_at.desc,created_at.desc",
+                    "limit": "1",
+                    "select": "pin_value",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if p_resp.ok and p_resp.json():
+                pin_val = p_resp.json()[0].get("pin_value")
+
         result = {
-            "passport_number": normalize_passport(row.get("passport_number")),
-            "nationality": normalize_nationality(row.get("nationality")),
-            "email": normalize_email(row.get("email")),
-            "region_code": normalize_region_code(row.get("region_code")),
-            "mobile": normalize_mobile(row.get("mobile")),
-            "pin_value": normalize_pin(row.get("pin_value")),
+            "passport_number": normalize_passport(passport),
+            "nationality": normalize_nationality(nationality),
+            "email": normalize_email(email),
+            "region_code": normalize_region_code(region_code),
+            "mobile": normalize_mobile(mobile),
+            "pin_value": normalize_pin(pin_val),
         }
         if not result["passport_number"] or not result["nationality"] or not result["pin_value"]:
             raise WorkerError("Check Visit Pass 运行时输入缺少护照号、国籍或 PIN")
