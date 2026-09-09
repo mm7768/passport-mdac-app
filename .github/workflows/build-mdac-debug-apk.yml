@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.4-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
+          name: PassportMDAC-v1.0.5-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,20 +67,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.4
-          name: "Passport MDAC Desk v1.0.4 (导出已获取 PIN 客户 Excel/CSV/剪贴板 · 移动端一键全选 · 修复 Android 文件保存)"
+          tag_name: v1.0.5
+          name: "Passport MDAC Desk v1.0.5 (全自动 Check Registration 与 Visit Pass · 接入后台 Worker 自动滑块与 PDF 下载)"
           body: |
-            ### v1.0.4 更新内容：
-            - **导出已获取 PIN 客户清单**：
-              - 严格按 5 列标准输出：`A:名字`、`B:护照号`、`C:pin`、`D:注册使用的gmail`、`E:注册使用的手机号码`。
-              - 支持直接保存为标准 Excel（`.xls`）、带 BOM UTF-8 CSV（`.csv`），以及一键复制为制表符表格直接粘贴。
-              - 仅限已获取 PIN 的客户导出；混合多选时自动过滤并提示排除无 PIN 客户。
-            - **移动端一键全选与快捷筛选**：
-              - 新增「只看已获取 PIN」筛选标签。
-              - 修复手机屏幕下表头全选框被隐藏的问题，在卡片顶部与筛选栏均新增显式「全选 / 取消全选」控件。
-            - **修复 Android 文件保存 PathNotFoundException 错误**：
-              - 解决 Android SAF (Storage Access Framework) 返回虚拟路径导致的保存报错问题。
+            ### v1.0.5 更新内容：
+            - **自动接入后台 Worker（彻底移除手机人工滑块限制）**：
+              - 点击「🔍 查 Registration」与「🪪 查 Visit Pass」不再弹出人工滑块弹窗或在手机逐位打开 WebView。
+              - 自动校验所选客户是否已具备 6 位 PIN 码及环境配置。
+              - 一键将查询任务排队下发至 Supabase，由本地/云端部署的自动化 Worker（Playwright）在后台并发自动填表、识别并滑过验证码拼图、核对最近 MDAC 记录并自动保存官方凭证 PDF。
+            - **界面操作与排队交互优化**：
+              - 增强确认对话框，清晰展示任务步骤及自动化执行提示。
+              - 提交后自动刷新任务列表并重置选择状态，直观反馈执行进度。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.4.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.5.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

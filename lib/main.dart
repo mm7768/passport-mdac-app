@@ -3419,7 +3419,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
           .toList(growable: false);
       for (final customer in customers) {
         if ((customer.pin ?? '').trim().isEmpty) {
-          showToast(context, '${customer.fullName} 没有可用 PIN。', error: true);
+          showToast(context, '${customer.fullName} 尚未获取 PIN，无法查询。', error: true);
           return;
         }
       }
@@ -3436,63 +3436,38 @@ class _CustomersScreenState extends State<CustomersScreen> {
       final proceed = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: Text('${taskTypeLabel(type)} · 人工滑块'),
+          title: Row(
+            children: [
+              Icon(
+                visitPass ? Icons.badge_outlined : Icons.manage_search_rounded,
+                color: AppTheme.teal,
+              ),
+              const SizedBox(width: 8),
+              Text('启动 ${taskTypeLabel(type)}'),
+            ],
+          ),
           content: Text(
-            '共 ${customers.length} 位客户，将逐位打开官方查询页。\n\n'
-            'App 自动填写资料；你负责完成滑块、点击 Search 并判断结果。'
-            'Check Registration 只接受与最近一次成功 MDAC 入境/离境日期一致的记录；官方 PDF 优先保存，截图作为备用凭证。',
+            '将为已选 ${customers.length} 位客户排队自动查询任务：\n\n'
+            '• 自动填入护照号码与 6 位 PIN 码\n'
+            '• 自动完成官方滑块拼图验证\n'
+            '• 自动核对并下载官方电子凭证 PDF\n\n'
+            '确认立即排队并交由 Worker 自动执行吗？',
+            style: const TextStyle(height: 1.5),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
               child: const Text('取消'),
             ),
-            FilledButton(
+            FilledButton.icon(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('开始'),
+              icon: const Icon(Icons.rocket_launch_rounded, size: 16),
+              label: const Text('确认并排队'),
             ),
           ],
         ),
       );
       if (proceed != true || !mounted) return;
-
-      var completed = 0;
-      for (final customer in customers) {
-        final result = await Navigator.of(context).push<bool>(
-          MaterialPageRoute(
-            builder: (_) => HumanQueryReviewPage(
-              kind: visitPass
-                  ? HumanQueryKind.visitPass
-                  : HumanQueryKind.registration,
-              customerId: customer.id,
-              customerName: customer.fullName,
-              passportNumber: customer.passportNumber,
-              nationality: customer.nationality,
-              pin: customer.pin!,
-              email: settings?.mdacEmail ?? '',
-              regionCode: settings?.regionCode ?? '',
-              mobile: settings?.mdacPhone ?? '',
-            ),
-          ),
-        );
-        if (!mounted) return;
-        if (result != true) break;
-        completed += 1;
-        await widget.repository.syncAutomationTasksFromSupabase();
-        await widget.repository.syncCustomersFromSupabase();
-      }
-      if (!mounted) return;
-      if (completed == customers.length) {
-        setState(() => selected.clear());
-      }
-      showToast(
-        context,
-        completed == customers.length
-            ? '${taskTypeLabel(type)} 已完成 ${customers.length} 位。'
-            : '已完成 $completed/${customers.length} 位；未完成任务可在任务页继续处理或删除。',
-        error: completed != customers.length,
-      );
-      return;
     }
 
     final error = await widget.repository.createTaskAsync(
@@ -3500,11 +3475,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
       customerIds: selected.toList(),
       actor: widget.actor,
     );
+    if (!mounted) return;
     if (error != null) {
       showToast(context, error, error: true);
     } else {
       setState(() => selected.clear());
-      showToast(context, '${taskTypeLabel(type)} 已排队。');
+      showToast(context, '${taskTypeLabel(type)} 批次已排队，后台 Worker 将自动执行。');
     }
   }
 
