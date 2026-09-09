@@ -597,6 +597,53 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
       );
     }
   }
+  Future<void> _deleteEvidence(Map<String, dynamic> row) async {
+    final checkId = row['id']?.toString() ?? '';
+    final type = row['type']?.toString() ?? 'REGISTRATION_CHECK';
+    final screenshotPath = row['screenshot_path']?.toString();
+    final isPdf = (screenshotPath ?? '').toLowerCase().endsWith('.pdf');
+    final label = isPdf ? '官方 PDF 凭证' : '查询截图';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('删除$label'),
+        content: Text('确定要从该客户的档案中删除此$label吗？\n删除后该条核验凭证将不可恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFBA1A1A)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await SupabaseGateway.deleteCustomerHumanEvidence(
+        checkId: checkId,
+        type: type,
+        screenshotPath: screenshotPath,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除$label')),
+      );
+      _reload();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('删除失败：$e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<Map<String, dynamic>>>(
@@ -647,7 +694,23 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
                   subtitle: Text(
                     '${row['normalized_status'] ?? ''} · ${row['checked_at'] ?? ''}',
                   ),
-                  trailing: const Icon(Icons.open_in_new_rounded),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.open_in_new_rounded, size: 20),
+                        tooltip: '查看凭证',
+                        color: const Color(0xFF087F78),
+                        onPressed: () => _open(row),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                        tooltip: '删除此凭证',
+                        color: const Color(0xFFBA1A1A),
+                        onPressed: () => _deleteEvidence(row),
+                      ),
+                    ],
+                  ),
                   onTap: () => _open(row),
                 ),
             ],

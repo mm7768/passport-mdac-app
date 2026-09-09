@@ -488,6 +488,27 @@ class SupabaseGateway {
     );
   }
 
+  static Future<void> deleteCustomerHumanEvidence({
+    required String checkId,
+    required String type,
+    String? screenshotPath,
+  }) async {
+    final client = _requiredClient;
+    final table = type == 'VISIT_PASS_CHECK'
+        ? 'visit_pass_checks'
+        : 'registration_checks';
+
+    // 1. 删除记录或清空其截图字段（直接删除该条 check 凭证记录）
+    await client.from(table).delete().eq('id', checkId);
+
+    // 2. 如果存在 Storage 路径，尝试从 Storage 中清理对应凭证文件
+    if (screenshotPath != null && screenshotPath.isNotEmpty) {
+      try {
+        await client.storage.from('passport-documents').remove([screenshotPath]);
+      } catch (_) {}
+    }
+  }
+
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
     final row = await _requiredClient
         .from('gmail_settings')

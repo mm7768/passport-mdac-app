@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.11.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.11-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.11.apk
+          name: PassportMDAC-v1.0.12-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,15 +67,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.11
-          name: "Passport MDAC Desk v1.0.11 (手机端人工核验原生桥接直出官方原版 PDF)"
+          tag_name: v1.0.12
+          name: "Passport MDAC Desk v1.0.12 (客户档案支持删除查询凭证与截图)"
           body: |
-            ### v1.0.11 更新内容：
-            - **原生桥接解决 PDF 异步提取问题**：
-              - 使用 Flutter 与 Android WebView 专属的 JavaScriptChannel / addJavaScriptHandler 机制回传官方 PDF 字节。
-              - 修复了 v1.0.10 在 Android WebView 同步 evaluateJavascript 遇到 Promise 提前返回导致降级截屏的缺陷。
-              - 强制要求 Check Registration 必须上传官方 %PDF 凭证，彻底杜绝截屏误传。
+            ### v1.0.12 更新内容：
+            - **客户档案支持手动删除查询截图与 PDF 凭证**：
+              - 在客户档案底部的【官方查询凭证】列表中，每条凭证增加删除操作按钮与二次确认弹窗。
+              - 点击删除后，自动从数据库及私有 Storage 中清理对应凭证文件，方便用户移除误存的截图或历史残留凭证。
+            - **手机端人工核验原生桥接直出官方原版 PDF**：
+              - 采用原生消息桥接，确保 Registration 查询核验 100% 提取防伪印章与条形码的官方 %PDF 凭证。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.11.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.12.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
