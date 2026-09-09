@@ -568,10 +568,14 @@ async def query_and_capture_page(
                     break
 
                 if (
-                    "movement record" in lowered_text
+                    "visit pass information" in lowered_text
+                    or "type of pass" in lowered_text
+                    or "date of pass expiry" in lowered_text
+                    or "movement record" in lowered_text
                     or "rekod pergerakan" in lowered_text
                     or "pass type" in lowered_text
                     or "jenis pas" in lowered_text
+                    or "social visit pass" in lowered_text
                     or "date of entry" in lowered_text
                     or "tarikh masuk" in lowered_text
                 ):

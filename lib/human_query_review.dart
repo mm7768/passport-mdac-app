@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -215,7 +216,9 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
 
   Future<bool> _confirmOutcome(String outcome) async {
     final message = switch (outcome) {
-      'FOUND' => '请确认官方页面已经明确显示有效记录。确认后 App 会立即截图；截图上传成功后才会完成任务。',
+      'FOUND' => _visitPass
+          ? '请确认官方页面已经明确显示有效 Visit Pass。确认后 App 会立即保存截图并完成任务。'
+          : '请确认官方页面已查到有效 MDAC 记录。确认后 App 会提取官方原版 PDF 凭证并完成任务。',
       'NO_RECORD' => '请确认官方页面明确显示没有记录。本结果不会保存截图。',
       'PIN_INVALID' => '请确认官方页面明确提示 PIN 错误。本结果不会保存截图。',
       _ => '请确认当前官方页面异常。App 会保存诊断截图并将任务保留为待处理。',
@@ -243,12 +246,30 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
   Future<Uint8List?> _extractPdfFromPage() async {
     final controller = _controller;
     if (controller == null) return null;
+
+    final completer = Completer<String?>();
+    const handlerName = 'pdfExtractedBridge';
+
     try {
+      controller.removeJavaScriptHandler(handlerName: handlerName);
+    } catch (_) {}
+
+    controller.addJavaScriptHandler(
+      handlerName: handlerName,
+      callback: (args) {
+        final res = args.isNotEmpty ? args[0]?.toString() : null;
+        if (!completer.isCompleted) completer.complete(res);
+        return null;
+      },
+    );
+
+    try {
+      // 优先注入脚本通过 addJavaScriptHandler 回传结果
       const script = '''
 (async () => {
   try {
-    const a = document.querySelector("a[onclick*='printSlip']");
     let trip = null;
+    const a = document.querySelector("a[onclick*='printSlip']");
     if (a) {
       const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
       if (m) trip = m[1];
@@ -257,7 +278,21 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
       const h = document.getElementById('hTripId');
       if (h && h.value) trip = h.value;
     }
-    if (!trip) return null;
+    if (!trip) {
+      const inputs = Array.from(document.querySelectorAll("input[type='hidden']"));
+      for (const el of inputs) {
+        if (el.value && /^[A-Z0-9_-]{10,}\$/i.test(el.value)) {
+          trip = el.value;
+          break;
+        }
+      }
+    }
+    if (!trip) {
+      if (window.flutter_inappwebview) {
+        window.flutter_inappwebview.callHandler('pdfExtractedBridge', null);
+      }
+      return;
+    }
     const fd = new FormData();
     fd.append('hTripId', trip);
     const resp = await fetch('https://imigresen-online.imi.gov.my/mdac/register?printSlip', {
@@ -265,28 +300,57 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
       body: fd,
       credentials: 'include'
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      if (window.flutter_inappwebview) {
+        window.flutter_inappwebview.callHandler('pdfExtractedBridge', null);
+      }
+      return;
+    }
     const buf = await resp.arrayBuffer();
     const bytes = new Uint8Array(buf);
     if (bytes.length < 4 || bytes[0] !== 0x25 || bytes[1] !== 0x50 || bytes[2] !== 0x44 || bytes[3] !== 0x46) {
-      return null;
+      if (window.flutter_inappwebview) {
+        window.flutter_inappwebview.callHandler('pdfExtractedBridge', null);
+      }
+      return;
     }
     let binary = '';
     const chunk = 8192;
     for (let i = 0; i < bytes.length; i += chunk) {
       binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
-    return btoa(binary);
+    const b64 = btoa(binary);
+    if (window.flutter_inappwebview) {
+      window.flutter_inappwebview.callHandler('pdfExtractedBridge', b64);
+    }
   } catch (e) {
-    return null;
+    if (window.flutter_inappwebview) {
+      window.flutter_inappwebview.callHandler('pdfExtractedBridge', null);
+    }
   }
-})()
+})();
 ''';
-      final dynamic base64Result = await controller.evaluateJavascript(source: script);
-      if (base64Result != null && base64Result is String && base64Result.isNotEmpty) {
-        return base64Decode(base64Result);
+      await controller.evaluateJavascript(source: script);
+      final b64Result = await completer.future.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => null,
+      );
+
+      if (b64Result != null && b64Result.isNotEmpty) {
+        final decoded = base64Decode(b64Result);
+        if (decoded.length > 100 &&
+            decoded[0] == 0x25 &&
+            decoded[1] == 0x50 &&
+            decoded[2] == 0x44 &&
+            decoded[3] == 0x46) {
+          return decoded;
+        }
       }
-    } catch (_) {}
+    } catch (_) {} finally {
+      try {
+        controller.removeJavaScriptHandler(handlerName: handlerName);
+      } catch (_) {}
+    }
     return null;
   }
 
@@ -319,11 +383,13 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
     String? screenshotPath;
     try {
       if (outcome == 'FOUND' || outcome == 'PAGE_ERROR') {
-        if (!_visitPass && outcome == 'FOUND' && _officialPdfBytes == null) {
-          _officialPdfBytes = await _extractPdfFromPage();
-        }
-
-        if (!_visitPass && outcome == 'FOUND' && _officialPdfBytes != null) {
+        if (!_visitPass && outcome == 'FOUND') {
+          if (_officialPdfBytes == null) {
+            _officialPdfBytes = await _extractPdfFromPage();
+          }
+          if (_officialPdfBytes == null) {
+            throw const FormatException('未能提取到官方原版 PDF 文件，请确认页面已完全显示查询结果表格后再试。');
+          }
           screenshotPath = await SupabaseGateway.uploadHumanQueryEvidence(
             itemId: _itemId!,
             bytes: _officialPdfBytes!,
