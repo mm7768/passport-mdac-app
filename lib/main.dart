@@ -1036,6 +1036,20 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> requeueFailedAutomationItems(String batchId, String actor) async {
+    if (!remoteMode) return null;
+    try {
+      await SupabaseGateway.requeueFailedItems(batchId);
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 重新排队未成功项 $batchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '重新排队未成功项失败：$exception';
+    }
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -6871,26 +6885,59 @@ class TaskRow extends StatelessWidget {
         ),
         if (needsIntervention) ...[
           const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.tonalIcon(
-              onPressed: () => openTaskHumanIntervention(context, task, repository),
-              icon: const Icon(Icons.touch_app_outlined, size: 16),
-              label: Text(
-                task.status == TaskStatus.needsReview
-                    ? '人工介入处理 / 查看明细与待核验项'
-                    : '人工介入处理 / 查看未成功项',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-              ),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFECE6FA),
-                foregroundColor: const Color(0xFF6750A4),
-                padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: () => openTaskHumanIntervention(context, task, repository),
+                  icon: const Icon(Icons.touch_app_outlined, size: 15),
+                  label: Text(
+                    task.status == TaskStatus.needsReview
+                        ? '人工介入处理'
+                        : '查看未成功项',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFECE6FA),
+                    foregroundColor: const Color(0xFF6750A4),
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
                 ),
               ),
-            ),
+              if (task.failedCount > 0 || task.status == TaskStatus.needsReview) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: () async {
+                      final err = await repository.requeueFailedAutomationItems(task.id, '当前用户');
+                      if (context.mounted) {
+                        if (err != null) {
+                          showToast(context, err, error: true);
+                        } else {
+                          showToast(context, '已将失败项重新排队，Worker 将继续处理。');
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 15),
+                    label: Text(
+                      task.failedCount > 0 ? '重试失败项 (${task.failedCount})' : '重试未完成项',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFE8F5E9),
+                      foregroundColor: const Color(0xFF2E7D32),
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ],
       ],
@@ -8513,7 +8560,25 @@ Future<void> showTaskDetail(
             ),
           ),
         if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
-            (task.status == TaskStatus.needsReview || task.status == TaskStatus.failed || task.failedCount > 0))
+            (task.status == TaskStatus.needsReview || task.status == TaskStatus.failed || task.failedCount > 0)) ...[
+          FilledButton.tonalIcon(
+            onPressed: () async {
+              final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (error != null) {
+                showToast(context, error, error: true);
+              } else {
+                showToast(context, '已将失败客户重新排队，Worker 将继续处理。');
+              }
+            },
+            icon: const Icon(Icons.refresh_rounded, size: 16),
+            label: Text(task.failedCount > 0 ? '仅重试失败项 (${task.failedCount})' : '仅重试未完成项'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFE8F5E9),
+              foregroundColor: const Color(0xFF2E7D32),
+            ),
+          ),
           FilledButton.tonalIcon(
             onPressed: () async {
               final error = await repository.requeueAutomationTask(task.id, '当前用户');
@@ -8525,9 +8590,10 @@ Future<void> showTaskDetail(
                 showToast(context, '批次已重新排队，本地 Worker 将自动重试。');
               }
             },
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: const Text('一键重新自动排队'),
+            icon: const Icon(Icons.replay_all_rounded, size: 16),
+            label: const Text('全部重新排队'),
           ),
+        ],
         TextButton(
           onPressed: () => Navigator.pop(dialogContext),
           child: const Text('关闭'),

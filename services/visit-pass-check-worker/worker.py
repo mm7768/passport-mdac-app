@@ -730,30 +730,31 @@ async def query_and_capture_page(
             LOG.info("已点击 Submit 查询，等待结果返回...")
 
             outcome: str | None = None
-            for _ in range(15):
+            explicit_invalid_pin = False
+            explicit_no_record = False
+            has_vp_table = False
+
+            # 等待长达 35 秒，确保官方移民局服务器充分响应
+            for _ in range(35):
                 await page.wait_for_timeout(1000)
 
                 all_dialog_text = " ".join(dialog_messages).lower()
                 if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
-                    LOG.warning("官方弹窗明确提示：PIN 无效 (PIN_INVALID)")
-                    outcome = "PIN_INVALID"
+                    explicit_invalid_pin = True
                     break
                 if "no record" in all_dialog_text or "rekod tidak dijumpai" in all_dialog_text or "tiada rekod" in all_dialog_text:
-                    LOG.info("官方弹窗明确提示：没有找到记录 (NO_RECORD)")
-                    outcome = "NO_RECORD"
+                    explicit_no_record = True
                     break
 
                 page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
                 lowered_text = page_text.lower()
 
                 if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
-                    LOG.warning("官方页面明确显示：PIN 无效 (PIN_INVALID)")
-                    outcome = "PIN_INVALID"
+                    explicit_invalid_pin = True
                     break
 
                 if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text or "tiada rekod" in lowered_text:
-                    LOG.info("官方页面明确显示：没有找到记录 (NO_RECORD)")
-                    outcome = "NO_RECORD"
+                    explicit_no_record = True
                     break
 
                 has_vp_table = (
@@ -770,92 +771,124 @@ async def query_and_capture_page(
                 )
                 if has_vp_table:
                     break
+
+            # 关键保障：等候 2.5 秒，彻底清除加载遮罩/半透明淡出层，恢复所有元素 1.0 实色渲染
+            await page.wait_for_timeout(2500)
+            await page.evaluate("""() => {
+                document.querySelectorAll('.blockUI, .loading, .spinner, .overlay, .modal-backdrop').forEach(el => el.remove());
+                document.querySelectorAll('*').forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    if (style && style.opacity && parseFloat(style.opacity) < 0.9) {
+                        el.style.opacity = '1';
+                    }
+                });
+            }""")
+            await page.wait_for_timeout(500)
 
             entry_window = entry_window_candidates(target_entry_date)
             matched_box = None
-            if outcome is None:
-                page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-                lowered_text = page_text.lower()
-                has_vp_table = (
-                    "visit pass information" in lowered_text
-                    or "type of pass" in lowered_text
-                    or "date of pass expiry" in lowered_text
-                    or "movement record" in lowered_text
-                    or "rekod pergerakan" in lowered_text
-                    or "pass type" in lowered_text
-                    or "jenis pas" in lowered_text
-                    or "social visit pass" in lowered_text
-                    or "date of entry" in lowered_text
-                    or "tarikh masuk" in lowered_text
-                )
-                if has_vp_table:
-                    matched_box = await page.evaluate(
-                        """(windowDates) => {
-                            const rows = Array.from(document.querySelectorAll('table tr'));
-                            let matchedRow = null;
-                            if (windowDates && windowDates.length > 0) {
-                                for (const r of rows) {
-                                    const text = (r.innerText || '').toUpperCase();
-                                    if (windowDates.some(d => text.includes(d.toUpperCase()))) {
-                                        matchedRow = r;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!matchedRow && (!windowDates || windowDates.length === 0)) {
-                                const tables = Array.from(document.querySelectorAll('table'));
-                                for (const t of tables) {
-                                    if ((t.innerText || '').toUpperCase().includes('VISIT PASS INFORMATION')) {
-                                        matchedRow = t;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (matchedRow) {
-                                const rect = matchedRow.getBoundingClientRect();
-                                return {
-                                    x: rect.x + window.scrollX,
-                                    y: rect.y + window.scrollY,
-                                    width: rect.width,
-                                    height: rect.height,
-                                    bottom: rect.y + window.scrollY + rect.height,
-                                    matchedText: (matchedRow.innerText || '').slice(0, 100).replace(/\\s+/g, ' ').trim(),
-                                };
-                            }
-                            return null;
-                        }""",
-                        entry_window,
-                    )
-                    if entry_window:
-                        if matched_box:
-                            LOG.info(
-                                "官方页面查到匹配目标入境日期范围 %s 的记录 (FOUND): %s",
-                                entry_window,
-                                matched_box.get("matchedText", ""),
-                            )
-                            outcome = "FOUND"
-                        else:
-                            LOG.warning(
-                                "官方页面存在记录，但未匹配目标入境日期范围 %s，标记为 NO_RECORD (未找到符合记录)",
-                                entry_window,
-                            )
-                            outcome = "NO_RECORD"
-                    else:
-                        LOG.info("官方页面查到 Visit Pass 记录 (FOUND)")
-                        outcome = "FOUND"
-                else:
-                    LOG.warning("未检测到记录或官方页面无记录，标记为 NO_RECORD (未找到符合记录)")
-                    outcome = "NO_RECORD"
+            note = None
 
-            # 方案 B 精准截图：若找到目标记录，保留页面上方输入框、滑块与表格目标行，严格裁掉目标行以下的内容
+            if explicit_invalid_pin:
+                LOG.warning("官方明确提示：PIN 无效 (PIN_INVALID)")
+                outcome = "PIN_INVALID"
+                note = "官方页面提示 PIN 错误"
+            elif explicit_no_record:
+                LOG.info("官方明确提示：没有找到记录 (NO_RECORD)")
+                outcome = "NO_RECORD"
+                note = "官方明确无此记录 (No Record Found)"
+            elif has_vp_table:
+                matched_box = await page.evaluate(
+                    """(windowDates) => {
+                        const rows = Array.from(document.querySelectorAll('table tr'));
+                        let matchedRow = null;
+                        if (windowDates && windowDates.length > 0) {
+                            for (const r of rows) {
+                                const text = (r.innerText || '').toUpperCase();
+                                if (windowDates.some(d => text.includes(d.toUpperCase()))) {
+                                    matchedRow = r;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!matchedRow && (!windowDates || windowDates.length === 0)) {
+                            const tables = Array.from(document.querySelectorAll('table'));
+                            for (const t of tables) {
+                                if ((t.innerText || '').toUpperCase().includes('VISIT PASS INFORMATION')) {
+                                    matchedRow = t;
+                                    break;
+                                }
+                            }
+                        }
+                        if (matchedRow) {
+                            const rect = matchedRow.getBoundingClientRect();
+                            return {
+                                x: rect.x + window.scrollX,
+                                y: rect.y + window.scrollY,
+                                width: rect.width,
+                                height: rect.height,
+                                bottom: rect.y + window.scrollY + rect.height,
+                                matchedText: (matchedRow.innerText || '').slice(0, 100).replace(/\\s+/g, ' ').trim(),
+                            };
+                        }
+                        return null;
+                    }""",
+                    entry_window,
+                )
+                if entry_window:
+                    if matched_box:
+                        LOG.info(
+                            "官方页面查到匹配目标入境日期范围 %s 的记录 (FOUND): %s",
+                            entry_window,
+                            matched_box.get("matchedText", ""),
+                        )
+                        outcome = "FOUND"
+                        note = f"查到匹配入境记录: {matched_box.get('matchedText', '')}"
+                    else:
+                        LOG.warning(
+                            "官方页面存在历史记录，但未匹配目标入境日期范围 %s，标记为 NO_RECORD (未找到符合记录)",
+                            entry_window,
+                        )
+                        outcome = "NO_RECORD"
+                        note = f"官方存在历史记录，但未匹配本次入境日期范围"
+                else:
+                    LOG.info("官方页面查到 Visit Pass 记录 (FOUND)")
+                    outcome = "FOUND"
+                    note = "官方查到 Visit Pass 记录"
+            else:
+                LOG.error("官方页面在 35 秒内未返回有效记录或明确提示，标记为 QUERY_TIMEOUT (查询超时)")
+                outcome = "QUERY_TIMEOUT"
+                note = "官方页面无响应超时，未得出结论"
+
+            # 截图处理：确保每张图都有实质信息
             screenshot: bytes
             doc_height = await page.evaluate("() => document.documentElement.scrollHeight || document.body.scrollHeight || 1000")
             if outcome == "FOUND" and matched_box and matched_box.get("bottom"):
-                clip_bottom = int(matched_box["bottom"] + 20)
-                clip_height = min(max(clip_bottom, 300), doc_height)
+                clip_bottom = int(matched_box["bottom"] + 25)
+                clip_height = min(max(clip_bottom, 400), doc_height)
                 LOG.info("方案 B 精准截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
                 screenshot = await page.screenshot(
                     clip={"x": 0, "y": 0, "width": 1280, "height": clip_height},
+                    type="png",
+                )
+            elif outcome == "NO_RECORD" and has_vp_table:
+                # 官方有历史旧记录：截取到历史表格底部，让使用者清晰核验历史记录
+                table_box = await page.evaluate("""() => {
+                    const t = document.querySelector('table');
+                    if (!t) return null;
+                    const r = t.getBoundingClientRect();
+                    return { bottom: r.y + window.scrollY + r.height + 25 };
+                }""")
+                clip_bottom = int(table_box["bottom"]) if table_box and table_box.get("bottom") else 750
+                clip_height = min(max(clip_bottom, 400), doc_height)
+                screenshot = await page.screenshot(
+                    clip={"x": 0, "y": 0, "width": 1280, "height": clip_height},
+                    type="png",
+                )
+            elif outcome == "NO_RECORD" and explicit_no_record:
+                # 官方明确无记录：截取包含顶部红色 No Record Found 横幅及查询输入框
+                screenshot = await page.screenshot(
+                    clip={"x": 0, "y": 0, "width": 1280, "height": min(650, doc_height)},
                     type="png",
                 )
             else:
@@ -872,11 +905,7 @@ async def query_and_capture_page(
                 "submitted": True,
                 "result_confirmed": (outcome in {"FOUND", "NO_RECORD", "PIN_INVALID"}),
                 "dialogs": dialog_messages if dialog_messages else None,
-                "note": (
-                    "未找到符合记录"
-                    if outcome == "NO_RECORD" and entry_window and not matched_box
-                    else None
-                ),
+                "note": note,
             }
             return (outcome, screenshot, summary)
         finally:
@@ -956,6 +985,10 @@ class VisitPassCheckWorker:
                 if outcome == "NEEDS_REVIEW":
                     error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
                     error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
+                elif outcome == "QUERY_TIMEOUT":
+                    outcome = "NEEDS_REVIEW"
+                    error_code = "QUERY_TIMEOUT"
+                    error_message = "官方页面无响应超时，未得出结论"
                 elif outcome == "NO_RECORD":
                     error_code = "NO_MATCHING_RECORD"
                     error_message = summary.get("note") or "未找到符合记录"

@@ -760,6 +760,30 @@ class SupabaseGateway {
     return <String, dynamic>{'id': batchId};
   }
 
+  static Future<void> requeueFailedItems(String batchId) async {
+    final client = _requiredClient;
+    await client
+        .from('automation_items')
+        .update({
+          'status': 'QUEUED',
+          'attempt_count': 0,
+          'error_code': null,
+          'error_message': null,
+          'result_unknown': false,
+          'started_at': null,
+          'finished_at': null,
+        })
+        .eq('batch_id', batchId)
+        .inFilter('status', ['NEEDS_REVIEW', 'FAILED']);
+    await client
+        .from('automation_batches')
+        .update({
+          'status': 'QUEUED',
+          'failed_count': 0,
+        })
+        .eq('id', batchId);
+  }
+
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
     final rows = await client

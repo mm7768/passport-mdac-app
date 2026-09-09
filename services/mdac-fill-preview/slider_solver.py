@@ -190,9 +190,11 @@ async def solve_mdac_slider(
                 )
                 await asyncio.sleep(random.uniform(0.018, 0.03))
 
-            await page.wait_for_timeout(random.randint(250, 450))
+            # 真人自然微停顿缓冲与微动，再释放鼠标
+            await page.mouse.move(current_x + random.uniform(-0.6, 0.6), handle_start_y)
+            await page.wait_for_timeout(random.randint(380, 520))
             await page.mouse.up()
-            await page.wait_for_timeout(1200)
+            await page.wait_for_timeout(1500)
 
             success = await page.evaluate(
                 """
