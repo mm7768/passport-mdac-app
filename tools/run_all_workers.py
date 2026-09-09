@@ -28,12 +28,6 @@ WORKERS = [
         "args": ["--poll"],
     },
     {
-        "name": "Gmail PIN 提取",
-        "tag": "GMAIL-PIN",
-        "script": "services/gmail-pin-worker/worker.py",
-        "args": ["--poll"],
-    },
-    {
         "name": "查 Registration",
         "tag": "CHECK-REG",
         "script": "services/registration-check-worker/worker.py",
@@ -106,9 +100,9 @@ def run_worker_loop(w_info: dict, stop_event: threading.Event) -> None:
 
 
 def main() -> None:
-    os.system("title Passport MDAC 本地 4 合 1 Worker 控制台")
+    os.system("title Passport MDAC 本地 3 合 1 Worker 控制台")
     print("=" * 65)
-    print("      Passport MDAC 本地 4 合 1 Worker 服务中心已启动")
+    print("      Passport MDAC 本地 3 合 1 Worker 服务中心已启动")
     print("=" * 65)
     print("已托管的自动化后台任务：")
     for w in WORKERS:
