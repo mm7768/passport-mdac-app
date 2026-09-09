@@ -8299,6 +8299,9 @@ Future<void> showTaskDetail(
                   final isFailed = statusStr == 'FAILED';
                   final screenshotPath = item['registration_check']?['screenshot_path']?.toString() ??
                       item['screenshot_path']?.toString() ?? '';
+                  final hasEvidence = screenshotPath.isNotEmpty;
+                  final canHumanReview = (task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
+                      (isNeedsReview || isFailed || !isSucceeded);
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 10),
@@ -8403,9 +8406,6 @@ Future<void> showTaskDetail(
                             ],
                           ),
                         ],
-                        final bool hasEvidence = screenshotPath.isNotEmpty;
-                        final bool canHumanReview = (task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
-                            (isNeedsReview || isFailed || !isSucceeded);
                         if (hasEvidence || canHumanReview) ...[
                           const SizedBox(height: 10),
                           Row(
