@@ -943,6 +943,15 @@ class SupabaseGateway {
     if (normalizedPath.isEmpty) {
       throw const FormatException('护照图片路径为空。');
     }
+    final isPdf = normalizedPath.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      return _requiredClient.storage
+          .from('passport-documents')
+          .createSignedUrl(
+            normalizedPath,
+            315360000,
+          );
+    }
     return _requiredClient.storage
         .from('passport-documents')
         .createSignedUrl(

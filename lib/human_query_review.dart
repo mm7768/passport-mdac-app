@@ -568,6 +568,26 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
           ),
         ],
       ),
+      bottomNavigationBar: isPdf
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: const Color(0xFFF1F3F4),
+              child: const SafeArea(
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: Color(0xFF5F6368)),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '提示：若手机未排版显示 PDF，可点右上角复制直链并在浏览器中直接打开。',
+                        style: TextStyle(fontSize: 11, color: Color(0xFF5F6368)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : null,
       body: isPdf
           ? InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri(url)),
@@ -577,6 +597,8 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
                 builtInZoomControls: true,
                 displayZoomControls: false,
                 useHybridComposition: true,
+                allowFileAccess: true,
+                allowContentAccess: true,
               ),
             )
           : InteractiveViewer(
