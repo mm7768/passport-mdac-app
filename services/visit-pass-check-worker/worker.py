@@ -65,6 +65,27 @@ class WorkerError(RuntimeError):
     """Expected worker or remote-service failure."""
 
 
+def _load_env_file() -> None:
+    env_file = os.getenv("ENV_FILE", "").strip()
+    candidates = [env_file] if env_file else [".env.local", ".env"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for c in candidates:
+        if not c:
+            continue
+        path = c if os.path.isabs(c) else os.path.join(script_dir, c)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+            break
+
 @dataclass(frozen=True)
 class WorkerConfig:
     supabase_url: str
@@ -85,6 +106,7 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
+        _load_env_file()
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
@@ -121,10 +143,7 @@ class WorkerConfig:
         else:
             allow_real_submit = raw_allow_submit != "false"
 
-        raw_headless = os.getenv("VISIT_PASS_CHECK_HEADLESS", "true").strip().lower()
-        if raw_headless != "true":
-            raise WorkerError("VISIT_PASS_CHECK_HEADLESS 必须严格为 true")
-        headless = True
+        headless = os.getenv("VISIT_PASS_CHECK_HEADLESS", "false").strip().lower() == "true"
 
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
@@ -782,12 +801,23 @@ def configure_logging(level: str) -> None:
 
 
 def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run one queue pass")
     parser.add_argument("--poll", action="store_true", help="run the polling loop")
     args = parser.parse_args()
     config = WorkerConfig.from_env()
     configure_logging(config.log_level)
+    print("========================================================")
+    print("   Check Visit Pass Worker 已启动（本地服务）")
+    print(f"  Worker ID: {config.worker_id}")
+    print(f"  运行模式: {config.mode} (允许真实查询: {config.allow_real_submit})")
+    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
+    print("  正在监听 Supabase Visit Pass Check 队列...")
+    print("========================================================")
     worker = VisitPassCheckWorker(config)
     if args.once:
         worker.run_once()

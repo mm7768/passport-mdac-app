@@ -1,4 +1,4 @@
-"""Async MDAC canvas slider solver for Check Visit Pass.
+"""Async MDAC canvas slider solver.
 
 Provides an asynchronous Playwright slider solver for the MDAC form using
 ddddocr slide matching and human-like track dragging.
@@ -16,7 +16,7 @@ import ddddocr
 from PIL import Image
 from playwright.async_api import Page
 
-LOG = logging.getLogger("visit_pass_slider_solver")
+LOG = logging.getLogger("mdac_slider_solver")
 
 _DETECTOR: ddddocr.DdddOcr | None = None
 
@@ -64,8 +64,11 @@ async def solve_mdac_slider(
     for attempt in range(max_retries):
         log_func(f"正在尝试第 {attempt + 1} 次滑块验证...")
         try:
-            await page.wait_for_selector("canvas", timeout=10000)
-            await page.wait_for_timeout(1500)
+            # 自动滚动页面将滑块置于屏幕中央，方便肉眼观察
+            captcha_el = page.locator("#captcha")
+            await captcha_el.wait_for(state="visible", timeout=10000)
+            await captcha_el.scroll_into_view_if_needed()
+            await page.wait_for_timeout(1000)
 
             bg_base64 = await page.evaluate(
                 "document.querySelectorAll('canvas')[0].toDataURL('image/png')"
@@ -115,19 +118,21 @@ async def solve_mdac_slider(
 
             await slider_handle.hover()
             await page.mouse.down()
-            await page.wait_for_timeout(random.randint(100, 200))
+            await page.wait_for_timeout(random.randint(150, 300))
 
-            actual_move = final_distance - 14
+            # 微调不同尝试轮次的微小偏移 (-14, -10, -16)
+            offset_bias = -14 if attempt == 0 else (-10 if attempt == 1 else -16)
+            actual_move = final_distance + offset_bias
             current_x = handle_start_x
             for step_x in generate_track(actual_move):
                 current_x += step_x
                 await page.mouse.move(
                     current_x,
-                    handle_start_y + random.uniform(-1.5, 1.5),
+                    handle_start_y + random.uniform(-1.0, 1.0),
                 )
-                await asyncio.sleep(random.uniform(0.01, 0.02))
+                await asyncio.sleep(random.uniform(0.02, 0.035))
 
-            await page.wait_for_timeout(random.randint(300, 500))
+            await page.wait_for_timeout(random.randint(400, 600))
             await page.mouse.up()
             await page.wait_for_timeout(2000)
 
@@ -142,7 +147,25 @@ async def solve_mdac_slider(
                 log_func("滑块验证成功！")
                 return True
 
-            log_func(f"第 {attempt + 1} 次验证失败，等待滑块重置...")
+            log_func(
+                f"第 {attempt + 1} 次自动滑块未对准。"
+                f"【提示】您可直接在屏幕上用鼠标手动拖动滑块完成拼图（等待 15 秒）..."
+            )
+            # 等待 15 秒，允许用户直接在屏幕上手工拖动拼图
+            for _ in range(30):
+                await page.wait_for_timeout(500)
+                manual_success = await page.evaluate(
+                    """
+                    () => document.querySelector('.sliderContainer') !== null
+                        && document.querySelector('.sliderContainer')
+                            .classList.contains('sliderContainer_success')
+                    """
+                )
+                if manual_success:
+                    log_func("滑块验证成功（手工辅助完成）！")
+                    return True
+
+            log_func(f"等待滑块重置...")
             await page.wait_for_timeout(2500)
 
         except Exception as error:
