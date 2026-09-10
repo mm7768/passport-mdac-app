@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.18.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.18-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.18.apk
+          name: PassportMDAC-v1.0.19-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,16 +86,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.18
-          name: "Passport MDAC Desk v1.0.18 (多选批量修改状态功能)"
+          tag_name: v1.0.19
+          name: "Passport MDAC Desk v1.0.19 (弹窗溢出修复与凭证彻底删除)"
           body: |
-            ### v1.0.18 更新内容：
-            - **新增多选批量修改业务状态功能**：
-              - 客户多选操作栏（SelectionBar）新增【修改状态】操作按钮。
-              - 点击即可弹出业务状态选择对话框，支持将勾选客户一键统一变更为指定业务状态（待处理、已注册、已收 PIN、Registration 已查、Visit Pass 已查、需关注等）。
-              - 修改后即时同步至 Supabase 云端数据库并自动写入审计日志，列表即时响应。
-            - 包含此前全部功能（按姓名排序、客户档案导出归档 PDF/ZIP 批量下载等）。
+            ### v1.0.19 更新内容：
+            - **彻底修复弹窗溢出警告 (Yellow-Black Striped Warning)**：
+              - 修复启动自动化查询弹窗标题溢出（RIGHT OVERFLOWED BY 55 PIXELS）。
+              - 修复导出客户 PIN 清单弹窗标题溢出（RIGHT OVERFLOWED BY 102 PIXELS）及内容底部溢出（BOTTOM OVERFLOWED BY 23 PIXELS）。
+              - 批量打包 PDF 弹窗增加自适应宽度与滚动支持，彻底杜绝所有移动端尺寸溢出报错。
+            - **修复客户核验凭证 PDF / 截图删除与云端同步**：
+              - 增加数据库级安全删除策略与 `delete_customer_human_evidence` RPC，彻底解决删除凭证后前端仍显示未删除条目的问题。
+              - 删除凭证时同步清理云端存储文件与数据库记录，客户档案即时响应刷新。
+              - FAN YAYUAN 客户档案已清理冗余旧 PDF 凭证。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.18.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

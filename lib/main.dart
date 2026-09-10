@@ -3550,7 +3550,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 color: AppTheme.teal,
               ),
               const SizedBox(width: 8),
-              Text('启动 ${taskTypeLabel(type)}'),
+              Expanded(
+                child: Text(
+                  '启动 ${taskTypeLabel(type)}',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
           content: Text(
@@ -4101,20 +4106,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
           children: [
             const Icon(Icons.table_chart_rounded, color: AppTheme.teal),
             const SizedBox(width: 8),
-            const Text('导出客户 PIN 清单'),
-            const Spacer(),
+            const Expanded(
+              child: Text(
+                '导出客户 PIN 清单',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 color: AppTheme.teal.withValues(alpha: .12),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
-                '${withPinCustomers.length} 位已获取 PIN',
+                '${withPinCustomers.length} 位有 PIN',
                 style: const TextStyle(
                   color: AppTheme.teal,
                   fontWeight: FontWeight.w700,
-                  fontSize: 12,
+                  fontSize: 11,
                 ),
               ),
             ),
@@ -4122,10 +4132,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
         ),
         content: SizedBox(
           width: 580,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
               if (excludedCount > 0) ...[
                 Container(
                   width: double.infinity,
@@ -4255,7 +4266,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
             ],
           ),
         ),
-        actions: [
+      ),
+      actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx),
             child: const Text('取消'),
@@ -4327,50 +4339,57 @@ class _CustomersScreenState extends State<CustomersScreen> {
           children: [
             const Icon(Icons.picture_as_pdf_outlined, color: AppTheme.teal),
             const SizedBox(width: 8),
-            const Text('批量打包归档 PDF'),
+            const Expanded(
+              child: Text(
+                '批量打包归档 PDF',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
           ],
         ),
         content: SizedBox(
           width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '已选 ${selectedCustomers.length} 位客户，其中可打包 ${eligibleCustomers.length} 位：',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '• 每个客户生成独立 PDF：1页 Visit Pass 截图 + 1页护照原图 + 官方 Registration PDF\n'
-                '• 单个客户文件命名：YYYYMMDD_客户姓名.pdf\n'
-                '${eligibleCustomers.length > 1 ? "• 多人导出时：自动打包为一个 ZIP 压缩包下载" : "• 单人导出时：直接保存为 PDF 文件"}',
-                style: const TextStyle(color: AppTheme.muted, fontSize: 13, height: 1.5),
-              ),
-              if (excludedCount > 0) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFFBEB),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFFDE68A)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFFD97706)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '有 $excludedCount 位客户尚未完成全部流程，将自动跳过。',
-                          style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
-                        ),
-                      ),
-                    ],
-                  ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '已选 ${selectedCustomers.length} 位客户，其中可打包 ${eligibleCustomers.length} 位：',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
+                const SizedBox(height: 8),
+                Text(
+                  '• 每个客户生成独立 PDF：1页 Visit Pass 截图 + 1页护照原图 + 官方 Registration PDF\n'
+                  '• 单个客户文件命名：YYYYMMDD_客户姓名.pdf\n'
+                  '${eligibleCustomers.length > 1 ? "• 多人导出时：自动打包为一个 ZIP 压缩包下载" : "• 单人导出时：直接保存为 PDF 文件"}',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 13, height: 1.5),
+                ),
+                if (excludedCount > 0) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFBEB),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFFD97706)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '有 $excludedCount 位客户尚未完成全部流程，将自动跳过。',
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
         actions: [

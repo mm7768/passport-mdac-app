@@ -541,6 +541,19 @@ class SupabaseGateway {
     String? screenshotPath,
   }) async {
     final client = _requiredClient;
+    try {
+      await client.rpc(
+        'delete_customer_human_evidence',
+        params: {
+          'p_check_id': checkId,
+          'p_type': type,
+        },
+      );
+      return;
+    } catch (_) {
+      // 若 RPC 未配置或失败，回退到表级别直接删除
+    }
+
     final table = type == 'VISIT_PASS_CHECK'
         ? 'visit_pass_checks'
         : 'registration_checks';
