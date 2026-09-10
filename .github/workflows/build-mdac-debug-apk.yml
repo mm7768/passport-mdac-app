@@ -42,15 +42,15 @@ jobs:
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze || true
+        run: flutter analyze
 
       - name: Test
-        run: flutter test || true
+        run: flutter test
 
       - name: Build debug APK
         run: |
           KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
-          flutter build apk --debug \
+          flutter build apk --debug -v \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
           cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
