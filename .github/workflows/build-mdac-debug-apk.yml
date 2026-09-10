@@ -53,8 +53,17 @@ jobs:
           KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
           flutter build apk --debug -v \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
-            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
           cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
+
+      - name: Upload Build Log On Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Failure-Log
+          path: build_log.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
