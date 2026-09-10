@@ -51,10 +51,19 @@ jobs:
       - name: Build debug APK
         run: |
           KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
-          flutter build apk --debug -v \
+          flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
           cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
+
+      - name: Show Failure Log
+        if: failure()
+        run: |
+          echo "=== BUILD LOG TAIL ==="
+          tail -n 120 build_log.txt
+          echo "=== GRADLE ERROR SEARCH ==="
+          grep -i -C 3 "error:" build_log.txt || true
+          grep -i -C 3 "FAILURE:" build_log.txt || true
 
       - name: Upload Build Log On Failure
         if: failure()
