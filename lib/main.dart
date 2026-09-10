@@ -8877,7 +8877,7 @@ Future<void> showTaskDetail(
                 showToast(context, '批次已重新排队，本地 Worker 将自动重试。');
               }
             },
-            icon: const Icon(Icons.replay_all_rounded, size: 16),
+            icon: const Icon(Icons.replay_rounded, size: 16),
             label: const Text('全部重新排队'),
           ),
         ],
