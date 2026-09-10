@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.17.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.16-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
+          name: PassportMDAC-v1.0.17-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.17.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,17 +86,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.16
-          name: "Passport MDAC Desk v1.0.16 (客户档案打包归档PDF功能)"
+          tag_name: v1.0.17
+          name: "Passport MDAC Desk v1.0.17 (客户按姓名排序功能)"
           body: |
-            ### v1.0.16 更新内容：
-            - **新增客户档案打包归档功能**：
-              - 针对所有流程完成（Visit Pass 已查 / Registration 已查）的客户，可一键导出专属归档 PDF。
-              - 每个客户独立一份 PDF，严格命名为 `YYYYMMDD_客户姓名.pdf`。
-              - PDF 页面组合：第 1 页为 Visit Pass 凭证截图，第 2 页为客户护照原件图，第 3 页起拼接官方 Registration PDF。
-              - 列表勾选多人批量打包时，自动打包为一个 ZIP 压缩包下载；单人勾选或在档案详情中导出时直接保存为 PDF。
-              - 客户业务状态筛选菜单新增“Registration 已查”和“Visit Pass 已查”快捷过滤。
+            ### v1.0.17 更新内容：
+            - **新增客户按名字顺序排列功能**：
+              - 客户列表筛选栏新增排序切换下拉菜单（`Icons.sort_by_alpha_rounded`）。
+              - 支持三种排序模式：
+                1. 默认排序（按录入时间最新优先）
+                2. 姓名升序（A → Z 正序）
+                3. 姓名降序（Z → A 倒序）
+              - 切换后立即响应，便于按字母快速定位客户或核对任务。
+              - 点击“清除分类”时自动同步重置为默认排序。
+            - 延续 v1.0.16 所有完整功能（客户档案统一归档导出 PDF、ZIP 多人批量下载等）。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.17.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

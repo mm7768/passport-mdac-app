@@ -3132,6 +3132,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   String nationalityFilter = '全部国家';
   DateTimeRange? createdDateRange;
   bool onlyWithPinFilter = false;
+  String sortOption = 'DEFAULT'; // 'DEFAULT' (录入时间倒序), 'NAME_ASC' (姓名 A-Z), 'NAME_DESC' (姓名 Z-A)
 
   @override
   void initState() {
@@ -3182,7 +3183,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
           matchesNationality &&
           matchesPin;
     }).toList();
-    result.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    if (sortOption == 'NAME_ASC') {
+      result.sort((left, right) => left.fullName.trim().toLowerCase().compareTo(right.fullName.trim().toLowerCase()));
+    } else if (sortOption == 'NAME_DESC') {
+      result.sort((left, right) => right.fullName.trim().toLowerCase().compareTo(left.fullName.trim().toLowerCase()));
+    } else {
+      result.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    }
     return result;
   }
 
@@ -3231,6 +3238,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       nationalityFilter = '全部国家';
       createdDateRange = null;
       onlyWithPinFilter = false;
+      sortOption = 'DEFAULT';
     });
   }
 
@@ -4486,11 +4494,41 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   final withPinTotal = widget.repository.activeCustomers
                       .where((c) => (c.pin ?? '').trim().isNotEmpty)
                       .length;
+                  final sortMenu = PopupMenuButton<String>(
+                    initialValue: sortOption,
+                    onSelected: (value) => setState(() => sortOption = value),
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(
+                        value: 'DEFAULT',
+                        child: Text('默认排序 (录入时间最新)'),
+                      ),
+                      PopupMenuItem(
+                        value: 'NAME_ASC',
+                        child: Text('姓名升序 (A → Z)'),
+                      ),
+                      PopupMenuItem(
+                        value: 'NAME_DESC',
+                        child: Text('姓名降序 (Z → A)'),
+                      ),
+                    ],
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.sort_by_alpha_rounded),
+                      label: Text(
+                        sortOption == 'NAME_ASC'
+                            ? '排序：姓名 (A-Z)'
+                            : sortOption == 'NAME_DESC'
+                                ? '排序：姓名 (Z-A)'
+                                : '排序',
+                      ),
+                    ),
+                  );
                   final hasCategoryFilters =
                       businessStatusFilter != '全部' ||
                       createdDateFilter != '全部日期' ||
                       nationalityFilter != '全部国家' ||
-                      onlyWithPinFilter;
+                      onlyWithPinFilter ||
+                      sortOption != 'DEFAULT';
                   final categoryFilters = Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -4499,6 +4537,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       statusMenu,
                       dateMenu,
                       countryMenu,
+                      sortMenu,
                       FilterChip(
                         selected: onlyWithPinFilter,
                         showCheckmark: true,
