@@ -976,6 +976,38 @@ class SupabaseGateway {
         .toList(growable: false);
   }
 
+  static Future<List<Map<String, dynamic>>> bulkUpdateCustomerBusinessStatus({
+    required List<String> customerIds,
+    required String businessStatus,
+  }) async {
+    if (customerIds.isEmpty) {
+      throw const FormatException('至少需要选择一位客户。');
+    }
+    final normalizedIds = customerIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    if (normalizedIds.isEmpty) {
+      throw const FormatException('客户 ID 无效。');
+    }
+    final client = _requiredClient;
+    final rows = await client
+        .from('customers')
+        .update({
+          'business_status': businessStatus,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .filter('id', 'in', '(${normalizedIds.join(',')})')
+        .select('id, business_status');
+    if (rows is! List) {
+      throw const FormatException('Supabase 未返回批量修改状态结果。');
+    }
+    return rows
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+  }
+
   static Future<Map<String, dynamic>> previewCustomerHardDelete({
     required List<String> customerIds,
   }) async {

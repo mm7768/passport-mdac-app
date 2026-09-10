@@ -1465,6 +1465,67 @@ class DemoRepository extends ChangeNotifier {
     return null;
   }
 
+  Future<String?> updateCustomersBusinessStatusWithSync(
+    List<String> ids,
+    String businessStatus,
+    String actor,
+  ) async {
+    final uniqueIds = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    if (uniqueIds.isEmpty) return '请先选择客户。';
+    if (!customerBusinessStatusOptions.contains(businessStatus)) {
+      return '业务状态无效，请重新选择。';
+    }
+
+    final selected = <Customer>[];
+    for (final id in uniqueIds) {
+      final customer = findCustomer(id);
+      if (customer == null || customer.isDeleted) {
+        return '选中的客户已不存在或已被删除，请刷新后重试。';
+      }
+      selected.add(customer);
+    }
+
+    final statusText = businessStatusLabel(businessStatus);
+
+    if (remoteMode) {
+      if (selected.any((customer) => customer.id.startsWith('c-'))) {
+        return '远程模式不能修改尚未同步的本地演示客户。';
+      }
+      try {
+        final result = await SupabaseGateway.bulkUpdateCustomerBusinessStatus(
+          customerIds: selected.map((customer) => customer.id).toList(),
+          businessStatus: businessStatus,
+        );
+        if (result.length != selected.length) {
+          return 'Supabase 返回的更新数量不一致，已阻止本地状态更新。';
+        }
+        await syncCustomersFromSupabase();
+        auditEvents.insert(
+          0,
+          '$actor 批量修改 ${selected.length} 位客户的业务状态为“$statusText”',
+        );
+        notifyListeners();
+        return null;
+      } catch (exception) {
+        return '客户业务状态批量修改失败，云端未确认：$exception';
+      }
+    }
+
+    for (final customer in selected) {
+      customer.businessStatus = businessStatus;
+    }
+    auditEvents.insert(
+      0,
+      '$actor 批量修改 ${selected.length} 位客户的业务状态为“$statusText”',
+    );
+    notifyListeners();
+    return null;
+  }
+
   Future<List<CustomerHardDeletePreview>> previewHardDeleteWithSync(
     List<String> ids,
   ) async {
@@ -3611,6 +3672,90 @@ class _CustomersScreenState extends State<CustomersScreen> {
     showToast(context, '$count 位客户的系统创建时间已更新并写入审计记录。');
   }
 
+  Future<void> updateSelectedBusinessStatus() async {
+    if (selected.isEmpty) {
+      showToast(context, '请先选择客户。');
+      return;
+    }
+
+    String chosenStatus = 'PENDING';
+    final count = selected.length;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('批量修改 $count 位客户的业务状态'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '选择新的目标业务状态：',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 12),
+                  ...customerBusinessStatusOptions.map(
+                    (status) => RadioListTile<String>(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        businessStatusLabel(status),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        status,
+                        style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                      ),
+                      value: status,
+                      groupValue: chosenStatus,
+                      onChanged: (val) {
+                        if (val != null) {
+                          setDialogState(() => chosenStatus = val);
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认修改'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final error = await widget.repository.updateCustomersBusinessStatusWithSync(
+      selected.toList(),
+      chosenStatus,
+      widget.actor,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+      return;
+    }
+    setState(() => selected.clear());
+    showToast(
+      context,
+      '已将 $count 位客户的状态批量更新为“${businessStatusLabel(chosenStatus)}”',
+    );
+  }
+
   Future<void> deleteSelected() async {
     if (widget.role != UserRole.owner) {
       showToast(context, '只有 OWNER 可以永久删除客户。', error: true);
@@ -4740,11 +4885,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 onRegistration: () =>
                     startSimpleTask(TaskType.registrationCheck),
                 onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                onBundlePdf: bundleSelectedPdf,
+                onStatus: updateSelectedBusinessStatus,
                 onCreatedAt: widget.role == UserRole.owner
                     ? updateSelectedCreatedAt
                     : null,
                 onExport: exportSelected,
-                onBundlePdf: bundleSelectedPdf,
                 onDelete: widget.role == UserRole.owner ? deleteSelected : null,
               ),
             const SizedBox(height: 28),
@@ -6859,6 +7005,7 @@ class SelectionBar extends StatelessWidget {
     required this.onPin,
     required this.onRegistration,
     required this.onVisitPass,
+    this.onStatus,
     this.onCreatedAt,
     required this.onExport,
     this.onBundlePdf,
@@ -6871,6 +7018,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onPin;
   final VoidCallback onRegistration;
   final VoidCallback onVisitPass;
+  final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback onExport;
   final VoidCallback? onBundlePdf;
@@ -6930,6 +7078,12 @@ class SelectionBar extends StatelessWidget {
               avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),
               label: const Text('打包归档 PDF'),
               onPressed: onBundlePdf,
+            ),
+          if (onStatus != null)
+            ActionChip(
+              avatar: const Icon(Icons.published_with_changes_rounded, size: 16),
+              label: const Text('修改状态'),
+              onPressed: onStatus,
             ),
           if (onCreatedAt != null)
             ActionChip(
