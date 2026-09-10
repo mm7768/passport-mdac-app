@@ -1,7 +1,7 @@
 name: passport_mdac_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.0.15+16
+version: 1.0.16+17
 
 environment:
   sdk: ^3.13.1
@@ -14,6 +14,8 @@ dependencies:
   crypto: ^3.0.6
   webview_flutter: ^4.14.1
   flutter_inappwebview: 6.2.0-beta.3
+  syncfusion_flutter_pdf: ^34.2.7
+  archive: ^4.2.0
 
 dev_dependencies:
   flutter_test:

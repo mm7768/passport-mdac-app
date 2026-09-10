@@ -488,6 +488,53 @@ class SupabaseGateway {
     );
   }
 
+  static Future<({String? passportImagePath, String? registrationPdfPath, String? visitPassScreenshotPath})>
+      fetchCustomerBundleEvidence(String customerId) async {
+    final client = _requiredClient;
+    final customerRow = await client
+        .from('customers')
+        .select('passport_image_path')
+        .eq('id', customerId)
+        .maybeSingle();
+    final passportImagePath = customerRow?['passport_image_path']?.toString();
+
+    final regCheckRows = await client
+        .from('registration_checks')
+        .select('screenshot_path')
+        .eq('customer_id', customerId)
+        .order('checked_at', ascending: false)
+        .limit(10);
+    String? registrationPdfPath;
+    for (final r in regCheckRows) {
+      final p = r['screenshot_path']?.toString();
+      if (p != null && p.toLowerCase().endsWith('.pdf')) {
+        registrationPdfPath = p;
+        break;
+      }
+    }
+
+    final vpCheckRows = await client
+        .from('visit_pass_checks')
+        .select('screenshot_path')
+        .eq('customer_id', customerId)
+        .order('checked_at', ascending: false)
+        .limit(10);
+    String? visitPassScreenshotPath;
+    for (final r in vpCheckRows) {
+      final p = r['screenshot_path']?.toString();
+      if (p != null && (p.toLowerCase().endsWith('.png') || p.toLowerCase().endsWith('.jpg') || p.toLowerCase().endsWith('.jpeg'))) {
+        visitPassScreenshotPath = p;
+        break;
+      }
+    }
+
+    return (
+      passportImagePath: passportImagePath,
+      registrationPdfPath: registrationPdfPath,
+      visitPassScreenshotPath: visitPassScreenshotPath,
+    );
+  }
+
   static Future<void> deleteCustomerHumanEvidence({
     required String checkId,
     required String type,
@@ -1056,6 +1103,16 @@ class SupabaseGateway {
             quality: 72,
           ),
         );
+  }
+
+  static Future<Uint8List> downloadStorageFile(String path) async {
+    final normalizedPath = path.trim();
+    if (normalizedPath.isEmpty) {
+      throw const FormatException('文件路径为空。');
+    }
+    return _requiredClient.storage
+        .from('passport-documents')
+        .download(normalizedPath);
   }
 
   static Future<void> clearLatestPinRecord(String customerId) async {

@@ -53,13 +53,13 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY"
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.15.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.15-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.15.apk
+          name: PassportMDAC-v1.0.16-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -67,19 +67,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.15
-          name: "Passport MDAC Desk v1.0.15 (重试失败项、等待35秒防白屏与明确超时识别)"
+          tag_name: v1.0.16
+          name: "Passport MDAC Desk v1.0.16 (客户档案打包归档PDF功能)"
           body: |
-            ### v1.0.15 更新内容：
-            - **支持仅重试失败项**：
-              - 任务卡片与详情弹窗中新增“重试失败项”按钮，仅将失败/待核验客户重新排队，保留已成功客户。
-            - **官方查询延长等待至 35 秒**：
-              - 解决官方查询慢导致的空白/无记录假象。
-            - **彻底消除半透明遮罩与白屏截图**：
-              - 截图前自动注入 DOM 清理脚本，移除 blockUI、loading 遮罩，强制页面透明度为 1.0，确保截图清晰可见。
-            - **严格区分真正无记录与查询超时**：
-              - 仅当官方明确返回红字横幅或旧表格时才判为未找到符合记录；超时未响应则标为超时待核验，绝不乱下结论。
+            ### v1.0.16 更新内容：
+            - **新增客户档案打包归档功能**：
+              - 针对所有流程完成（Visit Pass 已查 / Registration 已查）的客户，可一键导出专属归档 PDF。
+              - 每个客户独立一份 PDF，严格命名为 `YYYYMMDD_客户姓名.pdf`。
+              - PDF 页面组合：第 1 页为 Visit Pass 凭证截图，第 2 页为客户护照原件图，第 3 页起拼接官方 Registration PDF。
+              - 列表勾选多人批量打包时，自动打包为一个 ZIP 压缩包下载；单人勾选或在档案详情中导出时直接保存为 PDF。
+              - 客户业务状态筛选菜单新增“Registration 已查”和“Visit Pass 已查”快捷过滤。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.15.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.16.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

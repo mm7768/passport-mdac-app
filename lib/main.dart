@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'mdac_human_review.dart';
 import 'human_query_review.dart';
+import 'customer_bundle_exporter.dart';
 import 'supabase_gateway.dart';
 
 Future<void> main() async {
@@ -4139,6 +4140,235 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> bundleSelectedPdf() async {
+    if (selected.isEmpty) {
+      showToast(context, '请先在列表中勾选需要打包的客户。');
+      return;
+    }
+    final selectedCustomers = widget.repository.activeCustomers
+        .where((customer) => selected.contains(customer.id))
+        .toList();
+
+    // 筛选已查或完成核验流程的客户
+    final eligibleCustomers = selectedCustomers.where((c) {
+      return c.businessStatus == 'VISIT_PASS_CHECKED' ||
+          c.businessStatus == 'REGISTRATION_CHECKED';
+    }).toList();
+
+    if (eligibleCustomers.isEmpty) {
+      showToast(
+        context,
+        '选中的 ${selectedCustomers.length} 位客户中，没有已完成核验流程（Visit Pass 已查 / Registration 已查）的客户。',
+        error: true,
+      );
+      return;
+    }
+
+    final excludedCount = selectedCustomers.length - eligibleCustomers.length;
+
+    // 显示确认弹窗
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dlgCtx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.picture_as_pdf_outlined, color: AppTheme.teal),
+            const SizedBox(width: 8),
+            const Text('批量打包归档 PDF'),
+          ],
+        ),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '已选 ${selectedCustomers.length} 位客户，其中可打包 ${eligibleCustomers.length} 位：',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '• 每个客户生成独立 PDF：1页 Visit Pass 截图 + 1页护照原图 + 官方 Registration PDF\n'
+                '• 单个客户文件命名：YYYYMMDD_客户姓名.pdf\n'
+                '${eligibleCustomers.length > 1 ? "• 多人导出时：自动打包为一个 ZIP 压缩包下载" : "• 单人导出时：直接保存为 PDF 文件"}',
+                style: const TextStyle(color: AppTheme.muted, fontSize: 13, height: 1.5),
+              ),
+              if (excludedCount > 0) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFFD97706)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '有 $excludedCount 位客户尚未完成全部流程，将自动跳过。',
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dlgCtx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dlgCtx, true),
+            icon: const Icon(Icons.download_rounded, size: 16),
+            label: Text('开始打包 (${eligibleCustomers.length} 位)'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // 显示打包进度对话框
+    int progressIndex = 0;
+    String currentAction = '正在准备打包...';
+    StateSetter? dialogSetState;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (progressCtx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          dialogSetState = setDlgState;
+          return AlertDialog(
+            title: Row(
+              children: [
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+                const SizedBox(width: 12),
+                const Text('正在打包归档 PDF...'),
+              ],
+            ),
+            content: SizedBox(
+              width: 400,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '进度：$progressIndex / ${eligibleCustomers.length}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: eligibleCustomers.isEmpty ? 0 : progressIndex / eligibleCustomers.length,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    currentAction,
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    final generatedFiles = <String, Uint8List>{};
+    final errorCustomers = <String>[];
+
+    try {
+      for (int i = 0; i < eligibleCustomers.length; i++) {
+        final c = eligibleCustomers[i];
+        if (dialogSetState != null) {
+          dialogSetState!(() {
+            progressIndex = i + 1;
+            currentAction = '正在下载并合成：${c.fullName} (${i + 1}/${eligibleCustomers.length})';
+          });
+        }
+
+        try {
+          final evidence = await CustomerBundleExporter.loadCustomerEvidence(
+            customerId: c.id,
+            customerName: c.fullName,
+            fallbackPassportImagePath: c.passportImagePath,
+          );
+          final pdfBytes = await CustomerBundleExporter.generateCustomerPdf(evidence);
+          final fileName = CustomerBundleExporter.formatCustomerPdfName(c.fullName);
+          generatedFiles[fileName] = pdfBytes;
+        } catch (e) {
+          errorCustomers.add('${c.fullName}: $e');
+        }
+      }
+    } finally {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // 关闭进度条
+      }
+    }
+
+    if (generatedFiles.isEmpty) {
+      if (mounted) {
+        showToast(
+          context,
+          '打包失败，未能生成任何 PDF 文件：${errorCustomers.join("；")}',
+          error: true,
+        );
+      }
+      return;
+    }
+
+    // 保存文件（1人直接保存PDF，多人保存ZIP）
+    if (generatedFiles.length == 1) {
+      final entry = generatedFiles.entries.first;
+      try {
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: '保存 ${entry.key}',
+          fileName: entry.key,
+          type: FileType.custom,
+          allowedExtensions: ['pdf'],
+          bytes: entry.value,
+        );
+        if (path != null && mounted) {
+          showToast(context, 'PDF 导出成功：${entry.key}');
+        }
+      } catch (e) {
+        if (mounted) showToast(context, '保存 PDF 失败：$e', error: true);
+      }
+    } else {
+      final now = DateTime.now();
+      final dateSuffix = '${now.year}${now.month.toString().padLeft(2, "0")}${now.day.toString().padLeft(2, "0")}_${now.hour.toString().padLeft(2, "0")}${now.minute.toString().padLeft(2, "0")}';
+      final zipName = 'mdac_bundles_$dateSuffix.zip';
+      try {
+        final zipBytes = CustomerBundleExporter.createZipArchive(generatedFiles);
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: '保存 $zipName',
+          fileName: zipName,
+          type: FileType.custom,
+          allowedExtensions: ['zip'],
+          bytes: zipBytes,
+        );
+        if (path != null && mounted) {
+          showToast(context, '成功导出 ${generatedFiles.length} 位客户档案包：$zipName');
+        }
+      } catch (e) {
+        if (mounted) showToast(context, '保存 ZIP 压缩包失败：$e', error: true);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final list = filtered;
@@ -4189,12 +4419,20 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       isDense: true,
                     ),
                   );
-                  final statusMenu = PopupMenuButton<String>(
+                    final statusMenu = PopupMenuButton<String>(
                     initialValue: businessStatusFilter,
                     onSelected: (value) =>
                         setState(() => businessStatusFilter = value),
                     itemBuilder: (context) =>
-                        ['全部', '待处理', '已注册', '已收 PIN', '需关注']
+                        [
+                          '全部',
+                          '待处理',
+                          '已注册',
+                          '已收 PIN',
+                          'Registration 已查',
+                          'Visit Pass 已查',
+                          '需关注',
+                        ]
                             .map(
                               (item) =>
                                   PopupMenuItem(value: item, child: Text(item)),
@@ -4467,6 +4705,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     ? updateSelectedCreatedAt
                     : null,
                 onExport: exportSelected,
+                onBundlePdf: bundleSelectedPdf,
                 onDelete: widget.role == UserRole.owner ? deleteSelected : null,
               ),
             const SizedBox(height: 28),
@@ -6583,6 +6822,7 @@ class SelectionBar extends StatelessWidget {
     required this.onVisitPass,
     this.onCreatedAt,
     required this.onExport,
+    this.onBundlePdf,
     this.onDelete,
     super.key,
   });
@@ -6594,6 +6834,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onVisitPass;
   final VoidCallback? onCreatedAt;
   final VoidCallback onExport;
+  final VoidCallback? onBundlePdf;
   final VoidCallback? onDelete;
 
   @override
@@ -6645,6 +6886,12 @@ class SelectionBar extends StatelessWidget {
             label: const Text('查 Visit Pass'),
             onPressed: onVisitPass,
           ),
+          if (onBundlePdf != null)
+            ActionChip(
+              avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),
+              label: const Text('打包归档 PDF'),
+              onPressed: onBundlePdf,
+            ),
           if (onCreatedAt != null)
             ActionChip(
               avatar: const Icon(Icons.edit_calendar_outlined, size: 16),
@@ -7985,6 +8232,46 @@ Future<void> showCustomerDetail(
               Text(
                 '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    try {
+                      ScaffoldMessenger.of(sheetContext).showSnackBar(
+                        const SnackBar(content: Text('正在合成并下载该客户档案 PDF...')),
+                      );
+                      final evidence = await CustomerBundleExporter.loadCustomerEvidence(
+                        customerId: customer.id,
+                        customerName: customer.fullName,
+                        fallbackPassportImagePath: customer.passportImagePath,
+                      );
+                      final pdfBytes = await CustomerBundleExporter.generateCustomerPdf(evidence);
+                      final fileName = CustomerBundleExporter.formatCustomerPdfName(customer.fullName);
+                      final path = await FilePicker.platform.saveFile(
+                        dialogTitle: '保存 $fileName',
+                        fileName: fileName,
+                        type: FileType.custom,
+                        allowedExtensions: ['pdf'],
+                        bytes: pdfBytes,
+                      );
+                      if (path != null && sheetContext.mounted) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          SnackBar(content: Text('已导出档案：$fileName')),
+                        );
+                      }
+                    } catch (e) {
+                      if (sheetContext.mounted) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          SnackBar(content: Text('导出档案失败：$e')),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                  label: const Text('导出完整档案 PDF (Visit Pass + 护照 + Registration)'),
+                ),
               ),
               if (onEdit != null) ...[
                 const SizedBox(height: 10),
