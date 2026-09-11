@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.19-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
+          name: PassportMDAC-v1.0.20-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,19 +86,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.19
-          name: "Passport MDAC Desk v1.0.19 (弹窗溢出修复与凭证彻底删除)"
+          tag_name: v1.0.20
+          name: "Passport MDAC Desk v1.0.20 (客户批次卡片、批次合并与自动回退)"
           body: |
-            ### v1.0.19 更新内容：
-            - **彻底修复弹窗溢出警告 (Yellow-Black Striped Warning)**：
-              - 修复启动自动化查询弹窗标题溢出（RIGHT OVERFLOWED BY 55 PIXELS）。
-              - 修复导出客户 PIN 清单弹窗标题溢出（RIGHT OVERFLOWED BY 102 PIXELS）及内容底部溢出（BOTTOM OVERFLOWED BY 23 PIXELS）。
-              - 批量打包 PDF 弹窗增加自适应宽度与滚动支持，彻底杜绝所有移动端尺寸溢出报错。
-            - **修复客户核验凭证 PDF / 截图删除与云端同步**：
-              - 增加数据库级安全删除策略与 `delete_customer_human_evidence` RPC，彻底解决删除凭证后前端仍显示未删除条目的问题。
-              - 删除凭证时同步清理云端存储文件与数据库记录，客户档案即时响应刷新。
-              - FAN YAYUAN 客户档案已清理冗余旧 PDF 凭证。
+            ### v1.0.20 更新内容：
+            - **客户档案折叠展开卡片**：取消平铺与顶部状态筛选按钮，按 MDAC 实际注册时间批次（今日注册批次、昨日注册批次等）、未注册客户、已回退客户进行手风琴卡片化管理，默认全部收起，支持顶部一键展开/收起，搜索时自适应展开。
+            - **卡片表头一键全选**：每个卡片表头自带复选框，可一键全选或取消全选该卡片内的所有客户。
+            - **跨批次合并客户功能**：新增批次合并功能，可在卡片表头一键将整个批次合并入目标批次，或在底部多选栏将选定客户统一并入目标批次。
+            - **回退客户状态时自动回退凭证与任务**：当客户业务状态回退到待处理时，系统联动自动回退并清理旧的 Check Registration PDF、Visit Pass 截图及进行中自动化任务。
+            - **客户列表与详情页刷新按钮**：客户档案列表与任务列表统一采用图标刷新按钮，一键同步 Supabase 最新数据。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.19.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
