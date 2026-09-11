@@ -945,6 +945,10 @@ class SupabaseGateway {
     };
     if (businessStatus != null) {
       payload['business_status'] = businessStatus;
+      await rollbackCustomerEvidence(
+        customerIds: [id],
+        targetStatus: businessStatus,
+      );
     }
     final row = await client
         .from('customers')
@@ -957,6 +961,30 @@ class SupabaseGateway {
         )
         .single();
     return Map<String, dynamic>.from(row);
+  }
+
+  static Future<Map<String, dynamic>> rollbackCustomerEvidence({
+    required List<String> customerIds,
+    required String targetStatus,
+  }) async {
+    if (customerIds.isEmpty) return {'success': true};
+    final client = _requiredClient;
+    try {
+      final res = await client.rpc(
+        'rollback_customer_evidence',
+        params: {
+          'p_customer_ids': customerIds,
+          'p_target_status': targetStatus,
+        },
+      );
+      if (res is Map) {
+        return Map<String, dynamic>.from(res);
+      }
+      return {'success': true};
+    } catch (_) {
+      // 容错处理：若 RPC 异常，不影响主状态流转
+      return {'success': false};
+    }
   }
 
   static Future<List<Map<String, dynamic>>> bulkUpdateCustomerCreatedAt({
@@ -1004,6 +1032,13 @@ class SupabaseGateway {
       throw const FormatException('客户 ID 无效。');
     }
     final client = _requiredClient;
+
+    // 回退客户状态时，一律级联回退并清理旧的 Check Registration PDF 和 Visit Pass 凭证
+    await rollbackCustomerEvidence(
+      customerIds: normalizedIds,
+      targetStatus: businessStatus,
+    );
+
     final rows = await client
         .from('customers')
         .update({

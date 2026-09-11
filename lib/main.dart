@@ -1504,6 +1504,7 @@ class DemoRepository extends ChangeNotifier {
           return 'Supabase 返回的更新数量不一致，已阻止本地状态更新。';
         }
         await syncCustomersFromSupabase();
+        await syncAutomationTasksFromSupabase();
         auditEvents.insert(
           0,
           '$actor 批量修改 ${selected.length} 位客户的业务状态为“$statusText”',
