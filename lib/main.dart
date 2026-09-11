@@ -4552,7 +4552,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
       trailing: Wrap(
         spacing: 8,
         runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          IconButton.outlined(
+            onPressed: () async {
+              final error = await widget.repository.syncCustomersFromSupabase();
+              if (!context.mounted) return;
+              if (error != null) {
+                showToast(context, error, error: true);
+              } else {
+                showToast(context, '已刷新客户档案。');
+              }
+            },
+            icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
+            tooltip: '刷新客户档案',
+          ),
           OutlinedButton.icon(
             onPressed: createManualCustomer,
             icon: const Icon(Icons.edit_note_rounded),
@@ -4888,6 +4902,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           onOpen: () => showCustomerDetail(
                             context,
                             customer,
+                            repository: widget.repository,
                             onEdit: () => editCustomer(customer),
                           ),
                         ),
@@ -5573,9 +5588,10 @@ class _TasksScreenState extends State<TasksScreen> {
       trailing: Wrap(
         spacing: 8,
         runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         alignment: WrapAlignment.end,
         children: [
-          OutlinedButton.icon(
+          IconButton.outlined(
             onPressed: () async {
               final error = await repository.syncAutomationTasksFromSupabase();
               if (!context.mounted) return;
@@ -5585,8 +5601,8 @@ class _TasksScreenState extends State<TasksScreen> {
                 showToast(context, '已刷新 Supabase MDAC 任务状态。');
               }
             },
-            icon: const Icon(Icons.refresh_rounded, size: 18),
-            label: const Text('刷新'),
+            icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
+            tooltip: '刷新任务队列',
           ),
           WorkerStatus(repository: repository),
         ],
@@ -8364,142 +8380,202 @@ Future<Map<String, String>?> showCustomerForm(
 Future<void> showCustomerDetail(
   BuildContext context,
   Customer customer, {
+  DemoRepository? repository,
   VoidCallback? onEdit,
 }) async {
+  var currentCustomer = customer;
+  var isRefreshing = false;
+  var evidenceKey = UniqueKey();
+
   await showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(22, 0, 22, 26),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Avatar(name: customer.fullName),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          customer.fullName,
-                          style: Theme.of(sheetContext).textTheme.titleLarge,
-                        ),
-                        Text(
-                          customer.passportNumber,
-                          style: const TextStyle(color: AppTheme.muted),
-                        ),
-                      ],
+    builder: (sheetContext) => StatefulBuilder(
+      builder: (sheetContext, setSheetState) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 0, 22, 26),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Avatar(name: currentCustomer.fullName),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            currentCustomer.fullName,
+                            style: Theme.of(sheetContext).textTheme.titleLarge,
+                          ),
+                          Text(
+                            currentCustomer.passportNumber,
+                            style: const TextStyle(color: AppTheme.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    StatusPill(status: currentCustomer.businessStatus),
+                    const SizedBox(width: 6),
+                    IconButton.outlined(
+                      style: IconButton.styleFrom(
+                        padding: const EdgeInsets.all(6),
+                        minimumSize: const Size(36, 36),
+                      ),
+                      icon: isRefreshing
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppTheme.teal,
+                              ),
+                            )
+                          : const Icon(Icons.refresh_rounded, size: 18, color: AppTheme.teal),
+                      tooltip: '刷新客户档案',
+                      onPressed: isRefreshing
+                          ? null
+                          : () async {
+                              setSheetState(() => isRefreshing = true);
+                              try {
+                                if (repository != null) {
+                                  await repository.syncCustomersFromSupabase();
+                                  final updated = repository.customers
+                                      .where((c) => c.id == currentCustomer.id)
+                                      .firstOrNull;
+                                  if (updated != null) {
+                                    currentCustomer = updated;
+                                  }
+                                }
+                                evidenceKey = UniqueKey();
+                                if (sheetContext.mounted) {
+                                  ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('已刷新客户档案及最新凭证'),
+                                      duration: Duration(seconds: 1),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (sheetContext.mounted) {
+                                  ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                    SnackBar(content: Text('刷新失败：$e')),
+                                  );
+                                }
+                              } finally {
+                                if (sheetContext.mounted) {
+                                  setSheetState(() => isRefreshing = false);
+                                }
+                              }
+                            },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    DetailChip(label: '出生日期', value: currentCustomer.dateOfBirth),
+                    DetailChip(label: '出生地点', value: currentCustomer.placeOfBirth),
+                    DetailChip(label: '国籍', value: currentCustomer.nationality),
+                    DetailChip(label: '性别', value: currentCustomer.gender),
+                    DetailChip(
+                      label: '护照有效期',
+                      value: currentCustomer.passportExpiryDate,
+                    ),
+                    DetailChip(label: 'Gmail PIN', value: currentCustomer.pin ?? '未获取'),
+                  ],
+                ),
+                if (currentCustomer.passportImagePath?.trim().isNotEmpty == true) ...[
+                  const SizedBox(height: 18),
+                  PassportDocumentCard(path: currentCustomer.passportImagePath!),
+                ],
+                if (SupabaseGateway.isConfigured &&
+                    SupabaseGateway.currentUserId != null) ...[
+                  const SizedBox(height: 18),
+                  CustomerQueryEvidenceCard(key: evidenceKey, customerId: currentCustomer.id),
+                ],
+                if (currentCustomer.lastSummary != null) ...[
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: AppTheme.canvas,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      currentCustomer.lastSummary!,
+                      style: const TextStyle(color: AppTheme.muted, height: 1.4),
                     ),
                   ),
-                  StatusPill(status: customer.businessStatus),
                 ],
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  DetailChip(label: '出生日期', value: customer.dateOfBirth),
-                  DetailChip(label: '出生地点', value: customer.placeOfBirth),
-                  DetailChip(label: '国籍', value: customer.nationality),
-                  DetailChip(label: '性别', value: customer.gender),
-                  DetailChip(
-                    label: '护照有效期',
-                    value: customer.passportExpiryDate,
-                  ),
-                  DetailChip(label: 'Gmail PIN', value: customer.pin ?? '未获取'),
-                ],
-              ),
-              if (customer.passportImagePath?.trim().isNotEmpty == true) ...[
                 const SizedBox(height: 18),
-                PassportDocumentCard(path: customer.passportImagePath!),
-              ],
-              if (SupabaseGateway.isConfigured &&
-                  SupabaseGateway.currentUserId != null) ...[
-                const SizedBox(height: 18),
-                CustomerQueryEvidenceCard(customerId: customer.id),
-              ],
-              if (customer.lastSummary != null) ...[
-                const SizedBox(height: 18),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(13),
-                  decoration: BoxDecoration(
-                    color: AppTheme.canvas,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(
-                    customer.lastSummary!,
-                    style: const TextStyle(color: AppTheme.muted, height: 1.4),
-                  ),
+                Text(
+                  '录入日期 ${formatDateTime(currentCustomer.createdAt)} · ${currentCustomer.createdBy}',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12),
                 ),
-              ],
-              const SizedBox(height: 18),
-              Text(
-                '录入日期 ${formatDateTime(customer.createdAt)} · ${customer.createdBy}',
-                style: const TextStyle(color: AppTheme.muted, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    try {
-                      ScaffoldMessenger.of(sheetContext).showSnackBar(
-                        const SnackBar(content: Text('正在合成并下载该客户档案 PDF...')),
-                      );
-                      final evidence = await CustomerBundleExporter.loadCustomerEvidence(
-                        customerId: customer.id,
-                        customerName: customer.fullName,
-                        fallbackPassportImagePath: customer.passportImagePath,
-                      );
-                      final pdfBytes = await CustomerBundleExporter.generateCustomerPdf(evidence);
-                      final fileName = CustomerBundleExporter.formatCustomerPdfName(customer.fullName);
-                      final path = await FilePicker.platform.saveFile(
-                        dialogTitle: '保存 $fileName',
-                        fileName: fileName,
-                        type: FileType.custom,
-                        allowedExtensions: ['pdf'],
-                        bytes: pdfBytes,
-                      );
-                      if (path != null && sheetContext.mounted) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          SnackBar(content: Text('已导出档案：$fileName')),
-                        );
-                      }
-                    } catch (e) {
-                      if (sheetContext.mounted) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          SnackBar(content: Text('导出档案失败：$e')),
-                        );
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.picture_as_pdf_outlined),
-                  label: const Text('导出完整档案 PDF (Visit Pass + 护照 + Registration)'),
-                ),
-              ),
-              if (onEdit != null) ...[
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(sheetContext);
-                      onEdit();
+                    onPressed: () async {
+                      try {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(content: Text('正在合成并下载该客户档案 PDF...')),
+                        );
+                        final evidence = await CustomerBundleExporter.loadCustomerEvidence(
+                          customerId: currentCustomer.id,
+                          customerName: currentCustomer.fullName,
+                          fallbackPassportImagePath: currentCustomer.passportImagePath,
+                        );
+                        final pdfBytes = await CustomerBundleExporter.generateCustomerPdf(evidence);
+                        final fileName = CustomerBundleExporter.formatCustomerPdfName(currentCustomer.fullName);
+                        final path = await FilePicker.platform.saveFile(
+                          dialogTitle: '保存 $fileName',
+                          fileName: fileName,
+                          type: FileType.custom,
+                          allowedExtensions: ['pdf'],
+                          bytes: pdfBytes,
+                        );
+                        if (path != null && sheetContext.mounted) {
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            SnackBar(content: Text('已导出档案：$fileName')),
+                          );
+                        }
+                      } catch (e) {
+                        if (sheetContext.mounted) {
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            SnackBar(content: Text('导出档案失败：$e')),
+                          );
+                        }
+                      }
                     },
-                    icon: const Icon(Icons.edit_outlined),
-                    label: const Text('编辑档案'),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: const Text('导出完整档案 PDF (Visit Pass + 护照 + Registration)'),
                   ),
                 ),
+                if (onEdit != null) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(sheetContext);
+                        onEdit();
+                      },
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('编辑档案'),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

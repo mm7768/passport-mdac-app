@@ -812,10 +812,17 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(children: [
-                Icon(Icons.verified_outlined, color: Color(0xFF087F78)),
-                SizedBox(width: 8),
-                Text('官方查询凭证', style: TextStyle(fontWeight: FontWeight.w800)),
+              Row(children: [
+                const Icon(Icons.verified_outlined, color: Color(0xFF087F78)),
+                const SizedBox(width: 8),
+                const Text('官方查询凭证', style: TextStyle(fontWeight: FontWeight.w800)),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  tooltip: '刷新凭证',
+                  color: const Color(0xFF087F78),
+                  onPressed: _reload,
+                ),
               ]),
               const SizedBox(height: 8),
               for (final row in rows)
