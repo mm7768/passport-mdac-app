@@ -1051,6 +1051,79 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<String?> mergeAutomationBatches({
+    required String sourceBatchId,
+    required String targetBatchId,
+    required String actor,
+  }) async {
+    if (!remoteMode) {
+      final sourceTask = tasks.where((t) => t.id == sourceBatchId).firstOrNull;
+      final targetTask = tasks.where((t) => t.id == targetBatchId).firstOrNull;
+      if (sourceTask == null || targetTask == null) return '未找到指定批次。';
+      for (final cid in sourceTask.customerIds) {
+        if (!targetTask.customerIds.contains(cid)) {
+          targetTask.customerIds.add(cid);
+        }
+      }
+      tasks.removeWhere((t) => t.id == sourceBatchId);
+      auditEvents.insert(0, '$actor 合并批次 $sourceBatchId 到 $targetBatchId');
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.mergeAutomationBatches(
+        sourceBatchId: sourceBatchId,
+        targetBatchId: targetBatchId,
+        actor: actor,
+      );
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 合并批次 $sourceBatchId 到 $targetBatchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '合并批次失败：$exception';
+    }
+  }
+
+  Future<String?> mergeCustomersIntoBatch({
+    required List<String> customerIds,
+    required String targetBatchId,
+    required String actor,
+  }) async {
+    if (customerIds.isEmpty) return '请先选择客户。';
+    if (!remoteMode) {
+      final targetTask = tasks.where((t) => t.id == targetBatchId).firstOrNull;
+      if (targetTask == null) return '目标批次不存在。';
+      for (final cid in customerIds) {
+        if (!targetTask.customerIds.contains(cid)) {
+          targetTask.customerIds.add(cid);
+        }
+        for (final t in tasks) {
+          if (t.id != targetBatchId) {
+            t.customerIds.remove(cid);
+          }
+        }
+      }
+      notifyListeners();
+      return null;
+    }
+    try {
+      await SupabaseGateway.mergeCustomersIntoBatch(
+        customerIds: customerIds,
+        targetBatchId: targetBatchId,
+        actor: actor,
+      );
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 将 ${customerIds.length} 位客户合并至批次 $targetBatchId');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '合并客户至批次失败：$exception';
+    }
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -3625,7 +3698,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    if (group.id.startsWith('batch_')) ...[
+                      const SizedBox(width: 4),
+                      TextButton.icon(
+                        onPressed: () => _showMergeBatchDialog(group),
+                        icon: const Icon(Icons.merge_type_rounded, size: 15),
+                        label: const Text('合并'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.teal,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 4),
                     AnimatedRotation(
                       turns: isExpanded ? 0.5 : 0.0,
                       duration: const Duration(milliseconds: 200),
@@ -3722,6 +3809,322 @@ class _CustomersScreenState extends State<CustomersScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _showMergeBatchDialog(_CustomerBatchGroup sourceGroup) async {
+    final allGroups = _buildCustomerGroups(widget.repository.activeCustomers);
+    final targetCandidates = allGroups
+        .where((g) => g.id.startsWith('batch_') && g.id != sourceGroup.id)
+        .toList();
+
+    if (targetCandidates.isEmpty) {
+      showToast(context, '当前没有其他可合并的 MDAC 批次。', error: true);
+      return;
+    }
+
+    String selectedTargetGroupId = targetCandidates.first.id;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.merge_type_rounded, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('合并客户批次', overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '来源批次：',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.verified_rounded,
+                          size: 18,
+                          color: AppTheme.teal,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${sourceGroup.title} (${sourceGroup.customers.length} 位客户)',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.ink,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '合并并入的目标批次：',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    value: selectedTargetGroupId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    items: targetCandidates.map((g) {
+                      return DropdownMenuItem<String>(
+                        value: g.id,
+                        child: Text(
+                          '${g.title} (${g.customers.length} 位客户)',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setDlgState(() => selectedTargetGroupId = val);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Color(0xFF2563EB),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '确认后，【${sourceGroup.title}】的 ${sourceGroup.customers.length} 位客户将全部合并到目标批次中，原来源批次卡片将被移除，统一在目标批次卡片中展开管理。',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF1D4ED8),
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dlgCtx, true),
+              icon: const Icon(Icons.merge_type_rounded, size: 16),
+              label: const Text('确认合并'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final sourceBatchId = sourceGroup.id.replaceFirst('batch_', '');
+    final targetBatchId = selectedTargetGroupId.replaceFirst('batch_', '');
+
+    final error = await widget.repository.mergeAutomationBatches(
+      sourceBatchId: sourceBatchId,
+      targetBatchId: targetBatchId,
+      actor: widget.actor,
+    );
+
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+    } else {
+      setState(() {
+        _expandedGroupIds.remove(sourceGroup.id);
+        _expandedGroupIds.add(selectedTargetGroupId);
+      });
+      showToast(context, '已成功合并批次！');
+    }
+  }
+
+  Future<void> mergeSelectedBatches() async {
+    if (selected.isEmpty) {
+      showToast(context, '请先选择要合并的客户。');
+      return;
+    }
+
+    final allGroups = _buildCustomerGroups(widget.repository.activeCustomers);
+    final targetCandidates =
+        allGroups.where((g) => g.id.startsWith('batch_')).toList();
+
+    if (targetCandidates.isEmpty) {
+      showToast(context, '当前没有已存在的 MDAC 注册批次供合并。', error: true);
+      return;
+    }
+
+    String selectedTargetGroupId = targetCandidates.first.id;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.merge_type_rounded, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('合并已选客户至批次', overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '已选择 ${selected.length} 位客户，请选择要合并并入的目标 MDAC 批次：',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: selectedTargetGroupId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    items: targetCandidates.map((g) {
+                      return DropdownMenuItem<String>(
+                        value: g.id,
+                        child: Text(
+                          '${g.title} (${g.customers.length} 位客户)',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setDlgState(() => selectedTargetGroupId = val);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Color(0xFF2563EB),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '确认后，所选 ${selected.length} 位客户将统一归入目标批次中，并在同个批次卡片中管理。',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF1D4ED8),
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dlgCtx, true),
+              icon: const Icon(Icons.merge_type_rounded, size: 16),
+              label: const Text('确认合并'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final targetBatchId = selectedTargetGroupId.replaceFirst('batch_', '');
+    final customerIds = selected.toList();
+
+    final error = await widget.repository.mergeCustomersIntoBatch(
+      customerIds: customerIds,
+      targetBatchId: targetBatchId,
+      actor: widget.actor,
+    );
+
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+    } else {
+      setState(() {
+        selected.clear();
+        _expandedGroupIds.add(selectedTargetGroupId);
+      });
+      showToast(context, '已成功将 ${customerIds.length} 位客户合并至目标批次！');
+    }
   }
 
   Future<void> createManualCustomer() async {
@@ -5242,6 +5645,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 onCreatedAt: widget.role == UserRole.owner
                     ? updateSelectedCreatedAt
                     : null,
+                onMergeBatch: mergeSelectedBatches,
                 onExport: exportSelected,
                 onDelete: widget.role == UserRole.owner ? deleteSelected : null,
               ),
@@ -7360,6 +7764,7 @@ class SelectionBar extends StatelessWidget {
     required this.onVisitPass,
     this.onStatus,
     this.onCreatedAt,
+    this.onMergeBatch,
     required this.onExport,
     this.onBundlePdf,
     this.onDelete,
@@ -7373,6 +7778,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onVisitPass;
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
+  final VoidCallback? onMergeBatch;
   final VoidCallback onExport;
   final VoidCallback? onBundlePdf;
   final VoidCallback? onDelete;
@@ -7443,6 +7849,12 @@ class SelectionBar extends StatelessWidget {
               avatar: const Icon(Icons.edit_calendar_outlined, size: 16),
               label: const Text('修改创建时间'),
               onPressed: onCreatedAt,
+            ),
+          if (onMergeBatch != null)
+            ActionChip(
+              avatar: const Icon(Icons.merge_type_rounded, size: 16),
+              label: const Text('合并批次'),
+              onPressed: onMergeBatch,
             ),
           ActionChip(
             avatar: const Icon(Icons.file_download_outlined, size: 16),

@@ -1146,6 +1146,42 @@ class SupabaseGateway {
     return Map<String, dynamic>.from(result);
   }
 
+  static Future<Map<String, dynamic>> mergeAutomationBatches({
+    required String sourceBatchId,
+    required String targetBatchId,
+    String actor = 'operator',
+  }) async {
+    final client = _requiredClient;
+    final result = await client.rpc(
+      'merge_automation_batches',
+      params: {
+        'p_source_batch_id': sourceBatchId,
+        'p_target_batch_id': targetBatchId,
+        'p_actor': actor,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return <String, dynamic>{'success': true};
+  }
+
+  static Future<Map<String, dynamic>> mergeCustomersIntoBatch({
+    required List<String> customerIds,
+    required String targetBatchId,
+    String actor = 'operator',
+  }) async {
+    final client = _requiredClient;
+    final result = await client.rpc(
+      'merge_customers_into_batch',
+      params: {
+        'p_customer_ids': customerIds,
+        'p_target_batch_id': targetBatchId,
+        'p_actor': actor,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return <String, dynamic>{'success': true};
+  }
+
   static Future<void> softDeleteCustomer(String id) async {
     final client = _requiredClient;
     await client
