@@ -3168,6 +3168,40 @@ class OverviewScreen extends StatelessWidget {
   }
 }
 
+class _CustomerBatchGroup {
+  _CustomerBatchGroup({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.iconColor,
+    required this.badgeColor,
+    required this.customers,
+    this.batchTime,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color iconColor;
+  final Color badgeColor;
+  final List<Customer> customers;
+  final DateTime? batchTime;
+}
+
+class _BatchBucket {
+  _BatchBucket({
+    required this.task,
+    required this.batchTime,
+    required this.customers,
+  });
+
+  final AutomationTask? task;
+  final DateTime batchTime;
+  final List<Customer> customers;
+}
+
 class CustomersScreen extends StatefulWidget {
   const CustomersScreen({
     required this.repository,
@@ -3189,6 +3223,7 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
+  final Set<String> _expandedGroupIds = <String>{};
   late String businessStatusFilter;
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
@@ -3200,6 +3235,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
   void initState() {
     super.initState();
     businessStatusFilter = widget.initialBusinessStatusFilter ?? '全部';
+    if (widget.repository.tasks.isEmpty && widget.repository.remoteMode) {
+      widget.repository.syncAutomationTasksFromSupabase().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   @override
@@ -3313,6 +3353,375 @@ class _CustomersScreenState extends State<CustomersScreen> {
         selected.addAll(list.map((customer) => customer.id));
       }
     });
+  }
+
+  String _formatBatchTitle(DateTime batchTime) {
+    final localTime = batchTime.toLocal();
+    final now = DateTime.now();
+    final today = _dateOnly(now);
+    final targetDay = _dateOnly(localTime);
+    final difference = today.difference(targetDay).inDays;
+    final timeStr =
+        '${localTime.hour.toString().padLeft(2, '0')}:${localTime.minute.toString().padLeft(2, '0')}';
+
+    if (difference == 0) {
+      return '今日 MDAC 注册 · $timeStr 批次';
+    } else if (difference == 1) {
+      return '昨日 MDAC 注册 · $timeStr 批次';
+    } else if (localTime.year == now.year) {
+      return '${localTime.month}月${localTime.day}日 MDAC 注册 · $timeStr 批次';
+    } else {
+      return '${localTime.year}年${localTime.month}月${localTime.day}日 MDAC 注册 · $timeStr 批次';
+    }
+  }
+
+  List<_CustomerBatchGroup> _buildCustomerGroups(List<Customer> customerList) {
+    // Map customerId -> latest MDAC registration task
+    final customerMdacTask = <String, AutomationTask>{};
+    for (final task in widget.repository.tasks) {
+      if (task.type == TaskType.mdacRegistration) {
+        for (final cid in task.customerIds) {
+          final existing = customerMdacTask[cid];
+          if (existing == null || task.createdAt.isAfter(existing.createdAt)) {
+            customerMdacTask[cid] = task;
+          }
+        }
+      }
+    }
+
+    final unregistered = <Customer>[];
+    final rolledBack = <Customer>[];
+    final batchBuckets = <String, _BatchBucket>{};
+
+    for (final customer in customerList) {
+      final task = customerMdacTask[customer.id];
+      final isPending = customer.businessStatus == 'PENDING';
+      final isActionRequired = customer.businessStatus == 'ACTION_REQUIRED';
+
+      if (isActionRequired || (task != null && isPending)) {
+        rolledBack.add(customer);
+      } else if (isPending && task == null) {
+        unregistered.add(customer);
+      } else {
+        final batchKey = task != null
+            ? 'batch_${task.id}'
+            : 'date_${_dateOnly(customer.createdAt).toIso8601String()}';
+        final batchTime = task?.createdAt ?? customer.createdAt;
+        final bucket = batchBuckets[batchKey];
+        if (bucket == null) {
+          batchBuckets[batchKey] = _BatchBucket(
+            task: task,
+            batchTime: batchTime,
+            customers: [customer],
+          );
+        } else {
+          bucket.customers.add(customer);
+        }
+      }
+    }
+
+    final groups = <_CustomerBatchGroup>[];
+
+    if (unregistered.isNotEmpty) {
+      groups.add(
+        _CustomerBatchGroup(
+          id: 'unregistered',
+          title: '未注册客户',
+          subtitle: '尚未提交 MDAC 注册 · 共 ${unregistered.length} 位',
+          icon: Icons.hourglass_top_rounded,
+          iconColor: const Color(0xFF64748B),
+          badgeColor: const Color(0xFFF1F5F9),
+          customers: unregistered,
+        ),
+      );
+    }
+
+    if (rolledBack.isNotEmpty) {
+      groups.add(
+        _CustomerBatchGroup(
+          id: 'rolled_back',
+          title: '已回退客户',
+          subtitle: '已回退状态，待重新提交或处理 · 共 ${rolledBack.length} 位',
+          icon: Icons.replay_rounded,
+          iconColor: const Color(0xFFD97706),
+          badgeColor: const Color(0xFFFEF3C7),
+          customers: rolledBack,
+        ),
+      );
+    }
+
+    final sortedBatches = batchBuckets.entries.toList()
+      ..sort((a, b) => b.value.batchTime.compareTo(a.value.batchTime));
+
+    for (final entry in sortedBatches) {
+      final bucket = entry.value;
+      final title = _formatBatchTitle(bucket.batchTime);
+      final batchIdShort = bucket.task != null && bucket.task!.id.length > 8
+          ? bucket.task!.id.substring(0, 8)
+          : bucket.task?.id;
+      final subtitle = batchIdShort != null
+          ? '批次: $batchIdShort · 提交时间: ${formatDateTime(bucket.batchTime.toLocal())}'
+          : '提交时间: ${formatDateTime(bucket.batchTime.toLocal())}';
+
+      groups.add(
+        _CustomerBatchGroup(
+          id: entry.key,
+          title: title,
+          subtitle: subtitle,
+          icon: Icons.verified_rounded,
+          iconColor: AppTheme.teal,
+          badgeColor: AppTheme.mint,
+          customers: bucket.customers,
+          batchTime: bucket.batchTime,
+        ),
+      );
+    }
+
+    return groups;
+  }
+
+  void _toggleGroupSelection(_CustomerBatchGroup group) {
+    setState(() {
+      final groupIds = group.customers.map((c) => c.id).toSet();
+      final allSelected = group.customers.every((c) => selected.contains(c.id));
+      if (allSelected) {
+        selected.removeAll(groupIds);
+      } else {
+        selected.addAll(groupIds);
+      }
+    });
+  }
+
+  bool _allExpanded(List<_CustomerBatchGroup> groups) {
+    if (groups.isEmpty) return false;
+    return groups.every((g) => _expandedGroupIds.contains(g.id));
+  }
+
+  Widget _buildGroupCard(
+    _CustomerBatchGroup group,
+    bool compact,
+    bool isSearching,
+  ) {
+    final isExpanded = isSearching || _expandedGroupIds.contains(group.id);
+    final allSelected = group.customers.isNotEmpty &&
+        group.customers.every((c) => selected.contains(c.id));
+    final someSelected = group.customers.isNotEmpty &&
+        group.customers.any((c) => selected.contains(c.id)) &&
+        !allSelected;
+    final selectedInGroup =
+        group.customers.where((c) => selected.contains(c.id)).length;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isExpanded ? AppTheme.teal.withOpacity(0.35) : AppTheme.line,
+          width: isExpanded ? 1.5 : 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Material(
+            color: isExpanded ? const Color(0xFFF9FBFA) : Colors.white,
+            child: InkWell(
+              onTap: () {
+                setState(() {
+                  if (_expandedGroupIds.contains(group.id)) {
+                    _expandedGroupIds.remove(group.id);
+                  } else {
+                    _expandedGroupIds.add(group.id);
+                  }
+                });
+              },
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 12 : 16,
+                  vertical: 12,
+                ),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 30,
+                      child: Checkbox(
+                        value: allSelected,
+                        tristate: someSelected,
+                        onChanged: (_) => _toggleGroupSelection(group),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.all(7),
+                      decoration: BoxDecoration(
+                        color: group.badgeColor,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(group.icon, size: 20, color: group.iconColor),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  group.title,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.ink,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: selectedInGroup > 0
+                                      ? AppTheme.teal.withOpacity(0.12)
+                                      : const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  selectedInGroup > 0
+                                      ? '$selectedInGroup / ${group.customers.length} 已选'
+                                      : '${group.customers.length} 位',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: selectedInGroup > 0
+                                        ? AppTheme.teal
+                                        : AppTheme.muted,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            group.subtitle,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.muted,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    AnimatedRotation(
+                      turns: isExpanded ? 0.5 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppTheme.muted,
+                        size: 24,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1, color: AppTheme.line),
+            if (!compact)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF9FBFA),
+                  border: Border(bottom: BorderSide(color: AppTheme.line)),
+                ),
+                child: const Row(
+                  children: [
+                    SizedBox(width: 30),
+                    SizedBox(width: 8),
+                    Expanded(
+                      flex: 3,
+                      child: Text(
+                        '客户姓名',
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        '护照号码',
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        '业务状态',
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 100,
+                      child: Text(
+                        '录入日期',
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    SizedBox(width: 28),
+                  ],
+                ),
+              ),
+            ...group.customers.map(
+              (customer) => CustomerRow(
+                customer: customer,
+                checked: selected.contains(customer.id),
+                onCheck: (value) => setState(
+                  () => value == true
+                      ? selected.add(customer.id)
+                      : selected.remove(customer.id),
+                ),
+                onOpen: () => showCustomerDetail(
+                  context,
+                  customer,
+                  repository: widget.repository,
+                  onEdit: () => editCustomer(customer),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   Future<void> createManualCustomer() async {
@@ -4545,7 +4954,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
   @override
   Widget build(BuildContext context) {
     final list = filtered;
+    final groups = _buildCustomerGroups(list);
     final compact = MediaQuery.sizeOf(context).width < 700;
+    final isSearching = searchController.text.trim().isNotEmpty;
     return AppPage(
       eyebrow: 'CUSTOMERS · ${widget.repository.activeCustomers.length} ACTIVE',
       title: '客户档案',
@@ -4557,16 +4968,22 @@ class _CustomersScreenState extends State<CustomersScreen> {
         children: [
           IconButton.outlined(
             onPressed: () async {
-              final error = await widget.repository.syncCustomersFromSupabase();
+              final results = await Future.wait([
+                widget.repository.syncCustomersFromSupabase(),
+                widget.repository.syncAutomationTasksFromSupabase(),
+              ]);
               if (!context.mounted) return;
+              final error =
+                  results.firstWhere((e) => e != null, orElse: () => null);
               if (error != null) {
                 showToast(context, error, error: true);
               } else {
-                showToast(context, '已刷新客户档案。');
+                setState(() {});
+                showToast(context, '已刷新客户档案与批次。');
               }
             },
             icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
-            tooltip: '刷新客户档案',
+            tooltip: '刷新客户档案与批次',
           ),
           OutlinedButton.icon(
             onPressed: createManualCustomer,
@@ -4604,35 +5021,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       hintText: '搜索姓名或护照号码',
                       prefixIcon: Icon(Icons.search_rounded),
                       isDense: true,
-                    ),
-                  );
-                    final statusMenu = PopupMenuButton<String>(
-                    initialValue: businessStatusFilter,
-                    onSelected: (value) =>
-                        setState(() => businessStatusFilter = value),
-                    itemBuilder: (context) =>
-                        [
-                          '全部',
-                          '待处理',
-                          '已注册',
-                          '已收 PIN',
-                          'Registration 已查',
-                          'Visit Pass 已查',
-                          '需关注',
-                        ]
-                            .map(
-                              (item) =>
-                                  PopupMenuItem(value: item, child: Text(item)),
-                            )
-                            .toList(),
-                    child: OutlinedButton.icon(
-                      onPressed: null,
-                      icon: const Icon(Icons.flag_outlined),
-                      label: Text(
-                        businessStatusFilter == '全部'
-                            ? '业务状态'
-                            : '状态：$businessStatusFilter',
-                      ),
                     ),
                   );
                   final dateMenu = PopupMenuButton<String>(
@@ -4713,7 +5101,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      statusMenu,
                       dateMenu,
                       countryMenu,
                       sortMenu,
@@ -4780,137 +5167,67 @@ class _CustomersScreenState extends State<CustomersScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28),
-              child: SectionCard(
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    Container(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: compact ? 14 : 18,
-                        vertical: compact ? 10 : 14,
+              padding: const EdgeInsets.fromLTRB(28, 0, 28, 12),
+              child: Row(
+                children: [
+                  Text(
+                    '共 ${list.length} 位客户 · ${groups.length} 个分类卡片',
+                    style: const TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (groups.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          if (_allExpanded(groups)) {
+                            _expandedGroupIds.clear();
+                          } else {
+                            _expandedGroupIds.addAll(groups.map((g) => g.id));
+                          }
+                        });
+                      },
+                      icon: Icon(
+                        _allExpanded(groups)
+                            ? Icons.unfold_less_rounded
+                            : Icons.unfold_more_rounded,
+                        size: 16,
+                        color: AppTheme.teal,
                       ),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF9FBFA),
-                        borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(20),
+                      label: Text(
+                        _allExpanded(groups) ? '全部收起' : '全部展开',
+                        style: const TextStyle(
+                          color: AppTheme.teal,
+                          fontWeight: FontWeight.w700,
                         ),
-                      ),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 30,
-                            child: Checkbox(
-                              value:
-                                  list.isNotEmpty &&
-                                  list.every(
-                                    (customer) =>
-                                        selected.contains(customer.id),
-                                  ),
-                              tristate: list.isNotEmpty &&
-                                  list.any((c) => selected.contains(c.id)) &&
-                                  !list.every((c) => selected.contains(c.id)),
-                              onChanged: (_) => toggleAll(list),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          InkWell(
-                            onTap: () => toggleAll(list),
-                            borderRadius: BorderRadius.circular(4),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-                              child: Text(
-                                list.isNotEmpty && list.every((c) => selected.contains(c.id))
-                                    ? '取消全选 (${list.length})'
-                                    : '全选 (${list.length} 位客户)',
-                                style: TextStyle(
-                                  color: AppTheme.ink,
-                                  fontSize: compact ? 13 : 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ),
-                          if (!compact) ...[
-                            const SizedBox(width: 12),
-                            const Expanded(
-                              flex: 2,
-                              child: Text(
-                                '护照号码',
-                                style: TextStyle(
-                                  color: AppTheme.muted,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                            const Expanded(
-                              flex: 2,
-                              child: Text(
-                                '业务状态',
-                                style: TextStyle(
-                                  color: AppTheme.muted,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(
-                              width: 100,
-                              child: Text(
-                                '录入日期',
-                                style: TextStyle(
-                                  color: AppTheme.muted,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ] else ...[
-                            const Spacer(),
-                            if (selected.isNotEmpty)
-                              Text(
-                                '已选 ${selected.length} 人',
-                                style: const TextStyle(
-                                  color: AppTheme.teal,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                          ],
-                        ],
                       ),
                     ),
-                    if (list.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(32),
-                        child: EmptyState(
-                          icon: Icons.people_outline_rounded,
-                          title: '没有符合条件的客户',
-                          body: '可以导入护照资料，或清除当前搜索条件。',
-                        ),
-                      )
-                    else
-                      ...list.map(
-                        (customer) => CustomerRow(
-                          customer: customer,
-                          checked: selected.contains(customer.id),
-                          onCheck: (value) => setState(
-                            () => value == true
-                                ? selected.add(customer.id)
-                                : selected.remove(customer.id),
-                          ),
-                          onOpen: () => showCustomerDetail(
-                            context,
-                            customer,
-                            repository: widget.repository,
-                            onEdit: () => editCustomer(customer),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+                ],
               ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: groups.isEmpty
+                  ? const SectionCard(
+                      padding: EdgeInsets.all(32),
+                      child: EmptyState(
+                        icon: Icons.people_outline_rounded,
+                        title: '没有符合条件的客户',
+                        body: '可以导入护照资料，或清除当前搜索条件。',
+                      ),
+                    )
+                  : Column(
+                      children: groups
+                          .map((group) => _buildGroupCard(
+                                group,
+                                compact,
+                                isSearching,
+                              ))
+                          .toList(),
+                    ),
             ),
             if (selected.isNotEmpty)
               SelectionBar(
