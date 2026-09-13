@@ -623,34 +623,49 @@ async def query_and_capture_page(
                                     if trip_match:
                                         target_trip_id = trip_match.group(1)
 
-                                LOG.info("通过 requestSubmit(cetakSlip) 触发官方 PDF 下载 (Trip ID: %s)...", target_trip_id or "首行")
-                                async with page.expect_download(timeout=25000) as dl_info:
-                                    await page.evaluate("""ti => {
-                                        let trip = ti;
-                                        if (!trip) {
-                                            const a = document.querySelector("a[onclick*='printSlip']");
-                                            if (a) {
-                                                const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
-                                                if (m) trip = m[1];
-                                            }
-                                        }
-                                        const h = document.getElementById('hTripId');
-                                        if (h && trip) { h.value = trip; }
-                                        const c = document.getElementById('cetakSlip');
-                                        if (c && c.form) {
-                                            c.form.requestSubmit(c);
-                                        } else if (window.printSlip && trip) {
-                                            window.printSlip(trip);
-                                        }
-                                    }""", target_trip_id or "")
-                                dl = await dl_info.value
-                                temp_path = await dl.path()
-                                with open(temp_path, "rb") as f:
-                                    content = f.read()
-                                if len(content) >= 4 and content.startswith(b"%PDF"):
-                                    pdf_downloaded = content
+                                # 稳健下载循环：最多重试 2 次，支持 requestSubmit 与 direct printSlip 触发
+                                for dl_attempt in range(1, 3):
+                                    try:
+                                        LOG.info(
+                                            "触发官方 PDF 下载 (第 %d 次尝试, Trip ID: %s)...",
+                                            dl_attempt,
+                                            target_trip_id or "首行",
+                                        )
+                                        await asyncio.sleep(1.0)
+                                        async with page.expect_download(timeout=25000) as dl_info:
+                                            await page.evaluate("""ti => {
+                                                let trip = ti;
+                                                if (!trip) {
+                                                    const a = document.querySelector("a[onclick*='printSlip']");
+                                                    if (a) {
+                                                        const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
+                                                        if (m) trip = m[1];
+                                                    }
+                                                }
+                                                const h = document.getElementById('hTripId');
+                                                if (h && trip) { h.value = trip; }
+                                                const c = document.getElementById('cetakSlip');
+                                                if (c && c.form) {
+                                                    c.form.requestSubmit(c);
+                                                } else if (window.printSlip && trip) {
+                                                    window.printSlip(trip);
+                                                }
+                                            }""", target_trip_id or "")
+                                        dl = await dl_info.value
+                                        temp_path = await dl.path()
+                                        with open(temp_path, "rb") as f:
+                                            content = f.read()
+                                        if len(content) >= 4 and content.startswith(b"%PDF"):
+                                            pdf_downloaded = content
+                                            break
+                                    except Exception as single_dl_err:
+                                        LOG.warning(
+                                            "第 %d 次下载官方 PDF 失败或超时: %s",
+                                            dl_attempt,
+                                            single_dl_err,
+                                        )
                         except Exception as dl_err:
-                            LOG.warning("尝试下载官方 MDAC PDF 失败: %s，将回退全页截图", dl_err)
+                            LOG.warning("定位或下载官方 MDAC PDF 异常: %s，将回退全页截图", dl_err)
 
                         if pdf_downloaded is not None:
                             LOG.info("成功获取官方 MDAC Slip PDF (%d bytes)", len(pdf_downloaded))
@@ -665,14 +680,16 @@ async def query_and_capture_page(
                             })
 
                         screenshot = await page.screenshot(full_page=True, type="png")
-                        LOG.info("成功捕获官方查询结果页截图 (备用凭证)")
-                        return ("FOUND", screenshot, "png", {
+                        LOG.warning("未能获取官方 MDAC Slip PDF，已截取网页备查，判定为需要人工复核 (NEEDS_REVIEW)")
+                        return ("NEEDS_REVIEW", screenshot, "png", {
                             "source": "MDAC_CHECK_REGISTRATION",
                             "mode": "AUTO_SEARCH",
+                            "outcome": "PDF_DOWNLOAD_FAILED",
                             "evidence_type": "SCREENSHOT",
                             "slider_solved": True,
                             "submitted": True,
-                            "result_confirmed": True,
+                            "result_confirmed": False,
+                            "note": "官方已查到记录，但下载官方 PDF 超时或失败，已存截图等待复查",
                         })
 
                 screenshot = await page.screenshot(full_page=True, type="png")

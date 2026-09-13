@@ -254,6 +254,7 @@ const customerBusinessStatusOptions = <String>[
   'PIN_RECEIVED',
   'REGISTRATION_CHECKED',
   'VISIT_PASS_CHECKED',
+  'VISIT_PASS_NOT_FOUND',
   'ACTION_REQUIRED',
   'ARCHIVED',
 ];
@@ -4161,22 +4162,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   Future<void> importDocument() async {
     if (widget.repository.remoteMode) {
+      final beforeDraftIds =
+          widget.repository.ocrDrafts.map((d) => d.id).toSet();
       final result = await widget.repository.pickAndUploadDocument(widget.actor);
       if (!mounted || result == null) return;
-      if (result.isAllSuccess) {
-        showToast(
-          context,
-          result.totalSelected == 1
-              ? '文件已上传到私有 Storage，OCR 批次已建立。'
-              : '已成功上传 ${result.totalSelected} 个护照文件到私有 Storage，OCR 批次已建立。',
-        );
-      } else if (result.hasPartialSuccess) {
-        showToast(
-          context,
-          '成功上传 ${result.successCount} 个文件，${result.errors.length} 个失败。\n${result.errors.first}',
-          error: true,
-        );
-      } else {
+
+      if (result.successCount == 0) {
         showToast(
           context,
           result.errors.length == 1
@@ -4184,9 +4175,102 @@ class _CustomersScreenState extends State<CustomersScreen> {
               : '全部 ${result.errors.length} 个文件上传失败：\n${result.errors.first}',
           error: true,
         );
+        return;
+      }
+
+      if (result.hasPartialSuccess) {
+        showToast(
+          context,
+          '成功上传 ${result.successCount} 个文件，${result.errors.length} 个失败。\n${result.errors.first}',
+          error: true,
+        );
+      }
+
+      // 显示正在识别的进度提示框
+      bool dialogClosed = false;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) => AlertDialog(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: AppTheme.teal,
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Text(
+                      'AI 正在识别护照信息',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                      ),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      '文件已成功上传，正在自动提取姓名、护照号与机读码，请稍候...',
+                      style: TextStyle(color: AppTheme.muted, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ).then((_) {
+        dialogClosed = true;
+      });
+
+      // 轮询检查识别结果，通常 Azure AI 需 2~4 秒，最多等待 18 次（约 25 秒）
+      List<OcrDraft> newDrafts = [];
+      for (int i = 0; i < 18; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 1400));
+        if (!mounted || dialogClosed) break;
+        await widget.repository.syncOcrResultsFromSupabase();
+        newDrafts = widget.repository.ocrDrafts
+            .where((d) => !beforeDraftIds.contains(d.id))
+            .toList();
+        if (newDrafts.isNotEmpty) {
+          break;
+        }
+      }
+
+      // 关闭等待识别进度框
+      if (mounted && !dialogClosed && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      if (!mounted) return;
+
+      if (newDrafts.isNotEmpty) {
+        // 自动弹出新识别草稿的人工审核确认弹窗
+        for (final draft in newDrafts) {
+          if (!mounted) break;
+          await showOcrDraftReviewDialog(
+            context,
+            widget.repository,
+            widget.actor,
+            draft,
+          );
+        }
+      } else {
+        showToast(
+          context,
+          '护照文件已上传，识别仍在后台处理中；完成后将自动显示在页面顶部的待审核卡片中。',
+        );
       }
       return;
     }
+
 
     final choice = await showModalBottomSheet<bool>(
       context: context,
@@ -5573,15 +5657,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
               padding: const EdgeInsets.fromLTRB(28, 0, 28, 12),
               child: Row(
                 children: [
-                  Text(
-                    '共 ${list.length} 位客户 · ${groups.length} 个分类卡片',
-                    style: const TextStyle(
-                      color: AppTheme.muted,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+                  Expanded(
+                    child: Text(
+                      '共 ${list.length} 位客户 · ${groups.length} 个分类卡片',
+                      style: const TextStyle(
+                        color: AppTheme.muted,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  const Spacer(),
+                  const SizedBox(width: 8),
                   if (groups.isNotEmpty)
                     TextButton.icon(
                       onPressed: () {
@@ -5972,6 +6059,205 @@ class _UploadHistorySectionState extends State<UploadHistorySection> {
   }
 }
 
+Future<bool?> showOcrDraftReviewDialog(
+  BuildContext context,
+  DemoRepository repository,
+  String actor,
+  OcrDraft draft,
+) async {
+  final controllers = {
+    'fullName': TextEditingController(text: draft.fullName),
+    'passportNumber': TextEditingController(text: draft.passportNumber),
+    'dateOfBirth': TextEditingController(text: draft.dateOfBirth),
+    'placeOfBirth': TextEditingController(text: draft.placeOfBirth),
+    'nationality': TextEditingController(text: draft.nationality),
+    'passportExpiryDate': TextEditingController(
+      text: draft.passportExpiryDate,
+    ),
+  };
+  final formKey = GlobalKey<FormState>();
+  String? selectedGender = customerGenderOptions.contains(draft.gender)
+      ? draft.gender
+      : null;
+
+  Widget fieldBlock(String label, Widget field) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: AppTheme.muted,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 6),
+        field,
+      ],
+    ),
+  );
+
+  TextFormField textField(String key, String label) => TextFormField(
+    controller: controllers[key],
+    validator: (value) =>
+        value == null || value.trim().isEmpty ? '请输入$label' : null,
+    decoration: const InputDecoration(
+      isDense: true,
+      border: OutlineInputBorder(),
+    ),
+  );
+
+  TextFormField dateField(String key) => TextFormField(
+    controller: controllers[key],
+    keyboardType: TextInputType.number,
+    maxLength: 10,
+    inputFormatters: [MdacDateInputFormatter()],
+    validator: (value) =>
+        isMdacDate(value?.trim() ?? '') ? null : '请输入有效日期，格式为 DD/MM/YYYY',
+    decoration: const InputDecoration(
+      hintText: '输入 8 位数字，自动加入 /',
+      counterText: '',
+      isDense: true,
+      border: OutlineInputBorder(),
+    ),
+  );
+
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: const Text('人工确认 OCR 结果'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: SingleChildScrollView(
+            child: Form(
+              key: formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${draft.sourceLabel} · ${draft.sourceIndex}',
+                    style: const TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ConfidenceBanner(confidence: draft.confidence),
+                  const SizedBox(height: 16),
+                  fieldBlock('姓名', textField('fullName', '姓名')),
+                  fieldBlock('护照号码', textField('passportNumber', '护照号码')),
+                  fieldBlock('出生日期（DD/MM/YYYY）', dateField('dateOfBirth')),
+                  fieldBlock('出生地点', textField('placeOfBirth', '出生地点')),
+                  fieldBlock('国籍代码', textField('nationality', '国籍代码')),
+                  fieldBlock(
+                    '性别',
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedGender,
+                      decoration: const InputDecoration(
+                        hintText: '请选择性别',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: customerGenderOptions
+                          .map(
+                            (gender) => DropdownMenuItem(
+                              value: gender,
+                              child: Text(gender),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        setDialogState(() => selectedGender = value);
+                      },
+                      validator: (value) => value == null ? '请选择性别' : null,
+                    ),
+                  ),
+                  fieldBlock(
+                    '护照有效期（DD/MM/YYYY）',
+                    dateField('passportExpiryDate'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final confirm = await showDialog<bool>(
+                context: dialogContext,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('废弃此识别草稿？'),
+                  content: Text(
+                    '确定要废弃 ${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName} 的识别草稿吗？废弃后将不再显示。',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('返回'),
+                    ),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.danger,
+                      ),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('确认废弃'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await repository.discardOcrDraftWithSync(draft, actor);
+                if (dialogContext.mounted) {
+                  Navigator.pop(dialogContext, false);
+                  showToast(context, '已废弃该识别草稿。');
+                }
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+            child: const Text('废弃草稿'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (!(formKey.currentState?.validate() ?? false)) return;
+              final values = controllers.map(
+                (key, controller) => MapEntry(key, controller.text),
+              )..['gender'] = selectedGender ?? '';
+              final error = await repository.confirmOcrWithSync(
+                draft,
+                values,
+                actor,
+              );
+              if (!dialogContext.mounted) return;
+              if (error != null) {
+                showToast(dialogContext, error, error: true);
+              } else {
+                Navigator.pop(dialogContext, true);
+              }
+            },
+            child: const Text('确认并建档'),
+          ),
+        ],
+      ),
+    ),
+  );
+  await Future<void>.delayed(const Duration(milliseconds: 350));
+  for (final controller in controllers.values) {
+    controller.dispose();
+  }
+  if (result == true && context.mounted) {
+    showToast(context, '已创建客户档案，初始状态为待处理。');
+  }
+  return result;
+}
+
 class OcrDraftSection extends StatelessWidget {
   const OcrDraftSection({
     required this.repository,
@@ -5982,198 +6268,9 @@ class OcrDraftSection extends StatelessWidget {
   final DemoRepository repository;
   final String actor;
 
-  Future<void> review(BuildContext context, OcrDraft draft) async {
-    final controllers = {
-      'fullName': TextEditingController(text: draft.fullName),
-      'passportNumber': TextEditingController(text: draft.passportNumber),
-      'dateOfBirth': TextEditingController(text: draft.dateOfBirth),
-      'placeOfBirth': TextEditingController(text: draft.placeOfBirth),
-      'nationality': TextEditingController(text: draft.nationality),
-      'passportExpiryDate': TextEditingController(
-        text: draft.passportExpiryDate,
-      ),
-    };
-    final formKey = GlobalKey<FormState>();
-    String? selectedGender = customerGenderOptions.contains(draft.gender)
-        ? draft.gender
-        : null;
+  Future<void> review(BuildContext context, OcrDraft draft) =>
+      showOcrDraftReviewDialog(context, repository, actor, draft);
 
-    Widget fieldBlock(String label, Widget field) => Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppTheme.muted,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          field,
-        ],
-      ),
-    );
-
-    TextFormField textField(String key, String label) => TextFormField(
-      controller: controllers[key],
-      validator: (value) =>
-          value == null || value.trim().isEmpty ? '请输入$label' : null,
-      decoration: const InputDecoration(
-        isDense: true,
-        border: OutlineInputBorder(),
-      ),
-    );
-
-    TextFormField dateField(String key) => TextFormField(
-      controller: controllers[key],
-      keyboardType: TextInputType.number,
-      maxLength: 10,
-      inputFormatters: [MdacDateInputFormatter()],
-      validator: (value) =>
-          isMdacDate(value?.trim() ?? '') ? null : '请输入有效日期，格式为 DD/MM/YYYY',
-      decoration: const InputDecoration(
-        hintText: '输入 8 位数字，自动加入 /',
-        counterText: '',
-        isDense: true,
-        border: OutlineInputBorder(),
-      ),
-    );
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: const Text('人工确认 OCR 结果'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: SingleChildScrollView(
-              child: Form(
-                key: formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${draft.sourceLabel} · ${draft.sourceIndex}',
-                      style: const TextStyle(
-                        color: AppTheme.muted,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    ConfidenceBanner(confidence: draft.confidence),
-                    const SizedBox(height: 16),
-                    fieldBlock('姓名', textField('fullName', '姓名')),
-                    fieldBlock('护照号码', textField('passportNumber', '护照号码')),
-                    fieldBlock('出生日期（DD/MM/YYYY）', dateField('dateOfBirth')),
-                    fieldBlock('出生地点', textField('placeOfBirth', '出生地点')),
-                    fieldBlock('国籍代码', textField('nationality', '国籍代码')),
-                    fieldBlock(
-                      '性别',
-                      DropdownButtonFormField<String>(
-                        initialValue: selectedGender,
-                        decoration: const InputDecoration(
-                          hintText: '请选择性别',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        items: customerGenderOptions
-                            .map(
-                              (gender) => DropdownMenuItem(
-                                value: gender,
-                                child: Text(gender),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (value) {
-                          setDialogState(() => selectedGender = value);
-                        },
-                        validator: (value) => value == null ? '请选择性别' : null,
-                      ),
-                    ),
-                    fieldBlock(
-                      '护照有效期（DD/MM/YYYY）',
-                      dateField('passportExpiryDate'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                final confirm = await showDialog<bool>(
-                  context: dialogContext,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('废弃此识别草稿？'),
-                    content: Text(
-                      '确定要废弃 ${draft.fullName.isEmpty ? draft.passportNumber : draft.fullName} 的识别草稿吗？废弃后将不再显示。',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('返回'),
-                      ),
-                      FilledButton(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: AppTheme.danger,
-                        ),
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('确认废弃'),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirm == true) {
-                  await repository.discardOcrDraftWithSync(draft, actor);
-                  if (dialogContext.mounted) {
-                    Navigator.pop(dialogContext, false);
-                    showToast(context, '已废弃该识别草稿。');
-                  }
-                }
-              },
-              style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
-              child: const Text('废弃草稿'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                if (!(formKey.currentState?.validate() ?? false)) return;
-                final values = controllers.map(
-                  (key, controller) => MapEntry(key, controller.text),
-                )..['gender'] = selectedGender ?? '';
-                final error = await repository.confirmOcrWithSync(
-                  draft,
-                  values,
-                  actor,
-                );
-                if (!dialogContext.mounted) return;
-                if (error != null) {
-                  showToast(dialogContext, error, error: true);
-                } else {
-                  Navigator.pop(dialogContext, true);
-                }
-              },
-              child: const Text('确认并建档'),
-            ),
-          ],
-        ),
-      ),
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 350));
-    for (final controller in controllers.values) {
-      controller.dispose();
-    }
-    if (result == true && context.mounted) {
-      showToast(context, '已创建客户档案，初始状态为待处理。');
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -6298,11 +6395,32 @@ class TasksScreen extends StatefulWidget {
 
 class _TasksScreenState extends State<TasksScreen> {
   bool _recentBatchesExpanded = false;
+  Timer? _pollTimer;
 
   DemoRepository get repository => widget.repository;
 
   @override
+  void initState() {
+    super.initState();
+    if (repository.remoteMode) {
+      repository.syncAutomationTasksFromSupabase();
+      _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (mounted && repository.remoteMode) {
+          repository.syncAutomationTasksFromSupabase();
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+
     return AppPage(
       eyebrow: 'AUTOMATION QUEUE · ${repository.tasks.length} BATCHES',
       title: '任务队列',
@@ -9944,6 +10062,7 @@ String businessStatusLabel(String value) {
     'PIN_RECEIVED': '已收 PIN',
     'REGISTRATION_CHECKED': 'Registration 已查',
     'VISIT_PASS_CHECKED': 'Visit Pass 已查',
+    'VISIT_PASS_NOT_FOUND': '未出',
     'ACTION_REQUIRED': '需关注',
     'ARCHIVED': '已归档',
   };
@@ -9957,6 +10076,9 @@ Color statusColor(String value) {
       value == 'VISIT_PASS_CHECKED') {
     return AppTheme.mint;
   }
+  if (value == 'VISIT_PASS_NOT_FOUND') {
+    return const Color(0xFFF1F5F9);
+  }
   if (value == 'ACTION_REQUIRED') {
     return const Color(0xFFFFE2E0);
   }
@@ -9966,8 +10088,11 @@ Color statusColor(String value) {
   return const Color(0xFFE0EDF8);
 }
 
-Color statusTextColor(String value) =>
-    value == 'ACTION_REQUIRED' ? AppTheme.danger : AppTheme.ink;
+Color statusTextColor(String value) {
+  if (value == 'ACTION_REQUIRED') return AppTheme.danger;
+  if (value == 'VISIT_PASS_NOT_FOUND') return const Color(0xFF64748B);
+  return AppTheme.ink;
+}
 
 String taskTypeLabel(TaskType type) {
   switch (type) {

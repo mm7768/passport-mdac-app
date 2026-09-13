@@ -35,7 +35,7 @@ def generate_track(total_distance: float) -> list[float]:
     """Generate an ease-out displacement track simulating human drag."""
     track: list[float] = []
     current = 0.0
-    steps = random.randint(28, 36)
+    steps = random.randint(30, 36)
     for index in range(1, steps + 1):
         progress = index / steps
         ease_progress = (

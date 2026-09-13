@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.20-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
+          name: PassportMDAC-v1.0.21-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,16 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.20
-          name: "Passport MDAC Desk v1.0.20 (客户批次卡片、批次合并与自动回退)"
+          tag_name: v1.0.21
+          name: "Passport MDAC Desk v1.0.21 (任务队列自动轮询刷新 & 护照导入即时审核)"
           body: |
-            ### v1.0.20 更新内容：
-            - **客户档案折叠展开卡片**：取消平铺与顶部状态筛选按钮，按 MDAC 实际注册时间批次（今日注册批次、昨日注册批次等）、未注册客户、已回退客户进行手风琴卡片化管理，默认全部收起，支持顶部一键展开/收起，搜索时自适应展开。
-            - **卡片表头一键全选**：每个卡片表头自带复选框，可一键全选或取消全选该卡片内的所有客户。
-            - **跨批次合并客户功能**：新增批次合并功能，可在卡片表头一键将整个批次合并入目标批次，或在底部多选栏将选定客户统一并入目标批次。
-            - **回退客户状态时自动回退凭证与任务**：当客户业务状态回退到待处理时，系统联动自动回退并清理旧的 Check Registration PDF、Visit Pass 截图及进行中自动化任务。
-            - **客户列表与详情页刷新按钮**：客户档案列表与任务列表统一采用图标刷新按钮，一键同步 Supabase 最新数据。
+            ### v1.0.21 更新内容：
+            - **任务队列进入时自动同步与实时轮询**：打开任务队列界面自动拉取 Supabase 最新批次状态，并以 3 秒间隔静默轮询后台执行进度，离开页面自动注销定时器，告别手动刷新。
+            - **护照导入后即时 AI 解析与自动弹窗审核**：点击导入护照上传成功后，前端自动进入轻量等待并轮询识别结果（通常 2~4 秒），完成后自动秒级弹出《人工确认 OCR 结果》弹窗，无需刷新、无需重启应用。
+            - **Visit Pass 严格按列解析与全景防截断截图**：修复 Worker 误将历史记录到期日当成入境日的漏洞，严格只比对第一列 Date 入境日期；并在截图前动态扩展视口高度，确保完整截取自表单至准证表格的全景图。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.20.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

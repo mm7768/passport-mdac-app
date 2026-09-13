@@ -945,10 +945,19 @@ class SupabaseGateway {
     };
     if (businessStatus != null) {
       payload['business_status'] = businessStatus;
-      await rollbackCustomerEvidence(
-        customerIds: [id],
-        targetStatus: businessStatus,
-      );
+      // 只有在业务状态真正发生变更/降级时才级联清理凭证，防止单纯修改其他字段误删已有凭证
+      final currentCust = await client
+          .from('customers')
+          .select('business_status')
+          .eq('id', id)
+          .maybeSingle();
+      final currentStatus = currentCust?['business_status']?.toString();
+      if (currentStatus != null && currentStatus != businessStatus) {
+        await rollbackCustomerEvidence(
+          customerIds: [id],
+          targetStatus: businessStatus,
+        );
+      }
     }
     final row = await client
         .from('customers')
