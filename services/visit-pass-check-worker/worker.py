@@ -757,18 +757,13 @@ async def query_and_capture_page(
                     explicit_no_record = True
                     break
 
-                has_vp_table = (
-                    "visit pass information" in lowered_text
-                    or "type of pass" in lowered_text
-                    or "date of pass expiry" in lowered_text
-                    or "movement record" in lowered_text
-                    or "rekod pergerakan" in lowered_text
-                    or "pass type" in lowered_text
-                    or "jenis pas" in lowered_text
-                    or "social visit pass" in lowered_text
-                    or "date of entry" in lowered_text
-                    or "tarikh masuk" in lowered_text
-                )
+                # 必须明确检测到表格实体及关键表头（避免被页面初始静态文字 'movement record' 误触发）
+                has_vp_table = await page.evaluate("""() => {
+                    const table = document.querySelector('table#line, table');
+                    if (!table) return false;
+                    const text = (table.innerText || '').toLowerCase();
+                    return text.includes('date') && (text.includes('pass') || text.includes('entry') || text.includes('location'));
+                }""")
                 if has_vp_table:
                     break
 
@@ -798,28 +793,48 @@ async def query_and_capture_page(
                 outcome = "NO_RECORD"
                 note = "官方明确无此记录 (No Record Found)"
             elif has_vp_table:
+                # 严格按列比对：只比对第 1 列 Date（入境日），严禁把第 6 列 Date of Pass Expiry（到期日）误当成入境日
                 matched_box = await page.evaluate(
                     """(windowDates) => {
-                        const rows = Array.from(document.querySelectorAll('table tr'));
+                        const table = document.querySelector('table#line, table');
+                        if (!table) return null;
+                        const rows = Array.from(table.querySelectorAll('tr'));
+                        if (rows.length < 2) return null;
+
+                        const headerRow = rows[0];
+                        const headerCells = Array.from(headerRow.querySelectorAll('th, td')).map(c => (c.innerText || '').trim().toUpperCase());
+                        let dateColIdx = headerCells.findIndex(h => h.includes('DATE') && !h.includes('EXPIRY'));
+                        if (dateColIdx === -1) dateColIdx = 0;
+
+                        let typeColIdx = headerCells.findIndex(h => h.includes('ENTRY') || h.includes('EXIT'));
+
                         let matchedRow = null;
                         if (windowDates && windowDates.length > 0) {
-                            for (const r of rows) {
-                                const text = (r.innerText || '').toUpperCase();
-                                if (windowDates.some(d => text.includes(d.toUpperCase()))) {
+                            for (let i = 1; i < rows.length; i++) {
+                                const r = rows[i];
+                                const cells = Array.from(r.querySelectorAll('td, th'));
+                                if (cells.length === 0) continue;
+
+                                const dateText = (cells[dateColIdx] ? cells[dateColIdx].innerText : '').trim().toUpperCase();
+                                const movementType = typeColIdx !== -1 && cells[typeColIdx] ? (cells[typeColIdx].innerText || '').trim().toUpperCase() : '';
+                                if (movementType && movementType.includes('EXIT') && !movementType.includes('ENTRY')) {
+                                    continue;
+                                }
+
+                                if (windowDates.some(d => dateText.includes(d.toUpperCase()))) {
                                     matchedRow = r;
                                     break;
                                 }
                             }
                         }
+
                         if (!matchedRow && (!windowDates || windowDates.length === 0)) {
-                            const tables = Array.from(document.querySelectorAll('table'));
-                            for (const t of tables) {
-                                if ((t.innerText || '').toUpperCase().includes('VISIT PASS INFORMATION')) {
-                                    matchedRow = t;
-                                    break;
-                                }
+                            // 未指定目标入境日期时，若表格有有效数据行则选中第一行数据
+                            if (rows.length > 1) {
+                                matchedRow = rows[1];
                             }
                         }
+
                         if (matchedRow) {
                             const rect = matchedRow.getBoundingClientRect();
                             return {
@@ -860,13 +875,15 @@ async def query_and_capture_page(
                 outcome = "QUERY_TIMEOUT"
                 note = "官方页面无响应超时，未得出结论"
 
-            # 截图处理：确保每张图都有实质信息
+            # 截图处理：确保每张图都有实质信息，并动态扩展视口避免被 Playwright 900px 视口强制截断
             screenshot: bytes
-            doc_height = await page.evaluate("() => document.documentElement.scrollHeight || document.body.scrollHeight || 1000")
+            doc_height = await page.evaluate("() => Math.max(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0, 1000)")
             if outcome == "FOUND" and matched_box and matched_box.get("bottom"):
-                clip_bottom = int(matched_box["bottom"] + 25)
+                clip_bottom = int(matched_box["bottom"] + 35)
                 clip_height = min(max(clip_bottom, 400), doc_height)
                 LOG.info("方案 B 精准截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
+                await page.set_viewport_size({"width": 1280, "height": clip_height})
+                await page.wait_for_timeout(300)
                 screenshot = await page.screenshot(
                     clip={"x": 0, "y": 0, "width": 1280, "height": clip_height},
                     type="png",
@@ -874,13 +891,16 @@ async def query_and_capture_page(
             elif outcome == "NO_RECORD" and has_vp_table:
                 # 官方有历史旧记录：截取到历史表格底部，让使用者清晰核验历史记录
                 table_box = await page.evaluate("""() => {
-                    const t = document.querySelector('table');
+                    const t = document.querySelector('table#line, table');
                     if (!t) return null;
                     const r = t.getBoundingClientRect();
-                    return { bottom: r.y + window.scrollY + r.height + 25 };
+                    return { bottom: r.y + window.scrollY + r.height + 35 };
                 }""")
-                clip_bottom = int(table_box["bottom"]) if table_box and table_box.get("bottom") else 750
+                clip_bottom = int(table_box["bottom"]) if table_box and table_box.get("bottom") else 1400
                 clip_height = min(max(clip_bottom, 400), doc_height)
+                LOG.info("NO_RECORD 历史记录表格截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
+                await page.set_viewport_size({"width": 1280, "height": clip_height})
+                await page.wait_for_timeout(300)
                 screenshot = await page.screenshot(
                     clip={"x": 0, "y": 0, "width": 1280, "height": clip_height},
                     type="png",
@@ -893,6 +913,7 @@ async def query_and_capture_page(
                 )
             else:
                 screenshot = await page.screenshot(full_page=True, type="png")
+
 
             summary = {
                 "source": "MDAC_CHECK_VISIT_PASS",
