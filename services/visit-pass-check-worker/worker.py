@@ -479,7 +479,6 @@ class SupabaseAdminClient:
                 f"{self.rest_url}/visit_pass_checks",
                 params={
                     "customer_id": f"eq.{customer_id}",
-                    "screenshot_path": "not.is.null",
                     "select": "id, screenshot_path",
                 },
                 timeout=self.config.request_timeout_seconds,
@@ -491,30 +490,35 @@ class SupabaseAdminClient:
             for row in rows:
                 old_path = row.get("screenshot_path")
                 check_id = row.get("id")
-                if not old_path or old_path == current_screenshot_path:
+                if not check_id:
                     continue
-                # 1. 从 Storage 中删除旧截图文件
-                try:
-                    del_resp = self.session.delete(
-                        f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
-                        timeout=self.config.request_timeout_seconds,
-                    )
-                    if del_resp.ok or del_resp.status_code == 404:
-                        deleted_paths.append(old_path)
-                        LOG.info("已删除客户 %s 旧 Visit Pass 截图文件: %s", customer_id, old_path)
-                except Exception as e:
-                    LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
+                # 当前这批刚保存的新截图，严禁删除
+                if old_path and old_path == current_screenshot_path:
+                    continue
 
-                # 2. 将旧核验记录中的 screenshot_path 置空
+                # 1. 从 Storage 中删除旧截图文件
+                if old_path:
+                    try:
+                        del_resp = self.session.delete(
+                            f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
+                            timeout=self.config.request_timeout_seconds,
+                        )
+                        if del_resp.ok or del_resp.status_code == 404:
+                            deleted_paths.append(old_path)
+                            LOG.info("已删除客户 %s 旧 Visit Pass 截图文件: %s", customer_id, old_path)
+                    except Exception as e:
+                        LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
+
+                # 2. 从 visit_pass_checks 中物理删除该旧记录行（彻底避免客户档案呈现两条凭证）
                 try:
-                    self.session.patch(
+                    self.session.delete(
                         f"{self.rest_url}/visit_pass_checks",
                         params={"id": f"eq.{check_id}"},
-                        json={"screenshot_path": None},
                         timeout=self.config.request_timeout_seconds,
                     )
+                    LOG.info("已物理删除客户 %s 旧 Visit Pass 检查记录: %s", customer_id, check_id)
                 except Exception as e:
-                    LOG.warning("清空旧记录 %s screenshot_path 失败: %s", check_id, e)
+                    LOG.warning("删除旧记录 %s 失败: %s", check_id, e)
         except Exception as exc:
             LOG.warning("清理客户 %s 旧 Visit Pass 截图异常: %s", customer_id, exc)
         return deleted_paths
@@ -771,6 +775,10 @@ async def query_and_capture_page(
             await page.wait_for_timeout(2500)
             await page.evaluate("""() => {
                 document.querySelectorAll('.blockUI, .loading, .spinner, .overlay, .modal-backdrop').forEach(el => el.remove());
+                // 隐藏已完成的滑块验证码冗余占位（消除约 350px 空白，使查询输入与结果表格紧凑相邻）
+                document.querySelectorAll('#captcha, .sliderContainer, #sliderContainer, .slider-box').forEach(el => {
+                    el.style.display = 'none';
+                });
                 document.querySelectorAll('*').forEach(el => {
                     const style = window.getComputedStyle(el);
                     if (style && style.opacity && parseFloat(style.opacity) < 0.9) {
@@ -878,10 +886,20 @@ async def query_and_capture_page(
             # 截图处理：确保每张图都有实质信息，并动态扩展视口避免被 Playwright 900px 视口强制截断
             screenshot: bytes
             doc_height = await page.evaluate("() => Math.max(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0, 1000)")
+            table_box = await page.evaluate("""() => {
+                const t = document.querySelector('#div_maklumat, table#line, table');
+                if (!t) return null;
+                const r = t.getBoundingClientRect();
+                return { bottom: r.y + window.scrollY + r.height + 40 };
+            }""")
+
             if outcome == "FOUND" and matched_box and matched_box.get("bottom"):
-                clip_bottom = int(matched_box["bottom"] + 35)
+                clip_bottom = max(
+                    int(matched_box["bottom"] + 40),
+                    int(table_box["bottom"]) if table_box and table_box.get("bottom") else 0
+                )
                 clip_height = min(max(clip_bottom, 400), doc_height)
-                LOG.info("方案 B 精准截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
+                LOG.info("FOUND 精准截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)
                 await page.set_viewport_size({"width": 1280, "height": clip_height})
                 await page.wait_for_timeout(300)
                 screenshot = await page.screenshot(
@@ -890,12 +908,6 @@ async def query_and_capture_page(
                 )
             elif outcome == "NO_RECORD" and has_vp_table:
                 # 官方有历史旧记录：截取到历史表格底部，让使用者清晰核验历史记录
-                table_box = await page.evaluate("""() => {
-                    const t = document.querySelector('table#line, table');
-                    if (!t) return null;
-                    const r = t.getBoundingClientRect();
-                    return { bottom: r.y + window.scrollY + r.height + 35 };
-                }""")
                 clip_bottom = int(table_box["bottom"]) if table_box and table_box.get("bottom") else 1400
                 clip_height = min(max(clip_bottom, 400), doc_height)
                 LOG.info("NO_RECORD 历史记录表格截图截取区域：高度 0 ~ %d 像素 (页面总高度 %d)", clip_height, doc_height)

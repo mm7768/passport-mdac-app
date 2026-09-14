@@ -466,6 +466,7 @@ class SupabaseGateway {
           'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
         )
         .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
         .order('checked_at', ascending: false)
         .limit(20);
     final visitPassRows = await _requiredClient
@@ -474,18 +475,31 @@ class SupabaseGateway {
           'id, checked_at, normalized_status, screenshot_path, raw_summary, updated_at',
         )
         .eq('customer_id', customerId)
+        .not('screenshot_path', 'is', null)
         .order('checked_at', ascending: false)
         .limit(20);
-    return [
+
+    final allItems = <Map<String, dynamic>>[
       for (final row in registrationRows)
         {...Map<String, dynamic>.from(row), 'type': 'REGISTRATION_CHECK'},
       for (final row in visitPassRows)
         {...Map<String, dynamic>.from(row), 'type': 'VISIT_PASS_CHECK'},
     ]..sort(
-      (a, b) => (b['checked_at']?.toString() ?? '').compareTo(
-        a['checked_at']?.toString() ?? '',
-      ),
-    );
+        (a, b) => (b['checked_at']?.toString() ?? '').compareTo(
+          a['checked_at']?.toString() ?? '',
+        ),
+      );
+
+    // 每种类型（REGISTRATION_CHECK / VISIT_PASS_CHECK）仅保留最新一条有效凭证，防止档案中并存多条旧记录
+    final seenTypes = <String>{};
+    final uniqueItems = <Map<String, dynamic>>[];
+    for (final item in allItems) {
+      final type = item['type']?.toString() ?? '';
+      if (seenTypes.add(type)) {
+        uniqueItems.add(item);
+      }
+    }
+    return uniqueItems;
   }
 
   static Future<({String? passportImagePath, String? registrationPdfPath, String? visitPassScreenshotPath})>
@@ -591,9 +605,7 @@ class SupabaseGateway {
         } catch (_) {}
 
         try {
-          await client.from('visit_pass_checks').update({
-            'screenshot_path': null,
-          }).eq('id', checkId);
+          await client.from('visit_pass_checks').delete().eq('id', checkId);
         } catch (_) {}
       }
     } catch (_) {}

@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.21-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
+          name: PassportMDAC-v1.0.22-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,15 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.21
-          name: "Passport MDAC Desk v1.0.21 (任务队列自动轮询刷新 & 护照导入即时审核)"
+          tag_name: v1.0.22
+          name: "Passport MDAC Desk v1.0.22 (Visit Pass 全景高清截图 & 彻底清理重复凭证)"
           body: |
-            ### v1.0.21 更新内容：
-            - **任务队列进入时自动同步与实时轮询**：打开任务队列界面自动拉取 Supabase 最新批次状态，并以 3 秒间隔静默轮询后台执行进度，离开页面自动注销定时器，告别手动刷新。
-            - **护照导入后即时 AI 解析与自动弹窗审核**：点击导入护照上传成功后，前端自动进入轻量等待并轮询识别结果（通常 2~4 秒），完成后自动秒级弹出《人工确认 OCR 结果》弹窗，无需刷新、无需重启应用。
-            - **Visit Pass 严格按列解析与全景防截断截图**：修复 Worker 误将历史记录到期日当成入境日的漏洞，严格只比对第一列 Date 入境日期；并在截图前动态扩展视口高度，确保完整截取自表单至准证表格的全景图。
+            ### v1.0.22 更新内容：
+            - **Visit Pass 全景紧凑高清截图**：自动隐藏滑块多余占位，紧凑拼接查询条件与结果表格，动态拉伸视口截取整张结果表格（含完整入境与到期日信息），彻底告别截断。
+            - **客户档案旧凭证彻底清理与去重**：Worker 查到有效新记录后物理删除旧凭证行与 Storage 图片，前端仅展示最新单条有效凭证，彻底解决档案中同时显示“有效记录”与“未找到记录”两张截图的问题。
+            - **脏数据自动清洗与一键重启脚本**：纠正误判客户状态，清理历史重复记录，并提供桌面一键重启 Worker 脚本。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.21.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
