@@ -1125,6 +1125,96 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  Future<({String? error, String? newBatchId})> splitCustomersFromBatch({
+    required String sourceBatchId,
+    required List<String> customerIds,
+    String newBatchName = '1',
+    required String actor,
+  }) async {
+    if (customerIds.isEmpty) return (error: '请先选择需要拆分的客户。', newBatchId: null);
+    final finalName = newBatchName.trim().isEmpty ? '1' : newBatchName.trim();
+    if (!remoteMode) {
+      final sourceTask = tasks.where((t) => t.id == sourceBatchId).firstOrNull;
+      if (sourceTask == null) return (error: '来源批次不存在。', newBatchId: null);
+      final newId = 'task-${DateTime.now().millisecondsSinceEpoch}';
+      final splitIds = customerIds.where((cid) => sourceTask.customerIds.contains(cid)).toList();
+      if (splitIds.isEmpty) return (error: '选中的客户不在该批次中。', newBatchId: null);
+      sourceTask.customerIds.removeWhere((cid) => splitIds.contains(cid));
+      final newTask = AutomationTask(
+        id: newId,
+        type: sourceTask.type,
+        customerIds: splitIds,
+        createdAt: DateTime.now(),
+        createdBy: actor,
+        entryDate: sourceTask.entryDate,
+        exitDate: sourceTask.exitDate,
+        status: sourceTask.status,
+        successCount: splitIds.length,
+        note: finalName,
+      );
+      if (sourceTask.customerIds.isEmpty) {
+        tasks.removeWhere((t) => t.id == sourceBatchId);
+      }
+      tasks.insert(0, newTask);
+      auditEvents.insert(0, '$actor 从批次 $sourceBatchId 拆分 ${splitIds.length} 位客户至新批次 $newId ($finalName)');
+      notifyListeners();
+      return (error: null, newBatchId: newId);
+    }
+    try {
+      final res = await SupabaseGateway.splitCustomersFromBatch(
+        sourceBatchId: sourceBatchId,
+        customerIds: customerIds,
+        newBatchName: finalName,
+        actor: actor,
+      );
+      final newBatchId = res['new_batch_id']?.toString();
+      await syncAutomationTasksFromSupabase();
+      await syncCustomersFromSupabase();
+      auditEvents.insert(0, '$actor 从批次 $sourceBatchId 拆分 ${customerIds.length} 位客户至新批次 $newBatchId ($finalName)');
+      notifyListeners();
+      return (error: null, newBatchId: newBatchId);
+    } catch (exception) {
+      return (error: '拆分批次失败：$exception', newBatchId: null);
+    }
+  }
+
+  Future<String?> updateBatchNote({
+    required String batchId,
+    required String note,
+  }) async {
+    final trimmed = note.trim().isEmpty ? '1' : note.trim();
+    final task = tasks.where((t) => t.id == batchId).firstOrNull;
+    if (task != null) {
+      final idx = tasks.indexOf(task);
+      tasks[idx] = AutomationTask(
+        id: task.id,
+        type: task.type,
+        customerIds: task.customerIds,
+        createdAt: task.createdAt,
+        createdBy: task.createdBy,
+        entryDate: task.entryDate,
+        exitDate: task.exitDate,
+        status: task.status,
+        successCount: task.successCount,
+        failedCount: task.failedCount,
+        note: trimmed,
+        items: task.items,
+      );
+      notifyListeners();
+    }
+    if (remoteMode) {
+      try {
+        await SupabaseGateway.updateAutomationBatchNote(
+          batchId: batchId,
+          note: trimmed,
+        );
+      } catch (e) {
+        // non-blocking
+      }
+    }
+    return null;
+  }
+
   Future<String?> syncAutomationTasksFromSupabase() async {
     if (!remoteMode) return null;
     try {
@@ -3532,7 +3622,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
     for (final entry in sortedBatches) {
       final bucket = entry.value;
-      final customName = _customGroupNames[entry.key] ?? '1';
+      final customName = _customGroupNames[entry.key] ??
+          ((bucket.task?.note.trim().isNotEmpty ?? false)
+              ? bucket.task!.note.trim()
+              : '1');
       final baseTitle = _formatBatchTitle(bucket.batchTime);
       final title = '【$customName】 $baseTitle';
       final batchIdShort = bucket.task != null && bucket.task!.id.length > 8
@@ -3730,6 +3823,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
                         ),
                       ),
+                      const SizedBox(width: 4),
+                      TextButton.icon(
+                        onPressed: () => _showSplitBatchDialog(group),
+                        icon: const Icon(Icons.call_split_rounded, size: 15),
+                        label: const Text('拆分'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.teal,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        ),
+                      ),
                     ],
                     const SizedBox(width: 4),
                     AnimatedRotation(
@@ -3891,6 +3996,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
       setState(() {
         _customGroupNames[group.id] = finalName;
       });
+      if (group.id.startsWith('batch_')) {
+        final batchId = group.id.replaceFirst('batch_', '');
+        await widget.repository.updateBatchNote(
+          batchId: batchId,
+          note: finalName,
+        );
+      }
       showToast(context, '已将卡片命名为“$finalName”');
     }
   }
@@ -4208,6 +4320,355 @@ class _CustomersScreenState extends State<CustomersScreen> {
         _expandedGroupIds.add(selectedTargetGroupId);
       });
       showToast(context, '已成功将 ${customerIds.length} 位客户合并至目标批次！');
+    }
+  }
+
+  Future<void> _showSplitBatchDialog(_CustomerBatchGroup sourceGroup) async {
+    if (sourceGroup.customers.isEmpty) {
+      showToast(context, '该批次卡片内暂无客户可拆分。', error: true);
+      return;
+    }
+
+    final groupCustomerIds = sourceGroup.customers.map((c) => c.id).toSet();
+    final initialSelected = selected.intersection(groupCustomerIds);
+    final selectedIds = Set<String>.from(initialSelected);
+
+    final nameController = TextEditingController(text: '1');
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.call_split_rounded, color: AppTheme.teal),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('拆分客户批次', overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '来源批次：',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.verified_rounded,
+                          size: 18,
+                          color: AppTheme.teal,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${sourceGroup.title} (${sourceGroup.customers.length} 位客户)',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.ink,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '选择要拆出的客户 (${selectedIds.length} / ${sourceGroup.customers.length})：',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.muted,
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () {
+                              setDlgState(() {
+                                selectedIds.addAll(sourceGroup.customers.map((c) => c.id));
+                              });
+                            },
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            ),
+                            child: const Text('全选', style: TextStyle(fontSize: 12)),
+                          ),
+                          const SizedBox(width: 4),
+                          TextButton(
+                            onPressed: () {
+                              setDlgState(() {
+                                selectedIds.clear();
+                              });
+                            },
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            ),
+                            child: const Text('清空', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.white,
+                    ),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: sourceGroup.customers.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.line),
+                      itemBuilder: (context, index) {
+                        final customer = sourceGroup.customers[index];
+                        final isChecked = selectedIds.contains(customer.id);
+                        return CheckboxListTile(
+                          value: isChecked,
+                          dense: true,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                          title: Text(
+                            customer.fullName,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '护照: ${customer.passportNumber} · 状态: ${customer.businessStatus}',
+                            style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                          ),
+                          onChanged: (val) {
+                            setDlgState(() {
+                              if (val == true) {
+                                selectedIds.add(customer.id);
+                              } else {
+                                selectedIds.remove(customer.id);
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '新批次卡片名称（自定义命名）：',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: nameController,
+                    decoration: InputDecoration(
+                      hintText: '默认为“1”，可自由输入新卡片名称',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () => nameController.clear(),
+                      ),
+                    ),
+                    onChanged: (_) => setDlgState(() {}),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFBBF7D0)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Color(0xFF16A34A),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            selectedIds.length == sourceGroup.customers.length
+                                ? '确认后，原批次的全部 ${selectedIds.length} 位客户将转移至新卡片【${nameController.text.trim().isEmpty ? '1' : nameController.text.trim()}】中。'
+                                : '确认后，选中的 ${selectedIds.length} 位客户将拆分并生成新卡片【${nameController.text.trim().isEmpty ? '1' : nameController.text.trim()}】，原卡片保留剩余 ${sourceGroup.customers.length - selectedIds.length} 位客户。',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF15803D),
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: selectedIds.isEmpty
+                  ? null
+                  : () => Navigator.pop(dlgCtx, true),
+              icon: const Icon(Icons.call_split_rounded, size: 16),
+              label: const Text('确认拆分'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final finalNewName = nameController.text.trim().isEmpty ? '1' : nameController.text.trim();
+    nameController.dispose();
+
+    if (confirmed != true || !mounted) return;
+
+    final sourceBatchId = sourceGroup.id.replaceFirst('batch_', '');
+    final customerIds = selectedIds.toList();
+
+    final result = await widget.repository.splitCustomersFromBatch(
+      sourceBatchId: sourceBatchId,
+      customerIds: customerIds,
+      newBatchName: finalNewName,
+      actor: widget.actor,
+    );
+
+    if (!mounted) return;
+    if (result.error != null) {
+      showToast(context, result.error!, error: true);
+    } else {
+      setState(() {
+        if (result.newBatchId != null) {
+          final newGroupId = 'batch_${result.newBatchId}';
+          _customGroupNames[newGroupId] = finalNewName;
+          _expandedGroupIds.add(newGroupId);
+        }
+        selected.removeAll(customerIds);
+      });
+      showToast(context, '已成功拆分 ${customerIds.length} 位客户至新卡片“$finalNewName”！');
+    }
+  }
+
+  Future<void> splitSelectedBatches() async {
+    if (selected.isEmpty) {
+      showToast(context, '请先选择要拆分的客户。');
+      return;
+    }
+
+    final allGroups = _buildCustomerGroups(widget.repository.activeCustomers);
+    final batchGroups = allGroups.where((g) => g.id.startsWith('batch_')).toList();
+
+    final involvedGroups = batchGroups.where((g) {
+      return g.customers.any((c) => selected.contains(c.id));
+    }).toList();
+
+    if (involvedGroups.isEmpty) {
+      showToast(context, '所选客户不属于任何已提交的 MDAC 批次卡片。', error: true);
+      return;
+    }
+
+    if (involvedGroups.length == 1) {
+      await _showSplitBatchDialog(involvedGroups.first);
+      return;
+    }
+
+    _CustomerBatchGroup chosenGroup = involvedGroups.first;
+    final chosen = await showDialog<bool>(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.call_split_rounded, color: AppTheme.teal),
+              SizedBox(width: 8),
+              Text('选择要拆分的批次卡片'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '当前勾选的客户分布在多个不同的批次卡片中，请选择要操作的来源批次：',
+                style: TextStyle(fontSize: 13, color: AppTheme.muted),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<_CustomerBatchGroup>(
+                value: chosenGroup,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+                items: involvedGroups.map((g) {
+                  final selCountInGroup = g.customers.where((c) => selected.contains(c.id)).length;
+                  return DropdownMenuItem<_CustomerBatchGroup>(
+                    value: g,
+                    child: Text('${g.title} (已选 $selCountInGroup / ${g.customers.length} 位)'),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  if (val != null) {
+                    setDlgState(() => chosenGroup = val);
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dlgCtx, true),
+              child: const Text('下一步'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (chosen == true && mounted) {
+      await _showSplitBatchDialog(chosenGroup);
     }
   }
 
@@ -5816,6 +6277,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     ? updateSelectedCreatedAt
                     : null,
                 onMergeBatch: mergeSelectedBatches,
+                onSplitBatch: splitSelectedBatches,
                 onExport: exportSelected,
                 onDelete: widget.role == UserRole.owner ? deleteSelected : null,
               ),
@@ -7966,6 +8428,7 @@ class SelectionBar extends StatelessWidget {
     this.onStatus,
     this.onCreatedAt,
     this.onMergeBatch,
+    this.onSplitBatch,
     required this.onExport,
     this.onBundlePdf,
     this.onDelete,
@@ -7980,6 +8443,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback? onMergeBatch;
+  final VoidCallback? onSplitBatch;
   final VoidCallback onExport;
   final VoidCallback? onBundlePdf;
   final VoidCallback? onDelete;
@@ -8056,6 +8520,12 @@ class SelectionBar extends StatelessWidget {
               avatar: const Icon(Icons.merge_type_rounded, size: 16),
               label: const Text('合并批次'),
               onPressed: onMergeBatch,
+            ),
+          if (onSplitBatch != null)
+            ActionChip(
+              avatar: const Icon(Icons.call_split_rounded, size: 16),
+              label: const Text('拆分批次'),
+              onPressed: onSplitBatch,
             ),
           ActionChip(
             avatar: const Icon(Icons.file_download_outlined, size: 16),
