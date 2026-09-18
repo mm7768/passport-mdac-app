@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.22-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
+          name: PassportMDAC-v1.0.23-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,15 +86,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.22
-          name: "Passport MDAC Desk v1.0.22 (Visit Pass 全景高清截图 & 彻底清理重复凭证)"
+          tag_name: v1.0.23
+          name: "Passport MDAC Desk v1.0.23 (分类卡片自定义重命名 & Check Registration 官方 PDF 下载修复)"
           body: |
-            ### v1.0.22 更新内容：
-            - **Visit Pass 全景紧凑高清截图**：自动隐藏滑块多余占位，紧凑拼接查询条件与结果表格，动态拉伸视口截取整张结果表格（含完整入境与到期日信息），彻底告别截断。
-            - **客户档案旧凭证彻底清理与去重**：Worker 查到有效新记录后物理删除旧凭证行与 Storage 图片，前端仅展示最新单条有效凭证，彻底解决档案中同时显示“有效记录”与“未找到记录”两张截图的问题。
-            - **脏数据自动清洗与一键重启脚本**：纠正误判客户状态，清理历史重复记录，并提供桌面一键重启 Worker 脚本。
+            ### v1.0.23 更新内容：
+            - **客户档案分类卡片命名功能**：支持批次分类卡片自定义重命名，默认命名为“1”，并在卡片右上角提供便捷的「重命名」编辑按钮与弹窗，方便按团号、日期或自定义类别进行分类管理。
+            - **Check Registration 官方 PDF 凭证下载修复**：优化 Playwright 原生下载事件机制，查验 MDAC 注册成功后直接获取官方真实 MDAC Slip PDF 文件并同步至档案。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.22.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -3252,6 +3252,7 @@ class _CustomerBatchGroup {
     required this.badgeColor,
     required this.customers,
     this.batchTime,
+    this.customName,
   });
 
   final String id;
@@ -3262,6 +3263,7 @@ class _CustomerBatchGroup {
   final Color badgeColor;
   final List<Customer> customers;
   final DateTime? batchTime;
+  final String? customName;
 }
 
 class _BatchBucket {
@@ -3298,6 +3300,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
   final Set<String> _expandedGroupIds = <String>{};
+  final Map<String, String> _customGroupNames = <String, String>{};
   late String businessStatusFilter;
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
@@ -3529,7 +3532,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
     for (final entry in sortedBatches) {
       final bucket = entry.value;
-      final title = _formatBatchTitle(bucket.batchTime);
+      final customName = _customGroupNames[entry.key] ?? '1';
+      final baseTitle = _formatBatchTitle(bucket.batchTime);
+      final title = '【$customName】 $baseTitle';
       final batchIdShort = bucket.task != null && bucket.task!.id.length > 8
           ? bucket.task!.id.substring(0, 8)
           : bucket.task?.id;
@@ -3547,6 +3552,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
           badgeColor: AppTheme.mint,
           customers: bucket.customers,
           batchTime: bucket.batchTime,
+          customName: customName,
         ),
       );
     }
@@ -3702,6 +3708,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     if (group.id.startsWith('batch_')) ...[
                       const SizedBox(width: 4),
                       TextButton.icon(
+                        onPressed: () => _renameGroupDialog(group),
+                        icon: const Icon(Icons.edit_outlined, size: 15),
+                        label: const Text('重命名'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.teal,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      TextButton.icon(
                         onPressed: () => _showMergeBatchDialog(group),
                         icon: const Icon(Icons.merge_type_rounded, size: 15),
                         label: const Text('合并'),
@@ -3810,6 +3828,71 @@ class _CustomersScreenState extends State<CustomersScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _renameGroupDialog(_CustomerBatchGroup group) async {
+    final currentName = group.customName ?? _customGroupNames[group.id] ?? '1';
+    final controller = TextEditingController(text: currentName);
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dlgCtx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.edit_outlined, color: AppTheme.teal),
+            SizedBox(width: 8),
+            Text('重命名分类卡片'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '请输入该批次卡片的自定义名称（默认为“1”）：',
+              style: TextStyle(fontSize: 13, color: AppTheme.muted),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: '例如：1、VIP旅行团、9月18批次等',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.clear, size: 18),
+                  onPressed: () => controller.clear(),
+                ),
+              ),
+              onSubmitted: (val) => Navigator.pop(dlgCtx, val.trim()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dlgCtx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dlgCtx, controller.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+
+    if (newName != null && mounted) {
+      final finalName = newName.isEmpty ? '1' : newName;
+      setState(() {
+        _customGroupNames[group.id] = finalName;
+      });
+      showToast(context, '已将卡片命名为“$finalName”');
+    }
   }
 
   Future<void> _showMergeBatchDialog(_CustomerBatchGroup sourceGroup) async {

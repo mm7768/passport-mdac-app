@@ -623,7 +623,7 @@ async def query_and_capture_page(
                                     if trip_match:
                                         target_trip_id = trip_match.group(1)
 
-                                # 稳健下载循环：最多重试 2 次，支持 requestSubmit 与 direct printSlip 触发
+                                # 稳健下载循环：优先直接点击目标行的官方 PDF 链接，若失败再回退 JS 触发
                                 for dl_attempt in range(1, 3):
                                     try:
                                         LOG.info(
@@ -631,36 +631,32 @@ async def query_and_capture_page(
                                             dl_attempt,
                                             target_trip_id or "首行",
                                         )
-                                        await asyncio.sleep(1.0)
-                                        async with page.expect_download(timeout=25000) as dl_info:
-                                            await page.evaluate("""ti => {
-                                                let trip = ti;
-                                                if (!trip) {
-                                                    const a = document.querySelector("a[onclick*='printSlip']");
-                                                    if (a) {
-                                                        const m = (a.getAttribute('onclick') || '').match(/printSlip\\(['"]?([^'"]+)['"]?\\)/);
-                                                        if (m) trip = m[1];
+                                        await asyncio.sleep(0.5)
+                                        async with page.expect_download(timeout=20000) as dl_info:
+                                            if await link_locator.count() > 0:
+                                                await link_locator.click()
+                                            elif target_trip_id:
+                                                await page.evaluate("""ti => {
+                                                    if (window.printSlip) {
+                                                        window.printSlip(ti);
+                                                    } else {
+                                                        const h = document.getElementById('hTripId');
+                                                        if (h) h.value = ti;
+                                                        const c = document.getElementById('cetakSlip');
+                                                        if (c) c.click();
                                                     }
-                                                }
-                                                const h = document.getElementById('hTripId');
-                                                if (h && trip) { h.value = trip; }
-                                                const c = document.getElementById('cetakSlip');
-                                                if (c && c.form) {
-                                                    c.form.requestSubmit(c);
-                                                } else if (window.printSlip && trip) {
-                                                    window.printSlip(trip);
-                                                }
-                                            }""", target_trip_id or "")
+                                                }""", target_trip_id)
                                         dl = await dl_info.value
                                         temp_path = await dl.path()
                                         with open(temp_path, "rb") as f:
                                             content = f.read()
                                         if len(content) >= 4 and content.startswith(b"%PDF"):
                                             pdf_downloaded = content
+                                            LOG.info("官方 PDF 下载成功 (%d 字节)", len(content))
                                             break
                                     except Exception as single_dl_err:
                                         LOG.warning(
-                                            "第 %d 次下载官方 PDF 失败或超时: %s",
+                                            "第 %d 次下载官方 PDF 失败: %s",
                                             dl_attempt,
                                             single_dl_err,
                                         )
