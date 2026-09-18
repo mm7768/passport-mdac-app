@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.23-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
+          name: PassportMDAC-v1.0.24-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,14 +86,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.23
-          name: "Passport MDAC Desk v1.0.23 (分类卡片自定义重命名 & Check Registration 官方 PDF 下载修复)"
+          tag_name: v1.0.24
+          name: "Passport MDAC Desk v1.0.24 (支持客户档案分类卡片拆分与持久化命名)"
           body: |
-            ### v1.0.23 更新内容：
-            - **客户档案分类卡片命名功能**：支持批次分类卡片自定义重命名，默认命名为“1”，并在卡片右上角提供便捷的「重命名」编辑按钮与弹窗，方便按团号、日期或自定义类别进行分类管理。
-            - **Check Registration 官方 PDF 凭证下载修复**：优化 Playwright 原生下载事件机制，查验 MDAC 注册成功后直接获取官方真实 MDAC Slip PDF 文件并同步至档案。
+            ### v1.0.24 更新内容：
+            - **客户档案分类卡片拆分功能**：支持在批次分类卡片上点击「拆分」按钮或底部多选栏点击「拆分批次」，自由勾选指定客户拆出并生成新的独立卡片，支持自定义命名（默认“1”），自动更新两端人数统计与配置快照。
+            - **批次卡片命名持久化**：重命名卡片时自动写入数据库保存，跨设备或重启应用后自定义名称不丢失。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.23.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
