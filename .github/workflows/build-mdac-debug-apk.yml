@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.24-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
+          name: PassportMDAC-v1.0.25-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,14 +86,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.24
-          name: "Passport MDAC Desk v1.0.24 (支持客户档案分类卡片拆分与持久化命名)"
+          tag_name: v1.0.25
+          name: "Passport MDAC Desk v1.0.25 (修复手机端分类卡片标题栏按钮溢出问题)"
           body: |
-            ### v1.0.24 更新内容：
-            - **客户档案分类卡片拆分功能**：支持在批次分类卡片上点击「拆分」按钮或底部多选栏点击「拆分批次」，自由勾选指定客户拆出并生成新的独立卡片，支持自定义命名（默认“1”），自动更新两端人数统计与配置快照。
-            - **批次卡片命名持久化**：重命名卡片时自动写入数据库保存，跨设备或重启应用后自定义名称不丢失。
+            ### v1.0.25 更新内容：
+            - **移动端分类卡片布局适配与防溢出**：重构分类卡片在移动窄屏下的交互设计。在小屏手机上，折叠状态下通过右上角优雅的「更多操作」弹出菜单（包含重命名、合并、拆分）杜绝任何溢出（解决 OVERFLOWED BY 47 PIXELS），并最大化卡片标题与人数展示区域；在展开状态下于卡片内提供专属管理按钮条，大屏设备上保持直观平铺按钮，体验更丝滑。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.24.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

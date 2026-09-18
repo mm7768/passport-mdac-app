@@ -3690,12 +3690,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isExpanded ? AppTheme.teal.withOpacity(0.35) : AppTheme.line,
+          color: isExpanded ? AppTheme.teal.withValues(alpha: 0.35) : AppTheme.line,
           width: isExpanded ? 1.5 : 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 6,
             offset: const Offset(0, 2),
           ),
@@ -3725,14 +3725,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 child: Row(
                   children: [
                     SizedBox(
-                      width: 30,
+                      width: 28,
                       child: Checkbox(
                         value: allSelected,
                         tristate: someSelected,
                         onChanged: (_) => _toggleGroupSelection(group),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     Container(
                       padding: const EdgeInsets.all(7),
                       decoration: BoxDecoration(
@@ -3741,7 +3741,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       ),
                       child: Icon(group.icon, size: 20, color: group.iconColor),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3751,23 +3751,23 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               Flexible(
                                 child: Text(
                                   group.title,
-                                  style: const TextStyle(
-                                    fontSize: 15,
+                                  style: TextStyle(
+                                    fontSize: compact ? 14 : 15,
                                     fontWeight: FontWeight.w800,
                                     color: AppTheme.ink,
                                   ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 6),
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
+                                  horizontal: 6,
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
                                   color: selectedInGroup > 0
-                                      ? AppTheme.teal.withOpacity(0.12)
+                                      ? AppTheme.teal.withValues(alpha: 0.12)
                                       : const Color(0xFFF1F5F9),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
@@ -3789,8 +3789,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           const SizedBox(height: 2),
                           Text(
                             group.subtitle,
-                            style: const TextStyle(
-                              fontSize: 12,
+                            style: TextStyle(
+                              fontSize: compact ? 11 : 12,
                               color: AppTheme.muted,
                             ),
                             overflow: TextOverflow.ellipsis,
@@ -3799,44 +3799,93 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       ),
                     ),
                     if (group.id.startsWith('batch_')) ...[
-                      const SizedBox(width: 4),
-                      TextButton.icon(
-                        onPressed: () => _renameGroupDialog(group),
-                        icon: const Icon(Icons.edit_outlined, size: 15),
-                        label: const Text('重命名'),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppTheme.teal,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          visualDensity: VisualDensity.compact,
-                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                      if (!compact) ...[
+                        const SizedBox(width: 4),
+                        TextButton.icon(
+                          onPressed: () => _renameGroupDialog(group),
+                          icon: const Icon(Icons.edit_outlined, size: 15),
+                          label: const Text('重命名'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppTheme.teal,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 4),
-                      TextButton.icon(
-                        onPressed: () => _showMergeBatchDialog(group),
-                        icon: const Icon(Icons.merge_type_rounded, size: 15),
-                        label: const Text('合并'),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppTheme.teal,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          visualDensity: VisualDensity.compact,
-                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        const SizedBox(width: 4),
+                        TextButton.icon(
+                          onPressed: () => _showMergeBatchDialog(group),
+                          icon: const Icon(Icons.merge_type_rounded, size: 15),
+                          label: const Text('合并'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppTheme.teal,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 4),
-                      TextButton.icon(
-                        onPressed: () => _showSplitBatchDialog(group),
-                        icon: const Icon(Icons.call_split_rounded, size: 15),
-                        label: const Text('拆分'),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppTheme.teal,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          visualDensity: VisualDensity.compact,
-                          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        const SizedBox(width: 4),
+                        TextButton.icon(
+                          onPressed: () => _showSplitBatchDialog(group),
+                          icon: const Icon(Icons.call_split_rounded, size: 15),
+                          label: const Text('拆分'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppTheme.teal,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
                         ),
-                      ),
+                      ] else ...[
+                        PopupMenuButton<String>(
+                          icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppTheme.teal),
+                          tooltip: '批次操作',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 120),
+                          onSelected: (val) {
+                            if (val == 'rename') _renameGroupDialog(group);
+                            if (val == 'merge') _showMergeBatchDialog(group);
+                            if (val == 'split') _showSplitBatchDialog(group);
+                          },
+                          itemBuilder: (ctx) => [
+                            const PopupMenuItem(
+                              value: 'rename',
+                              height: 38,
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit_outlined, size: 16, color: AppTheme.teal),
+                                  SizedBox(width: 8),
+                                  Text('重命名卡片', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'merge',
+                              height: 38,
+                              child: Row(
+                                children: [
+                                  Icon(Icons.merge_type_rounded, size: 16, color: AppTheme.teal),
+                                  SizedBox(width: 8),
+                                  Text('合并批次', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'split',
+                              height: 38,
+                              child: Row(
+                                children: [
+                                  Icon(Icons.call_split_rounded, size: 16, color: AppTheme.teal),
+                                  SizedBox(width: 8),
+                                  Text('拆分批次', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 2),
                     AnimatedRotation(
                       turns: isExpanded ? 0.5 : 0.0,
                       duration: const Duration(milliseconds: 200),
@@ -3853,6 +3902,62 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ),
           if (isExpanded) ...[
             const Divider(height: 1, color: AppTheme.line),
+            if (compact && group.id.startsWith('batch_'))
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF8FAFC),
+                  border: Border(bottom: BorderSide(color: AppTheme.line)),
+                ),
+                child: Row(
+                  children: [
+                    const Text(
+                      '批次操作：',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.muted,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () => _renameGroupDialog(group),
+                      icon: const Icon(Icons.edit_outlined, size: 14),
+                      label: const Text('重命名'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppTheme.teal,
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    TextButton.icon(
+                      onPressed: () => _showMergeBatchDialog(group),
+                      icon: const Icon(Icons.merge_type_rounded, size: 14),
+                      label: const Text('合并'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppTheme.teal,
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    TextButton.icon(
+                      onPressed: () => _showSplitBatchDialog(group),
+                      icon: const Icon(Icons.call_split_rounded, size: 14),
+                      label: const Text('拆分'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppTheme.teal,
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (!compact)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
