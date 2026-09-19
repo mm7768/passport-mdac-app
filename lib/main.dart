@@ -451,6 +451,7 @@ class AutomationTask {
     this.status = TaskStatus.queued,
     this.successCount = 0,
     this.failedCount = 0,
+    this.totalCountOverride,
     this.note = '',
     this.items = const <Map<String, dynamic>>[],
   });
@@ -465,13 +466,21 @@ class AutomationTask {
   TaskStatus status;
   int successCount;
   int failedCount;
+  final int? totalCountOverride;
   String note;
   final List<Map<String, dynamic>> items;
 
   int get needsReviewCount =>
       items.where((it) => it['status'] == 'NEEDS_REVIEW').length;
-  int get totalCount =>
-      customerIds.isNotEmpty ? customerIds.length : (items.isNotEmpty ? items.length : 0);
+  int get totalCount {
+    if (totalCountOverride != null && totalCountOverride! > 0) {
+      return totalCountOverride!;
+    }
+    if (customerIds.isNotEmpty) return customerIds.length;
+    if (items.isNotEmpty) return items.length;
+    final sum = successCount + failedCount;
+    return sum > 0 ? sum : 0;
+  }
   int get completedCount =>
       successCount + failedCount + (status == TaskStatus.needsReview ? needsReviewCount : 0);
   double get progress =>
@@ -1261,6 +1270,8 @@ class DemoRepository extends ChangeNotifier {
                   .length;
               return remote > fromItems ? remote : fromItems;
             }(),
+            totalCountOverride:
+                int.tryParse(row['total_count']?.toString() ?? ''),
             note: row['note']?.toString() ?? '',
             items: items,
           ),
@@ -8812,7 +8823,7 @@ class TaskRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    '${task.customerIds.length} 位客户 · ${formatDateTime(task.createdAt)}',
+                    '${task.totalCount} 位客户 · ${formatDateTime(task.createdAt)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(color: AppTheme.muted, fontSize: 10),
@@ -8944,7 +8955,7 @@ class TaskRow extends StatelessWidget {
               ),
               const SizedBox(height: 3),
               Text(
-                '${task.id} · ${task.customerIds.length} 位客户 · ${formatDateTime(task.createdAt)}',
+                '${task.id} · ${task.totalCount} 位客户 · ${formatDateTime(task.createdAt)}',
                 style: const TextStyle(color: AppTheme.muted, fontSize: 11),
               ),
             ],

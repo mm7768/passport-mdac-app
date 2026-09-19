@@ -722,8 +722,8 @@ class SupabaseGateway {
           'error_message, result_unknown, created_at, updated_at',
         )
         .inFilter('batch_id', batchIds)
-        .order('created_at', ascending: true)
-        .limit(500);
+        .order('created_at', ascending: false)
+        .limit(3000);
     final items = itemRows
         .map((row) => Map<String, dynamic>.from(row))
         .toList();
@@ -738,7 +738,7 @@ class SupabaseGateway {
                 'result_confirmed_at, updated_at',
               )
               .inFilter('batch_item_id', itemIds)
-              .limit(500);
+              .limit(3000);
     final registrationByItem = <String, Map<String, dynamic>>{
       for (final row in registrationRows)
         if (row['batch_item_id'] != null)
@@ -754,7 +754,7 @@ class SupabaseGateway {
                 'challenge_type, submitted, result_confirmed, updated_at',
               )
               .inFilter('batch_item_id', itemIds)
-              .limit(500);
+              .limit(3000);
     final registrationCheckByItem = <String, Map<String, dynamic>>{
       for (final row in registrationCheckRows)
         if (row['batch_item_id'] != null)
@@ -770,7 +770,7 @@ class SupabaseGateway {
                 'challenge_type, submitted, result_confirmed, updated_at',
               )
               .inFilter('batch_item_id', itemIds)
-              .limit(500);
+              .limit(3000);
     final visitPassCheckByItem = <String, Map<String, dynamic>>{
       for (final row in visitPassCheckRows)
         if (row['batch_item_id'] != null)

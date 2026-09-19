@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.26.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.25-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
+          name: PassportMDAC-v1.0.26-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.26.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,13 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.25
-          name: "Passport MDAC Desk v1.0.25 (修复手机端分类卡片标题栏按钮溢出问题)"
+          tag_name: v1.0.26
+          name: "Passport MDAC Desk v1.0.26 (修复任务队列进度及客户数显示异常)"
           body: |
-            ### v1.0.25 更新内容：
-            - **移动端分类卡片布局适配与防溢出**：重构分类卡片在移动窄屏下的交互设计。在小屏手机上，折叠状态下通过右上角优雅的「更多操作」弹出菜单（包含重命名、合并、拆分）杜绝任何溢出（解决 OVERFLOWED BY 47 PIXELS），并最大化卡片标题与人数展示区域；在展开状态下于卡片内提供专属管理按钮条，大屏设备上保持直观平铺按钮，体验更丝滑。
+            ### v1.0.26 更新内容：
+            - **修复任务队列进度条与客户人数显示异常**：
+              - 解决当数据库明细历史记录超过 500 条时，因正序查询截断导致最新批次项为 0 的问题；优化为倒序拉取并放宽容量上限至 3000 项。
+              - 批次卡片总人数与进度全面绑定批次实际客户总数（优先取用批次 `total_count`），杜绝出现 `/0 完成` 与 `0 位客户` 的异常现象。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.25.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.26.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
