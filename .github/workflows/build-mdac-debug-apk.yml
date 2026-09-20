@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.27.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.27-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.27.apk
+          name: PassportMDAC-v1.0.28-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,17 +86,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.27
-          name: "Passport MDAC Desk v1.0.27 (重构分类卡片头部布局为双行经典视图)"
+          tag_name: v1.0.28
+          name: "Passport MDAC Desk v1.0.28 (修复 _dependents.isEmpty 断言及手势嵌套冲突)"
           body: |
-            ### v1.0.27 更新内容：
-            - **重构客户档案分类卡片头部布局**：
-              - **左侧**：保留勾选框与批次类型状态图标；
-              - **中间上行**：展示批次卡片自定义名称（带编辑图标，点击可直接重命名）及专属人数标签（如「25 人」）；
-              - **中间下行**：清晰显示批次创建/提交日期；
-              - **右侧双行**：垂直并列「合并」与「拆分」便捷操作按钮，杜绝小屏横向溢出，折叠/展开均可直接快捷操作。
+            ### v1.0.28 更新内容：
+            - **彻底修复 Android 端 `_dependents.isEmpty: is not true` 断言红屏异常**：
+              - 解耦卡片头部事件监听机制，消除多层 `InkWell` 嵌套导致的手势竞技场与 Material 依赖回收冲突；
+              - 点击卡片展开/收起、勾选批次全选框、点击「合并/拆分」以及重命名，均拥有独立事件响应，互不干扰；
+              - 为每个批次分类卡片赋予唯一 `ValueKey(group.id)`，消除动态批次合并/拆分时的 Widget 元素复用冲突；
+              - 优化合并与拆分弹窗标题布局，移除无边界限制下的 `Expanded` 组件。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.27.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

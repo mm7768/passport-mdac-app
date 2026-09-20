@@ -3708,6 +3708,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         : group.subtitle;
 
     return Container(
+      key: ValueKey(group.id),
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -3730,212 +3731,217 @@ class _CustomersScreenState extends State<CustomersScreen> {
         children: [
           Material(
             color: isExpanded ? const Color(0xFFF9FBFA) : Colors.white,
-            child: InkWell(
-              onTap: () {
-                setState(() {
-                  if (_expandedGroupIds.contains(group.id)) {
-                    _expandedGroupIds.remove(group.id);
-                  } else {
-                    _expandedGroupIds.add(group.id);
-                  }
-                });
-              },
-              child: Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: compact ? 12 : 16,
-                  vertical: 10,
-                ),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 28,
-                      child: Checkbox(
-                        value: allSelected,
-                        tristate: someSelected,
-                        onChanged: (_) => _toggleGroupSelection(group),
-                      ),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 12 : 16,
+                vertical: 10,
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 28,
+                    child: Checkbox(
+                      value: allSelected,
+                      tristate: someSelected,
+                      onChanged: (_) => _toggleGroupSelection(group),
                     ),
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.all(7),
-                      decoration: BoxDecoration(
-                        color: group.badgeColor,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(group.icon, size: 20, color: group.iconColor),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              Flexible(
-                                child: isBatch
-                                    ? InkWell(
-                                        onTap: () => _renameGroupDialog(group),
-                                        borderRadius: BorderRadius.circular(4),
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(vertical: 2),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Flexible(
-                                                child: Text(
-                                                  displayName,
-                                                  style: TextStyle(
-                                                    fontSize: compact ? 14 : 15,
-                                                    fontWeight: FontWeight.w800,
-                                                    color: AppTheme.ink,
-                                                  ),
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 4),
-                                              const Icon(
-                                                Icons.edit_outlined,
-                                                size: 13,
-                                                color: AppTheme.teal,
-                                              ),
-                                            ],
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        setState(() {
+                          if (_expandedGroupIds.contains(group.id)) {
+                            _expandedGroupIds.remove(group.id);
+                          } else {
+                            _expandedGroupIds.add(group.id);
+                          }
+                        });
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(7),
+                              decoration: BoxDecoration(
+                                color: group.badgeColor,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(group.icon, size: 20, color: group.iconColor),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          displayName,
+                                          style: TextStyle(
+                                            fontSize: compact ? 14 : 15,
+                                            fontWeight: FontWeight.w800,
+                                            color: AppTheme.ink,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (isBatch) ...[
+                                        const SizedBox(width: 4),
+                                        GestureDetector(
+                                          onTap: () => _renameGroupDialog(group),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(2),
+                                            child: Icon(
+                                              Icons.edit_outlined,
+                                              size: 14,
+                                              color: AppTheme.teal,
+                                            ),
                                           ),
                                         ),
-                                      )
-                                    : Text(
-                                        displayName,
-                                        style: TextStyle(
-                                          fontSize: compact ? 14 : 15,
-                                          fontWeight: FontWeight.w800,
-                                          color: AppTheme.ink,
+                                      ],
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 2,
                                         ),
-                                        overflow: TextOverflow.ellipsis,
+                                        decoration: BoxDecoration(
+                                          color: selectedInGroup > 0
+                                              ? AppTheme.teal.withValues(alpha: 0.12)
+                                              : const Color(0xFFF1F5F9),
+                                          borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(
+                                            color: selectedInGroup > 0
+                                                ? AppTheme.teal.withValues(alpha: 0.4)
+                                                : const Color(0xFFCBD5E1),
+                                            width: 0.8,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          selectedInGroup > 0
+                                              ? '$selectedInGroup / ${group.customers.length} 已选'
+                                              : '${group.customers.length} 人',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: selectedInGroup > 0
+                                                ? AppTheme.teal
+                                                : AppTheme.ink,
+                                          ),
+                                        ),
                                       ),
-                              ),
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: selectedInGroup > 0
-                                      ? AppTheme.teal.withValues(alpha: 0.12)
-                                      : const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                    color: selectedInGroup > 0
-                                        ? AppTheme.teal.withValues(alpha: 0.4)
-                                        : const Color(0xFFCBD5E1),
-                                    width: 0.8,
+                                    ],
                                   ),
-                                ),
-                                child: Text(
-                                  selectedInGroup > 0
-                                      ? '$selectedInGroup / ${group.customers.length} 已选'
-                                      : '${group.customers.length} 人',
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    dateSubtitle,
+                                    style: TextStyle(
+                                      fontSize: compact ? 11 : 12,
+                                      color: AppTheme.muted,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (isBatch) ...[
+                    const SizedBox(width: 6),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        InkWell(
+                          onTap: () => _showMergeBatchDialog(group),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2.5,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppTheme.teal.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: AppTheme.teal.withValues(alpha: 0.25),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.merge_type_rounded, size: 13, color: AppTheme.teal),
+                                SizedBox(width: 3),
+                                Text(
+                                  '合并',
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
-                                    color: selectedInGroup > 0
-                                        ? AppTheme.teal
-                                        : AppTheme.ink,
+                                    color: AppTheme.teal,
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            dateSubtitle,
-                            style: TextStyle(
-                              fontSize: compact ? 11 : 12,
-                              color: AppTheme.muted,
+                              ],
                             ),
-                            overflow: TextOverflow.ellipsis,
                           ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 4),
+                        InkWell(
+                          onTap: () => _showSplitBatchDialog(group),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2.5,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0D9488).withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: const Color(0xFF0D9488).withValues(alpha: 0.25),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.call_split_rounded, size: 13, color: Color(0xFF0D9488)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '拆分',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF0D9488),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    if (isBatch) ...[
-                      const SizedBox(width: 6),
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          InkWell(
-                            onTap: () => _showMergeBatchDialog(group),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2.5,
-                              ),
-                              decoration: BoxDecoration(
-                                color: AppTheme.teal.withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: AppTheme.teal.withValues(alpha: 0.25),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.merge_type_rounded, size: 13, color: AppTheme.teal),
-                                  SizedBox(width: 3),
-                                  Text(
-                                    '合并',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppTheme.teal,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          InkWell(
-                            onTap: () => _showSplitBatchDialog(group),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2.5,
-                              ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF0D9488).withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: const Color(0xFF0D9488).withValues(alpha: 0.25),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.call_split_rounded, size: 13, color: Color(0xFF0D9488)),
-                                  SizedBox(width: 3),
-                                  Text(
-                                    '拆分',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFF0D9488),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                    const SizedBox(width: 6),
-                    AnimatedRotation(
+                  ],
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        if (_expandedGroupIds.contains(group.id)) {
+                          _expandedGroupIds.remove(group.id);
+                        } else {
+                          _expandedGroupIds.add(group.id);
+                        }
+                      });
+                    },
+                    child: AnimatedRotation(
                       turns: isExpanded ? 0.5 : 0.0,
                       duration: const Duration(milliseconds: 200),
                       child: const Icon(
@@ -3944,8 +3950,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                         size: 22,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -4122,13 +4128,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
       context: context,
       builder: (dlgCtx) => StatefulBuilder(
         builder: (dlgCtx, setDlgState) => AlertDialog(
-          title: Row(
+          title: const Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.merge_type_rounded, color: AppTheme.teal),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('合并客户批次', overflow: TextOverflow.ellipsis),
-              ),
+              Icon(Icons.merge_type_rounded, color: AppTheme.teal),
+              SizedBox(width: 8),
+              Text('合并客户批次'),
             ],
           ),
           content: SizedBox(
@@ -4438,12 +4443,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
       builder: (dlgCtx) => StatefulBuilder(
         builder: (dlgCtx, setDlgState) => AlertDialog(
           title: const Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.call_split_rounded, color: AppTheme.teal),
               SizedBox(width: 8),
-              Expanded(
-                child: Text('拆分客户批次', overflow: TextOverflow.ellipsis),
-              ),
+              Text('拆分客户批次'),
             ],
           ),
           content: SizedBox(
