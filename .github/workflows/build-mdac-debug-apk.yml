@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.28-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
+          name: PassportMDAC-v1.0.29-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,17 +86,23 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.28
-          name: "Passport MDAC Desk v1.0.28 (修复 _dependents.isEmpty 断言及手势嵌套冲突)"
+          tag_name: v1.0.29
+          name: "Passport MDAC Desk v1.0.29 (支持批次任务失败项拆分及成功项下一步流转)"
           body: |
-            ### v1.0.28 更新内容：
-            - **彻底修复 Android 端 `_dependents.isEmpty: is not true` 断言红屏异常**：
-              - 解耦卡片头部事件监听机制，消除多层 `InkWell` 嵌套导致的手势竞技场与 Material 依赖回收冲突；
-              - 点击卡片展开/收起、勾选批次全选框、点击「合并/拆分」以及重命名，均拥有独立事件响应，互不干扰；
-              - 为每个批次分类卡片赋予唯一 `ValueKey(group.id)`，消除动态批次合并/拆分时的 Widget 元素复用冲突；
-              - 优化合并与拆分弹窗标题布局，移除无边界限制下的 `Expanded` 组件。
+            ### v1.0.29 更新内容：
+            - **支持批次任务未完成项拆分**：
+              - 在「任务队列」卡片（紧凑与宽屏布局）及详情弹窗中，新增「拆分未完成项」功能；
+              - 提供「推荐：一键拆分全部未完成客户到新批次」，拆分后原批次自动转为 100% 已完成，未完成客户移入新批次独立重试；
+              - 提供详细客户勾选列表，清晰展示每位客户的执行状态（成功/失败/待核验）以及具体失败原因说明；
+            - **成功客户直接流转下一步**：
+              - 修复任务拦截逻辑，已成功的客户不再受批次中其他未完成客户的牵连，可自由创建下一步任务；
+              - 任务卡片与详情弹窗中新增「选中成功客户前往档案」按钮，一键跨 Tab 跳转并自动勾选这批客户，底部操作栏（打包 PDF、发起任务等）立即可用；
+            - **数据库状态精准同步**：
+              - 修复 `split_customers_from_batch` RPC 在移动客户后未触发批次状态重算的问题，原批次客户全部成功后即刻自动转为 `SUCCEEDED`；
+            - **客户档案批次卡片拆分体验优化**：
+              - 客户档案卡片拆分弹窗新增「仅未完成」快捷勾选按钮。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.28.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
