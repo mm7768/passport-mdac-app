@@ -228,7 +228,7 @@ class CustomerBundleExporter {
     }
     final zipEncoder = ZipEncoder();
     final encoded = zipEncoder.encode(archive);
-    return Uint8List.fromList(encoded ?? <int>[]);
+    return Uint8List.fromList(encoded);
   }
 
   /// Generates the standard file name for a customer: YYYYMMDD_客户姓名.pdf

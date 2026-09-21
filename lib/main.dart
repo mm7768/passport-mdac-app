@@ -485,6 +485,40 @@ class AutomationTask {
       successCount + failedCount + (status == TaskStatus.needsReview ? needsReviewCount : 0);
   double get progress =>
       totalCount == 0 ? 0 : (completedCount / totalCount).clamp(0.0, 1.0);
+
+  List<String> get succeededCustomerIds {
+    if (items.isNotEmpty) {
+      return items
+          .where((it) => it['status'] == 'SUCCEEDED')
+          .map((it) => it['customer_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toList();
+    }
+    return const <String>[];
+  }
+
+  List<String> get uncompletedCustomerIds {
+    if (items.isNotEmpty) {
+      return items
+          .where((it) => it['status'] != 'SUCCEEDED')
+          .map((it) => it['customer_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toList();
+    }
+    return const <String>[];
+  }
+
+  bool get hasPartialFailures =>
+      successCount > 0 &&
+      (failedCount > 0 ||
+          needsReviewCount > 0 ||
+          status == TaskStatus.needsReview ||
+          status == TaskStatus.partialSuccess);
+
+  bool get canSplitTask =>
+      totalCount > 1 &&
+      (uncompletedCustomerIds.isNotEmpty || failedCount > 0 || needsReviewCount > 0) &&
+      successCount > 0;
 }
 
 class CustomerHardDeletePreview {
@@ -1149,6 +1183,37 @@ class DemoRepository extends ChangeNotifier {
       final splitIds = customerIds.where((cid) => sourceTask.customerIds.contains(cid)).toList();
       if (splitIds.isEmpty) return (error: '选中的客户不在该批次中。', newBatchId: null);
       sourceTask.customerIds.removeWhere((cid) => splitIds.contains(cid));
+      final movedItems = <Map<String, dynamic>>[];
+      if (sourceTask.items.isNotEmpty) {
+        final remainingItems = <Map<String, dynamic>>[];
+        for (final it in sourceTask.items) {
+          final cid = it['customer_id']?.toString() ?? '';
+          if (splitIds.contains(cid)) {
+            movedItems.add(it);
+          } else {
+            remainingItems.add(it);
+          }
+        }
+        sourceTask.items
+          ..clear()
+          ..addAll(remainingItems);
+        sourceTask.successCount = remainingItems.where((it) => it['status'] == 'SUCCEEDED').length;
+        sourceTask.failedCount = remainingItems.where((it) => it['status'] == 'FAILED' || it['status'] == 'NEEDS_REVIEW').length;
+        if (sourceTask.totalCount > 0 && sourceTask.successCount == sourceTask.totalCount) {
+          sourceTask.status = TaskStatus.succeeded;
+        }
+      } else {
+        sourceTask.successCount = (sourceTask.successCount - splitIds.length).clamp(0, sourceTask.customerIds.length);
+        if (sourceTask.totalCount > 0 && sourceTask.successCount == sourceTask.totalCount) {
+          sourceTask.status = TaskStatus.succeeded;
+        }
+      }
+      final newSuccessCount = movedItems.isNotEmpty
+          ? movedItems.where((it) => it['status'] == 'SUCCEEDED').length
+          : 0;
+      final newFailedCount = movedItems.isNotEmpty
+          ? movedItems.where((it) => it['status'] == 'FAILED' || it['status'] == 'NEEDS_REVIEW').length
+          : 0;
       final newTask = AutomationTask(
         id: newId,
         type: sourceTask.type,
@@ -1157,9 +1222,13 @@ class DemoRepository extends ChangeNotifier {
         createdBy: actor,
         entryDate: sourceTask.entryDate,
         exitDate: sourceTask.exitDate,
-        status: sourceTask.status,
-        successCount: splitIds.length,
+        status: newSuccessCount == splitIds.length && splitIds.isNotEmpty
+            ? TaskStatus.succeeded
+            : (newFailedCount > 0 ? TaskStatus.needsReview : TaskStatus.queued),
+        successCount: newSuccessCount,
+        failedCount: newFailedCount,
         note: finalName,
+        items: movedItems,
       );
       if (sourceTask.customerIds.isEmpty) {
         tasks.removeWhere((t) => t.id == sourceBatchId);
@@ -2358,6 +2427,15 @@ class DemoRepository extends ChangeNotifier {
       if ((task.status == TaskStatus.queued ||
               task.status == TaskStatus.running) &&
           task.customerIds.contains(customerId)) {
+        if (task.items.isNotEmpty) {
+          final item = task.items.firstWhere(
+            (it) => it['customer_id']?.toString() == customerId,
+            orElse: () => const <String, dynamic>{},
+          );
+          if (item.isNotEmpty && item['status'] == 'SUCCEEDED') {
+            continue;
+          }
+        }
         return task;
       }
     }
@@ -2867,14 +2945,25 @@ class MdacShell extends StatefulWidget {
 class _MdacShellState extends State<MdacShell> {
   AppSection section = AppSection.overview;
   String? customerStatusFilter;
+  List<String>? preSelectedCustomerIds;
 
   void open(AppSection target) => setState(() {
     section = target;
-    if (target != AppSection.customers) customerStatusFilter = null;
+    if (target != AppSection.customers) {
+      customerStatusFilter = null;
+      preSelectedCustomerIds = null;
+    }
   });
 
   void openCustomers([String? statusFilter]) => setState(() {
     customerStatusFilter = statusFilter;
+    preSelectedCustomerIds = null;
+    section = AppSection.customers;
+  });
+
+  void openCustomersWithSelection(List<String> customerIds) => setState(() {
+    customerStatusFilter = null;
+    preSelectedCustomerIds = List<String>.from(customerIds);
     section = AppSection.customers;
   });
 
@@ -2927,9 +3016,13 @@ class _MdacShellState extends State<MdacShell> {
           actor: widget.userName,
           role: widget.role,
           initialBusinessStatusFilter: customerStatusFilter,
+          initialSelectedCustomerIds: preSelectedCustomerIds,
         );
       case AppSection.tasks:
-        return TasksScreen(repository: widget.repository);
+        return TasksScreen(
+          repository: widget.repository,
+          onOpenCustomersWithSelection: openCustomersWithSelection,
+        );
       case AppSection.settings:
         return SettingsScreen(
           repository: widget.repository,
@@ -3385,6 +3478,7 @@ class CustomersScreen extends StatefulWidget {
     required this.actor,
     required this.role,
     this.initialBusinessStatusFilter,
+    this.initialSelectedCustomerIds,
     super.key,
   });
 
@@ -3392,6 +3486,7 @@ class CustomersScreen extends StatefulWidget {
   final String actor;
   final UserRole role;
   final String? initialBusinessStatusFilter;
+  final List<String>? initialSelectedCustomerIds;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -3413,9 +3508,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
   void initState() {
     super.initState();
     businessStatusFilter = widget.initialBusinessStatusFilter ?? '全部';
+    if (widget.initialSelectedCustomerIds != null &&
+        widget.initialSelectedCustomerIds!.isNotEmpty) {
+      selected.addAll(widget.initialSelectedCustomerIds!);
+    }
     if (widget.repository.tasks.isEmpty && widget.repository.remoteMode) {
       widget.repository.syncAutomationTasksFromSupabase().then((_) {
         if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(CustomersScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialSelectedCustomerIds != null &&
+        widget.initialSelectedCustomerIds!.isNotEmpty &&
+        widget.initialSelectedCustomerIds != oldWidget.initialSelectedCustomerIds) {
+      setState(() {
+        selected.addAll(widget.initialSelectedCustomerIds!);
       });
     }
   }
@@ -4505,8 +4616,27 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           color: AppTheme.muted,
                         ),
                       ),
-                      Row(
+                      Wrap(
+                        spacing: 2,
                         children: [
+                          if (sourceGroup.customers.any((c) => c.businessStatus != 'MDAC_REGISTERED'))
+                            TextButton(
+                              onPressed: () {
+                                setDlgState(() {
+                                  selectedIds.clear();
+                                  selectedIds.addAll(
+                                    sourceGroup.customers
+                                        .where((c) => c.businessStatus != 'MDAC_REGISTERED')
+                                        .map((c) => c.id),
+                                  );
+                                });
+                              },
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              ),
+                              child: const Text('仅未完成', style: TextStyle(fontSize: 12)),
+                            ),
                           TextButton(
                             onPressed: () {
                               setDlgState(() {
@@ -4515,11 +4645,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             },
                             style: TextButton.styleFrom(
                               visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                             ),
                             child: const Text('全选', style: TextStyle(fontSize: 12)),
                           ),
-                          const SizedBox(width: 4),
                           TextButton(
                             onPressed: () {
                               setDlgState(() {
@@ -4528,7 +4657,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             },
                             style: TextButton.styleFrom(
                               visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                             ),
                             child: const Text('清空', style: TextStyle(fontSize: 12)),
                           ),
@@ -7032,9 +7161,14 @@ class OcrDraftSection extends StatelessWidget {
 }
 
 class TasksScreen extends StatefulWidget {
-  const TasksScreen({required this.repository, super.key});
+  const TasksScreen({
+    required this.repository,
+    this.onOpenCustomersWithSelection,
+    super.key,
+  });
 
   final DemoRepository repository;
+  final void Function(List<String> customerIds)? onOpenCustomersWithSelection;
 
   @override
   State<TasksScreen> createState() => _TasksScreenState();
@@ -7146,6 +7280,8 @@ class _TasksScreenState extends State<TasksScreen> {
                                     (task) => TaskRow(
                                       task: task,
                                       repository: repository,
+                                      onOpenCustomersWithSelection:
+                                          widget.onOpenCustomersWithSelection,
                                     ),
                                   )
                                   .toList(),
@@ -8694,12 +8830,18 @@ bool canOpenMdacHumanReview(AutomationTask task) => canOpenHumanIntervention(tas
 Future<void> openTaskHumanIntervention(
   BuildContext context,
   AutomationTask task,
-  DemoRepository repository,
-) async {
+  DemoRepository repository, {
+  void Function(List<String> customerIds)? onOpenCustomersWithSelection,
+}) async {
   if (task.type == TaskType.mdacRegistration) {
     await openMdacHumanReview(context, task, repository);
   } else {
-    await showTaskDetail(context, task, repository);
+    await showTaskDetail(
+      context,
+      task,
+      repository,
+      onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+    );
   }
 }
 
@@ -8729,10 +8871,16 @@ Future<void> openMdacHumanReview(
 }
 
 class TaskRow extends StatelessWidget {
-  const TaskRow({required this.task, required this.repository, super.key});
+  const TaskRow({
+    required this.task,
+    required this.repository,
+    this.onOpenCustomersWithSelection,
+    super.key,
+  });
 
   final AutomationTask task;
   final DemoRepository repository;
+  final void Function(List<String> customerIds)? onOpenCustomersWithSelection;
 
   @override
   Widget build(BuildContext context) {
@@ -8848,7 +8996,13 @@ class TaskRow extends StatelessWidget {
                       tooltip: '查看详情',
                       visualDensity: VisualDensity.compact,
                       padding: EdgeInsets.zero,
-                      onPressed: () => showTaskDetail(context, task, repository),
+                      onPressed: () => showTaskDetail(
+                        context,
+                        task,
+                        repository,
+                        onOpenCustomersWithSelection:
+                            onOpenCustomersWithSelection,
+                      ),
                       icon: const Icon(
                         Icons.open_in_new_rounded,
                         size: 18,
@@ -8861,60 +9015,130 @@ class TaskRow extends StatelessWidget {
             ),
           ],
         ),
-        if (needsIntervention) ...[
+        if (needsIntervention ||
+            task.canSplitTask ||
+            (task.succeededCustomerIds.isNotEmpty &&
+                onOpenCustomersWithSelection != null)) ...[
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: () => openTaskHumanIntervention(context, task, repository),
-                  icon: const Icon(Icons.touch_app_outlined, size: 15),
+              if (needsIntervention)
+                FilledButton.tonalIcon(
+                  onPressed: () => openTaskHumanIntervention(
+                    context,
+                    task,
+                    repository,
+                    onOpenCustomersWithSelection:
+                        onOpenCustomersWithSelection,
+                  ),
+                  icon: const Icon(Icons.touch_app_outlined, size: 14),
                   label: Text(
                     task.status == TaskStatus.needsReview
                         ? '人工介入处理'
                         : '查看未成功项',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFFECE6FA),
                     foregroundColor: const Color(0xFF6750A4),
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 10,
                     ),
+                    visualDensity: VisualDensity.compact,
                   ),
                 ),
-              ),
-              if (task.failedCount > 0 || task.status == TaskStatus.needsReview) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed: () async {
-                      final err = await repository.requeueFailedAutomationItems(task.id, '当前用户');
-                      if (context.mounted) {
-                        if (err != null) {
-                          showToast(context, err, error: true);
-                        } else {
-                          showToast(context, '已将失败项重新排队，Worker 将继续处理。');
-                        }
+              if (task.failedCount > 0 || task.status == TaskStatus.needsReview)
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final err = await repository.requeueFailedAutomationItems(
+                      task.id,
+                      '当前用户',
+                    );
+                    if (context.mounted) {
+                      if (err != null) {
+                        showToast(context, err, error: true);
+                      } else {
+                        showToast(context, '已将失败项重新排队，Worker 将继续处理。');
                       }
-                    },
-                    icon: const Icon(Icons.refresh_rounded, size: 15),
-                    label: Text(
-                      task.failedCount > 0 ? '重试失败项 (${task.failedCount})' : '重试未完成项',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFFE8F5E9),
-                      foregroundColor: const Color(0xFF2E7D32),
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                    }
+                  },
+                  icon: const Icon(Icons.refresh_rounded, size: 14),
+                  label: Text(
+                    task.failedCount > 0
+                        ? '重试失败项 (${task.failedCount})'
+                        : '重试未完成项',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE8F5E9),
+                    foregroundColor: const Color(0xFF2E7D32),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 10,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
-              ],
+              if (task.canSplitTask)
+                FilledButton.tonalIcon(
+                  onPressed: () => showTaskSplitDialog(
+                    context,
+                    task,
+                    repository,
+                    onOpenCustomersWithSelection:
+                        onOpenCustomersWithSelection,
+                  ),
+                  icon: const Icon(Icons.call_split_rounded, size: 14),
+                  label: Text(
+                    '拆分未完成项 (${task.uncompletedCustomerIds.length})',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFF7ED),
+                    foregroundColor: const Color(0xFFC2410C),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 10,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              if (task.succeededCustomerIds.isNotEmpty &&
+                  onOpenCustomersWithSelection != null)
+                OutlinedButton.icon(
+                  onPressed: () => onOpenCustomersWithSelection!(
+                    task.succeededCustomerIds,
+                  ),
+                  icon: const Icon(Icons.checklist_rounded, size: 14),
+                  label: Text(
+                    '选中成功客户 (${task.succeededCustomerIds.length})',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.teal,
+                    side: const BorderSide(color: Color(0xFF99F6E4)),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 10,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
             ],
           ),
         ],
@@ -8953,17 +9177,63 @@ class TaskRow extends StatelessWidget {
         const SizedBox(width: 10),
         if (canOpenHumanIntervention(task)) ...[
           FilledButton.tonalIcon(
-            onPressed: () => openTaskHumanIntervention(context, task, repository),
+            onPressed: () => openTaskHumanIntervention(
+              context,
+              task,
+              repository,
+              onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+            ),
             icon: const Icon(Icons.touch_app_outlined, size: 16),
             label: const Text(
               '人工介入处理',
-
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFFECE6FA),
               foregroundColor: const Color(0xFF6750A4),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+        if (task.canSplitTask) ...[
+          FilledButton.tonalIcon(
+            onPressed: () => showTaskSplitDialog(
+              context,
+              task,
+              repository,
+              onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+            ),
+            icon: const Icon(Icons.call_split_rounded, size: 15),
+            label: Text(
+              '拆分 (${task.uncompletedCustomerIds.length})',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFFF7ED),
+              foregroundColor: const Color(0xFFC2410C),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+        if (task.succeededCustomerIds.isNotEmpty &&
+            onOpenCustomersWithSelection != null) ...[
+          OutlinedButton.icon(
+            onPressed: () => onOpenCustomersWithSelection!(
+              task.succeededCustomerIds,
+            ),
+            icon: const Icon(Icons.checklist_rounded, size: 15),
+            label: Text(
+              '选成功项 (${task.succeededCustomerIds.length})',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.teal,
+              side: const BorderSide(color: Color(0xFF99F6E4)),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               visualDensity: VisualDensity.compact,
             ),
           ),
@@ -8984,7 +9254,12 @@ class TaskRow extends StatelessWidget {
           ),
         IconButton(
           tooltip: '查看详情',
-          onPressed: () => showTaskDetail(context, task, repository),
+          onPressed: () => showTaskDetail(
+            context,
+            task,
+            repository,
+            onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+          ),
           icon: const Icon(
             Icons.open_in_new_rounded,
             size: 18,
@@ -10331,11 +10606,490 @@ String formatItemErrorReason(Map<String, dynamic> item) {
   return '';
 }
 
+Future<void> showTaskSplitDialog(
+  BuildContext context,
+  AutomationTask task,
+  DemoRepository repository, {
+  void Function(List<String> customerIds)? onOpenCustomersWithSelection,
+}) async {
+  final uncompletedIds = task.uncompletedCustomerIds.toSet();
+  final succeededIds = task.succeededCustomerIds.toSet();
+
+  final customerList = <({
+    Customer? customer,
+    String id,
+    String name,
+    String passport,
+    String status,
+    String errorReason,
+  })>[];
+
+  if (task.items.isNotEmpty) {
+    for (final item in task.items) {
+      final cid = item['customer_id']?.toString() ?? '';
+      final cust = repository.findCustomer(cid);
+      final snapshot = (item['customer_snapshot'] as Map?)?.cast<String, dynamic>() ??
+          const <String, dynamic>{};
+      final name = cust?.fullName ?? snapshot['full_name']?.toString() ?? '未知姓名';
+      final passport =
+          cust?.passportNumber ?? snapshot['passport_number']?.toString() ?? '未知护照';
+      final status = item['status']?.toString() ?? 'QUEUED';
+      final err = formatItemErrorReason(item);
+      customerList.add((
+        customer: cust,
+        id: cid,
+        name: name,
+        passport: passport,
+        status: status,
+        errorReason: err,
+      ));
+    }
+  } else {
+    for (final cid in task.customerIds) {
+      final cust = repository.findCustomer(cid);
+      customerList.add((
+        customer: cust,
+        id: cid,
+        name: cust?.fullName ?? '未知姓名',
+        passport: cust?.passportNumber ?? '未知护照',
+        status: 'UNKNOWN',
+        errorReason: '',
+      ));
+    }
+  }
+
+  final selectedIds = <String>{
+    if (uncompletedIds.isNotEmpty)
+      ...uncompletedIds
+    else if (customerList.isNotEmpty)
+      customerList.first.id,
+  };
+
+  final nameController = TextEditingController(
+    text: '【待处理】${taskTypeLabel(task.type)}',
+  );
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dlgCtx) => StatefulBuilder(
+      builder: (dlgCtx, setDlgState) => AlertDialog(
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.call_split_rounded,
+                color: Color(0xFFC2410C),
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '拆分批次客户 · ${taskTypeLabel(task.type)}',
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '原批次共 ${task.totalCount} 位客户：${task.successCount} 成功 · ${task.uncompletedCustomerIds.length} 未完成',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.muted,
+                      fontWeight: FontWeight.normal,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (uncompletedIds.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(
+                              Icons.auto_awesome_rounded,
+                              size: 16,
+                              color: Color(0xFF2563EB),
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              '推荐：将未完成客户一键拆分为新批次',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                                color: Color(0xFF1D4ED8),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '拆分后，原批次将保留 ${task.successCount} 位已成功客户并自动标记为「100% 已完成」，成功客户可立即进行下一步操作；未完成的 ${uncompletedIds.length} 位客户将进入新批次独立重试。',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF1E40AF),
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton.icon(
+                            onPressed: () {
+                              setDlgState(() {
+                                selectedIds.clear();
+                                selectedIds.addAll(uncompletedIds);
+                                if (!nameController.text.contains('待处理')) {
+                                  nameController.text =
+                                      '【待处理】${taskTypeLabel(task.type)}';
+                                }
+                              });
+                            },
+                            icon: const Icon(Icons.flash_on_rounded, size: 14),
+                            label: Text('一键选中全部 ${uncompletedIds.length} 位未完成客户'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                              textStyle: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '选择要拆分到新批次的客户 (${selectedIds.length}/${customerList.length})：',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
+                    Wrap(
+                      spacing: 4,
+                      children: [
+                        if (uncompletedIds.isNotEmpty)
+                          TextButton(
+                            onPressed: () => setDlgState(() {
+                              selectedIds.clear();
+                              selectedIds.addAll(uncompletedIds);
+                            }),
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                            ),
+                            child: const Text('仅未完成', style: TextStyle(fontSize: 12)),
+                          ),
+                        if (succeededIds.isNotEmpty)
+                          TextButton(
+                            onPressed: () => setDlgState(() {
+                              selectedIds.clear();
+                              selectedIds.addAll(succeededIds);
+                            }),
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                            ),
+                            child: const Text('仅成功项', style: TextStyle(fontSize: 12)),
+                          ),
+                        TextButton(
+                          onPressed: () => setDlgState(() => selectedIds.clear()),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                          ),
+                          child: const Text('清空', style: TextStyle(fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 240),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.white,
+                  ),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: customerList.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, color: AppTheme.line),
+                    itemBuilder: (context, index) {
+                      final item = customerList[index];
+                      final isChecked = selectedIds.contains(item.id);
+                      final isSucceeded = item.status == 'SUCCEEDED';
+                      final isNeedsReview = item.status == 'NEEDS_REVIEW';
+                      final isFailed = item.status == 'FAILED';
+
+                      return CheckboxListTile(
+                        value: isChecked,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                item.name,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isSucceeded
+                                    ? const Color(0xFFE8F5E9)
+                                    : isNeedsReview
+                                        ? const Color(0xFFECE6FA)
+                                        : isFailed
+                                            ? const Color(0xFFFFEBEE)
+                                            : const Color(0xFFE3F2FD),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                isSucceeded
+                                    ? '成功'
+                                    : isNeedsReview
+                                        ? '待核验'
+                                        : isFailed
+                                            ? '失败'
+                                            : item.status,
+                                style: TextStyle(
+                                  color: isSucceeded
+                                      ? const Color(0xFF2E7D32)
+                                      : isNeedsReview
+                                          ? const Color(0xFF6750A4)
+                                          : isFailed
+                                              ? const Color(0xFFC62828)
+                                              : const Color(0xFF1565C0),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '护照: ${item.passport}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.muted,
+                              ),
+                            ),
+                            if (item.errorReason.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                item.errorReason,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: isNeedsReview
+                                      ? const Color(0xFF6750A4)
+                                      : AppTheme.danger,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        onChanged: (val) {
+                          setDlgState(() {
+                            if (val == true) {
+                              selectedIds.add(item.id);
+                            } else {
+                              selectedIds.remove(item.id);
+                            }
+                          });
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  '新批次名称：',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.muted,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: nameController,
+                  decoration: InputDecoration(
+                    hintText: '输入新批次名称',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.clear, size: 16),
+                      onPressed: () => nameController.clear(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFBBF7D0)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.info_outline_rounded,
+                        size: 16,
+                        color: Color(0xFF16A34A),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          selectedIds.length == customerList.length
+                              ? '确认后，原批次的全部 ${selectedIds.length} 位客户将转移至新批次。'
+                              : '确认后，选中的 ${selectedIds.length} 位客户将移入新批次【${nameController.text.trim().isEmpty ? "1" : nameController.text.trim()}】，原批次保留剩余 ${customerList.length - selectedIds.length} 位客户并自动重算完成状态。',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF15803D),
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dlgCtx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: selectedIds.isEmpty
+                ? null
+                : () => Navigator.pop(dlgCtx, true),
+            icon: const Icon(Icons.call_split_rounded, size: 16),
+            label: Text('确认拆分 (${selectedIds.length} 位)'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFC2410C),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  final finalBatchName =
+      nameController.text.trim().isEmpty ? '1' : nameController.text.trim();
+  nameController.dispose();
+
+  if (confirmed != true || !context.mounted) return;
+
+  final splitCustomerIds = selectedIds.toList();
+  final result = await repository.splitCustomersFromBatch(
+    sourceBatchId: task.id,
+    customerIds: splitCustomerIds,
+    newBatchName: finalBatchName,
+    actor: '当前用户',
+  );
+
+  if (!context.mounted) return;
+
+  if (result.error != null) {
+    showToast(context, result.error!, error: true);
+    return;
+  }
+
+  showToast(context, '已成功拆分 ${splitCustomerIds.length} 位客户至新批次“$finalBatchName”！');
+
+  final remainingSuccessIds = task.succeededCustomerIds
+      .where((id) => !splitCustomerIds.contains(id))
+      .toList();
+  if (remainingSuccessIds.isNotEmpty && onOpenCustomersWithSelection != null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '原批次已自动更新为已完成（共 ${remainingSuccessIds.length} 位成功客户）',
+        ),
+        action: SnackBarAction(
+          label: '前往客户档案并勾选',
+          onPressed: () {
+            onOpenCustomersWithSelection(remainingSuccessIds);
+          },
+        ),
+        duration: const Duration(seconds: 8),
+      ),
+    );
+  }
+}
+
 Future<void> showTaskDetail(
   BuildContext context,
   AutomationTask task,
-  DemoRepository repository,
-) async {
+  DemoRepository repository, {
+  void Function(List<String> customerIds)? onOpenCustomersWithSelection,
+}) async {
   await showDialog<void>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -10672,6 +11426,38 @@ Future<void> showTaskDetail(
             label: const Text('全部重新排队'),
           ),
         ],
+        if (task.canSplitTask)
+          FilledButton.tonalIcon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await showTaskSplitDialog(
+                context,
+                task,
+                repository,
+                onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+              );
+            },
+            icon: const Icon(Icons.call_split_rounded, size: 16),
+            label: Text('拆分未完成项 (${task.uncompletedCustomerIds.length})'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFFF7ED),
+              foregroundColor: const Color(0xFFC2410C),
+            ),
+          ),
+        if (task.succeededCustomerIds.isNotEmpty &&
+            onOpenCustomersWithSelection != null)
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              onOpenCustomersWithSelection(task.succeededCustomerIds);
+            },
+            icon: const Icon(Icons.checklist_rounded, size: 16),
+            label: Text('选中成功客户前往档案 (${task.succeededCustomerIds.length})'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.teal,
+              side: const BorderSide(color: Color(0xFF99F6E4)),
+            ),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(dialogContext),
           child: const Text('关闭'),

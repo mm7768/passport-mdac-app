@@ -69,26 +69,16 @@ BEGIN
 
     GET DIAGNOSTICS v_moved_count = ROW_COUNT;
 
-    -- Update counters for source batch
-    UPDATE public.automation_batches
-    SET total_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = p_source_batch_id),
-        success_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = p_source_batch_id AND status = 'SUCCEEDED'),
-        failed_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = p_source_batch_id AND status IN ('FAILED', 'NEEDS_REVIEW')),
-        updated_at = clock_timestamp()
-    WHERE id = p_source_batch_id;
-
     -- Clean up empty source batch if all items were split out
     IF (SELECT count(*) FROM public.automation_items WHERE batch_id = p_source_batch_id) = 0 THEN
         DELETE FROM public.automation_batches WHERE id = p_source_batch_id;
+    ELSE
+        -- Recalculate status and counters for source batch
+        PERFORM private.sync_batch_status_and_counts(p_source_batch_id);
     END IF;
 
-    -- Update counters for new batch
-    UPDATE public.automation_batches
-    SET total_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = v_new_batch_id),
-        success_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = v_new_batch_id AND status = 'SUCCEEDED'),
-        failed_count = (SELECT count(*) FROM public.automation_items WHERE batch_id = v_new_batch_id AND status IN ('FAILED', 'NEEDS_REVIEW')),
-        updated_at = clock_timestamp()
-    WHERE id = v_new_batch_id;
+    -- Recalculate status and counters for new batch
+    PERFORM private.sync_batch_status_and_counts(v_new_batch_id);
 
     RETURN jsonb_build_object(
         'success', true,

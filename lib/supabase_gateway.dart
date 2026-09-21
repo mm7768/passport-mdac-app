@@ -1068,9 +1068,6 @@ class SupabaseGateway {
         })
         .filter('id', 'in', '(${normalizedIds.join(',')})')
         .select('id, business_status');
-    if (rows is! List) {
-      throw const FormatException('Supabase 未返回批量修改状态结果。');
-    }
     return rows
         .whereType<Map>()
         .map((row) => Map<String, dynamic>.from(row))
