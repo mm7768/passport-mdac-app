@@ -161,8 +161,14 @@ class CustomerBundleExporter {
           final count = loadedPassportPdf.pages.count;
           for (int i = 0; i < count; i++) {
             final template = loadedPassportPdf.pages[i].createTemplate();
-            final newPage = document.pages.add();
-            newPage.graphics.drawPdfTemplate(template, const ui.Offset(0, 0));
+            final section = document.sections!.add();
+            final targetSize = (template.size.width > 0 && template.size.height > 0)
+                ? template.size
+                : PdfPageSize.a4;
+            section.pageSettings.size = targetSize;
+            section.pageSettings.margins.all = 0;
+            final newPage = section.pages.add();
+            newPage.graphics.drawPdfTemplate(template, const ui.Offset(0, 0), targetSize);
           }
           loadedPassportPdf.dispose();
         } catch (_) {
@@ -181,8 +187,14 @@ class CustomerBundleExporter {
         final count = loadedRegPdf.pages.count;
         for (int i = 0; i < count; i++) {
           final template = loadedRegPdf.pages[i].createTemplate();
-          final newPage = document.pages.add();
-          newPage.graphics.drawPdfTemplate(template, const ui.Offset(0, 0));
+          final section = document.sections!.add();
+          final targetSize = (template.size.width > 0 && template.size.height > 0)
+              ? template.size
+              : PdfPageSize.a4;
+          section.pageSettings.size = targetSize;
+          section.pageSettings.margins.all = 0;
+          final newPage = section.pages.add();
+          newPage.graphics.drawPdfTemplate(template, const ui.Offset(0, 0), targetSize);
         }
         loadedRegPdf.dispose();
       } catch (e) {

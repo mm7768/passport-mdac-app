@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.29-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
+          name: PassportMDAC-v1.0.30-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,23 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.29
-          name: "Passport MDAC Desk v1.0.29 (支持批次任务失败项拆分及成功项下一步流转)"
+          tag_name: v1.0.30
+          name: "Passport MDAC Desk v1.0.30 (修复客户档案PDF打包Registration及PDF护照右侧裁剪问题)"
           body: |
-            ### v1.0.29 更新内容：
-            - **支持批次任务未完成项拆分**：
-              - 在「任务队列」卡片（紧凑与宽屏布局）及详情弹窗中，新增「拆分未完成项」功能；
-              - 提供「推荐：一键拆分全部未完成客户到新批次」，拆分后原批次自动转为 100% 已完成，未完成客户移入新批次独立重试；
-              - 提供详细客户勾选列表，清晰展示每位客户的执行状态（成功/失败/待核验）以及具体失败原因说明；
-            - **成功客户直接流转下一步**：
-              - 修复任务拦截逻辑，已成功的客户不再受批次中其他未完成客户的牵连，可自由创建下一步任务；
-              - 任务卡片与详情弹窗中新增「选中成功客户前往档案」按钮，一键跨 Tab 跳转并自动勾选这批客户，底部操作栏（打包 PDF、发起任务等）立即可用；
-            - **数据库状态精准同步**：
-              - 修复 `split_customers_from_batch` RPC 在移动客户后未触发批次状态重算的问题，原批次客户全部成功后即刻自动转为 `SUCCEEDED`；
-            - **客户档案批次卡片拆分体验优化**：
-              - 客户档案卡片拆分弹窗新增「仅未完成」快捷勾选按钮。
+            ### v1.0.30 更新内容：
+            - **修复客户归档 PDF 中 Registration 与 PDF 护照页面右侧边框被裁剪问题**：
+              - 针对从 Supabase 存储引入的 MDAC Registration 凭据 PDF 及 PDF 格式的护照，采用独立的 `PdfSection` 并设置 0 边距 (`margins.all = 0`)；
+              - 自动适配源 PDF 页面的真实物理尺寸与宽高比 (`template.size`)，彻底消除由于页面默认 20pt 边距导致的画面向右下方偏移、右边框及底部内容被截断的问题；
+              - 确保在 WPS Office 等各类手机与桌面 PDF 查看器中完整呈现包括表格右侧边框在内的全部 Registration 证明细节。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.29.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
