@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.30-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
+          name: PassportMDAC-v1.0.31-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,15 +86,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.30
-          name: "Passport MDAC Desk v1.0.30 (修复客户档案PDF打包Registration及PDF护照右侧裁剪问题)"
+          tag_name: v1.0.31
+          name: "Passport MDAC Desk v1.0.31 (修复自动化任务同步400错误：仅同步最新Batch与历史按需加载)"
           body: |
-            ### v1.0.30 更新内容：
-            - **修复客户归档 PDF 中 Registration 与 PDF 护照页面右侧边框被裁剪问题**：
-              - 针对从 Supabase 存储引入的 MDAC Registration 凭据 PDF 及 PDF 格式的护照，采用独立的 `PdfSection` 并设置 0 边距 (`margins.all = 0`)；
-              - 自动适配源 PDF 页面的真实物理尺寸与宽高比 (`template.size`)，彻底消除由于页面默认 20pt 边距导致的画面向右下方偏移、右边框及底部内容被截断的问题；
-              - 确保在 WPS Office 等各类手机与桌面 PDF 查看器中完整呈现包括表格右侧边框在内的全部 Registration 证明细节。
+            ### v1.0.31 更新内容：
+            - **彻底修复任务同步 400 Bad Request**：
+              - 默认仅同步各模块（MDAC注册/Gmail PIN/注册校验/通行证检查）最新一次批次任务，不再一次性请求全部历史任务；
+              - 针对结果关联表（mdac_registrations、email_pin_records、registration_checks、visit_pass_checks）按当前模块精准查询；
+              - 增加防守型分块过滤机制 (`chunkSize: 50`)，彻底杜绝 GET URL 超出服务器上限引发的 400 报错；
+            - **新增“最新任务 / 历史任务”按需分段切换与详情懒加载**：
+              - 3秒轮询仅对“最新任务”生效，历史任务在进入时按需分页加载（20条/页）；
+              - 点击历史任务弹窗查看时按需拉取单批次完整子项与结果，极大提升 App 响应速度与流畅度。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.30.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

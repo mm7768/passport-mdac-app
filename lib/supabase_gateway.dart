@@ -24,6 +24,14 @@ class SupabaseGateway {
     _client = Supabase.instance.client;
   }
 
+  static Future<void> initializeWith({
+    required String url,
+    required String anonKey,
+  }) async {
+    await Supabase.initialize(url: url, anonKey: anonKey);
+    _client = Supabase.instance.client;
+  }
+
   static Future<({String name, String role})> signIn({
     required String email,
     required String password,
@@ -695,7 +703,196 @@ class SupabaseGateway {
     throw const FormatException('Supabase 未返回 MDAC 设置。');
   }
 
-  static Future<List<Map<String, dynamic>>> fetchAutomationBatches() async {
+  static const supportedAutomationTaskTypes = [
+    'MDAC_REGISTRATION',
+    'GMAIL_PIN',
+    'REGISTRATION_CHECK',
+    'VISIT_PASS_CHECK',
+  ];
+
+  /// Utility to run inFilter queries in safe chunks (default 50) to prevent URL length limits (HTTP 400).
+  static Future<List<Map<String, dynamic>>> _chunkedInFilter({
+    required String table,
+    required String column,
+    required List<String> values,
+    required String selectColumns,
+    int chunkSize = 50,
+  }) async {
+    if (values.isEmpty) return const [];
+    final client = _requiredClient;
+    final results = <Map<String, dynamic>>[];
+    for (var i = 0; i < values.length; i += chunkSize) {
+      final end =
+          (i + chunkSize < values.length) ? i + chunkSize : values.length;
+      final chunk = values.sublist(i, end);
+      final rows = await client
+          .from(table)
+          .select(selectColumns)
+          .inFilter(column, chunk);
+      for (final row in rows) {
+        results.add(Map<String, dynamic>.from(row as Map));
+      }
+    }
+    return results;
+  }
+
+  /// Fetches automation_items and only the corresponding module result table for a specific batch.
+  static Future<List<Map<String, dynamic>>> fetchBatchItemsWithResults({
+    required String batchId,
+    required String taskType,
+  }) async {
+    final client = _requiredClient;
+    final itemRows = await client
+        .from('automation_items')
+        .select(
+          'id, batch_id, customer_id, customer_snapshot, status, attempt_count, error_code, '
+          'error_message, result_unknown, created_at, updated_at',
+        )
+        .eq('batch_id', batchId)
+        .order('created_at');
+
+    final items = [
+      for (final row in itemRows) Map<String, dynamic>.from(row as Map),
+    ];
+    if (items.isEmpty) return items;
+
+    final itemIds = items.map((r) => r['id']).whereType<String>().toList();
+    if (itemIds.isEmpty) return items;
+
+    Map<String, Map<String, dynamic>> registrationByItem = {};
+    Map<String, Map<String, dynamic>> registrationCheckByItem = {};
+    Map<String, Map<String, dynamic>> visitPassCheckByItem = {};
+    Map<String, Map<String, dynamic>> pinByItem = {};
+
+    if (taskType == 'MDAC_REGISTRATION') {
+      final rows = await _chunkedInFilter(
+        table: 'mdac_registrations',
+        column: 'batch_item_id',
+        values: itemIds,
+        selectColumns:
+            'batch_item_id, registration_no, registration_status, '
+            'raw_summary, screenshot_path, submitted_at, '
+            'result_confirmed_at, updated_at',
+      );
+      registrationByItem = {
+        for (final row in rows)
+          if (row['batch_item_id'] != null)
+            row['batch_item_id'].toString(): row,
+      };
+    } else if (taskType == 'REGISTRATION_CHECK') {
+      final rows = await _chunkedInFilter(
+        table: 'registration_checks',
+        column: 'batch_item_id',
+        values: itemIds,
+        selectColumns:
+            'batch_item_id, checked_at, result_status, raw_summary, '
+            'normalized_status, error_message, screenshot_path, '
+            'challenge_type, submitted, result_confirmed, updated_at',
+      );
+      registrationCheckByItem = {
+        for (final row in rows)
+          if (row['batch_item_id'] != null)
+            row['batch_item_id'].toString(): row,
+      };
+    } else if (taskType == 'VISIT_PASS_CHECK') {
+      final rows = await _chunkedInFilter(
+        table: 'visit_pass_checks',
+        column: 'batch_item_id',
+        values: itemIds,
+        selectColumns:
+            'batch_item_id, checked_at, result_status, raw_summary, '
+            'normalized_status, error_message, screenshot_path, '
+            'challenge_type, submitted, result_confirmed, updated_at',
+      );
+      visitPassCheckByItem = {
+        for (final row in rows)
+          if (row['batch_item_id'] != null)
+            row['batch_item_id'].toString(): row,
+      };
+    } else if (taskType == 'GMAIL_PIN') {
+      final rows = await _chunkedInFilter(
+        table: 'email_pin_records',
+        column: 'batch_item_id',
+        values: itemIds,
+        selectColumns:
+            'customer_id, batch_item_id, pin_value, status, '
+            'raw_summary, received_at, created_at',
+      );
+      pinByItem = {
+        for (final row in rows)
+          if (row['batch_item_id'] != null)
+            row['batch_item_id'].toString(): row,
+      };
+    }
+
+    return [
+      for (final item in items)
+        {
+          ...item,
+          'registration': registrationByItem[item['id']?.toString()],
+          'registration_check': registrationCheckByItem[item['id']?.toString()],
+          'visit_pass_check': visitPassCheckByItem[item['id']?.toString()],
+          'pin_record': pinByItem[item['id']?.toString()],
+        }
+    ];
+  }
+
+  /// Default sync method: fetches ONLY the latest batch for each task type.
+  /// Strictly prevents 400 Bad Request caused by pulling all historic automation_items.
+  static Future<List<Map<String, dynamic>>> fetchLatestAutomationBatches() async {
+    final client = _requiredClient;
+    final batchesFutures = supportedAutomationTaskTypes.map((taskType) async {
+      final row = await client
+          .from('automation_batches')
+          .select(
+            'id, task_type, status, total_count, success_count, failed_count, '
+            'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
+            'created_at, updated_at',
+          )
+          .eq('task_type', taskType)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      if (row == null) return null;
+      return Map<String, dynamic>.from(row as Map);
+    });
+
+    final batchResults = await Future.wait(batchesFutures);
+    final latestBatches =
+        batchResults.whereType<Map<String, dynamic>>().toList();
+    if (latestBatches.isEmpty) return const [];
+
+    latestBatches.sort((a, b) {
+      final aDate = a['created_at']?.toString() ?? '';
+      final bDate = b['created_at']?.toString() ?? '';
+      return bDate.compareTo(aDate);
+    });
+
+    final enrichedBatches = await Future.wait(latestBatches.map((batch) async {
+      final batchId = batch['id']?.toString() ?? '';
+      final taskType = batch['task_type']?.toString() ?? '';
+      final items = await fetchBatchItemsWithResults(
+        batchId: batchId,
+        taskType: taskType,
+      );
+      return {
+        ...batch,
+        'items': items,
+      };
+    }));
+
+    return enrichedBatches;
+  }
+
+  /// Backward-compatible alias used across repository
+  static Future<List<Map<String, dynamic>>> fetchAutomationBatches() =>
+      fetchLatestAutomationBatches();
+
+  /// Fetches historical batches (batch metadata ONLY, paginated, NO items).
+  static Future<List<Map<String, dynamic>>> fetchBatchHistory({
+    int page = 0,
+    int pageSize = 20,
+  }) async {
     final client = _requiredClient;
     final batchRows = await client
         .from('automation_batches')
@@ -705,96 +902,37 @@ class SupabaseGateway {
           'created_at, updated_at',
         )
         .order('created_at', ascending: false)
-        .limit(100);
-    final batches = batchRows
-        .map((row) => Map<String, dynamic>.from(row))
-        .toList();
-    if (batches.isEmpty) return batches;
+        .range(page * pageSize, (page + 1) * pageSize - 1);
 
-    final batchIds = batches
-        .map((row) => row['id'])
-        .whereType<String>()
-        .toList();
-    final itemRows = await client
-        .from('automation_items')
-        .select(
-          'id, batch_id, customer_id, status, attempt_count, error_code, '
-          'error_message, result_unknown, created_at, updated_at',
-        )
-        .inFilter('batch_id', batchIds)
-        .order('created_at', ascending: false)
-        .limit(3000);
-    final items = itemRows
-        .map((row) => Map<String, dynamic>.from(row))
-        .toList();
-    final itemIds = items.map((row) => row['id']).whereType<String>().toList();
-    final registrationRows = itemIds.isEmpty
-        ? <dynamic>[]
-        : await client
-              .from('mdac_registrations')
-              .select(
-                'batch_item_id, registration_no, registration_status, '
-                'raw_summary, screenshot_path, submitted_at, '
-                'result_confirmed_at, updated_at',
-              )
-              .inFilter('batch_item_id', itemIds)
-              .limit(3000);
-    final registrationByItem = <String, Map<String, dynamic>>{
-      for (final row in registrationRows)
-        if (row['batch_item_id'] != null)
-          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
-    };
-    final registrationCheckRows = itemIds.isEmpty
-        ? <dynamic>[]
-        : await client
-              .from('registration_checks')
-              .select(
-                'batch_item_id, checked_at, result_status, raw_summary, '
-                'normalized_status, error_message, screenshot_path, '
-                'challenge_type, submitted, result_confirmed, updated_at',
-              )
-              .inFilter('batch_item_id', itemIds)
-              .limit(3000);
-    final registrationCheckByItem = <String, Map<String, dynamic>>{
-      for (final row in registrationCheckRows)
-        if (row['batch_item_id'] != null)
-          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
-    };
-    final visitPassCheckRows = itemIds.isEmpty
-        ? <dynamic>[]
-        : await client
-              .from('visit_pass_checks')
-              .select(
-                'batch_item_id, checked_at, result_status, raw_summary, '
-                'normalized_status, error_message, screenshot_path, '
-                'challenge_type, submitted, result_confirmed, updated_at',
-              )
-              .inFilter('batch_item_id', itemIds)
-              .limit(3000);
-    final visitPassCheckByItem = <String, Map<String, dynamic>>{
-      for (final row in visitPassCheckRows)
-        if (row['batch_item_id'] != null)
-          row['batch_item_id'].toString(): Map<String, dynamic>.from(row),
-    };
-    final itemsByBatch = <String, List<Map<String, dynamic>>>{};
-    for (final item in items) {
-      final batchId = item['batch_id']?.toString();
-      if (batchId == null) continue;
-      itemsByBatch.putIfAbsent(batchId, () => <Map<String, dynamic>>[]).add({
-        ...item,
-        'registration': registrationByItem[item['id']?.toString()],
-        'registration_check': registrationCheckByItem[item['id']?.toString()],
-        'visit_pass_check': visitPassCheckByItem[item['id']?.toString()],
-      });
-    }
     return [
-      for (final batch in batches)
-        {
-          ...batch,
-          'items':
-              itemsByBatch[batch['id']?.toString()] ?? <Map<String, dynamic>>[],
-        },
+      for (final row in batchRows) Map<String, dynamic>.from(row as Map),
     ];
+  }
+
+  /// Fetches full detail for a single batch on demand (including its items and results).
+  static Future<Map<String, dynamic>> fetchSingleBatchDetail(
+    String batchId,
+  ) async {
+    final client = _requiredClient;
+    final batchRow = await client
+        .from('automation_batches')
+        .select(
+          'id, task_type, status, total_count, success_count, failed_count, '
+          'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
+          'created_at, updated_at',
+        )
+        .eq('id', batchId)
+        .single();
+
+    final batch = Map<String, dynamic>.from(batchRow as Map);
+    final items = await fetchBatchItemsWithResults(
+      batchId: batchId,
+      taskType: batch['task_type']?.toString() ?? '',
+    );
+    return {
+      ...batch,
+      'items': items,
+    };
   }
 
   static Future<Map<String, dynamic>> cancelAutomationBatch(

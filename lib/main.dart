@@ -796,6 +796,10 @@ class DemoRepository extends ChangeNotifier {
   final List<Customer> customers = [];
   final List<OcrDraft> ocrDrafts = [];
   final List<AutomationTask> tasks = [];
+  final List<AutomationTask> historyTasks = [];
+  bool isLoadingHistory = false;
+  int historyPage = 0;
+  bool hasMoreHistory = true;
   final List<String> auditEvents = [];
   final List<UploadRecord> uploadRecords = [];
   final Set<String> _successfulUploadFingerprints = {};
@@ -1353,6 +1357,108 @@ class DemoRepository extends ChangeNotifier {
       return null;
     } catch (exception) {
       return '自动化任务同步失败：$exception';
+    }
+  }
+
+  Future<void> fetchBatchHistory({bool refresh = false}) async {
+    if (!remoteMode) return;
+    if (refresh) {
+      historyPage = 0;
+      historyTasks.clear();
+      hasMoreHistory = true;
+    }
+    if (!hasMoreHistory || isLoadingHistory) return;
+    isLoadingHistory = true;
+    notifyListeners();
+    try {
+      final rows = await SupabaseGateway.fetchBatchHistory(
+        page: historyPage,
+        pageSize: 20,
+      );
+      if (rows.length < 20) {
+        hasMoreHistory = false;
+      }
+      for (final row in rows) {
+        final status = _taskStatusFromRemote(row['status']?.toString());
+        historyTasks.add(
+          AutomationTask(
+            id: row['id']?.toString() ?? 'remote-batch',
+            type: _taskTypeFromRemote(row['task_type']?.toString()),
+            customerIds: const [],
+            createdAt:
+                DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                DateTime.now(),
+            createdBy: row['created_by']?.toString() ?? 'Supabase',
+            entryDate: _parseRemoteDate(row['entry_date']),
+            exitDate: _parseRemoteDate(row['exit_date']),
+            status: status,
+            successCount:
+                int.tryParse(row['success_count']?.toString() ?? '') ?? 0,
+            failedCount:
+                int.tryParse(row['failed_count']?.toString() ?? '') ?? 0,
+            totalCountOverride:
+                int.tryParse(row['total_count']?.toString() ?? ''),
+            note: row['note']?.toString() ?? '',
+            items: const [],
+          ),
+        );
+      }
+      historyPage++;
+    } catch (_) {
+      // non-fatal
+    } finally {
+      isLoadingHistory = false;
+      notifyListeners();
+    }
+  }
+
+  Future<AutomationTask> loadTaskDetailOnDemand(AutomationTask task) async {
+    if (task.items.isNotEmpty || !remoteMode) return task;
+    try {
+      final detail = await SupabaseGateway.fetchSingleBatchDetail(task.id);
+      final items = detail['items'] is List
+          ? (detail['items'] as List)
+                .whereType<Map>()
+                .map((item) => Map<String, dynamic>.from(item))
+                .toList()
+          : <Map<String, dynamic>>[];
+      final enriched = AutomationTask(
+        id: task.id,
+        type: task.type,
+        customerIds: [
+          for (final item in items)
+            if (item['customer_id'] != null) item['customer_id'].toString(),
+        ],
+        createdAt: task.createdAt,
+        createdBy: task.createdBy,
+        entryDate: task.entryDate,
+        exitDate: task.exitDate,
+        status: task.status,
+        successCount: () {
+          final remote = task.successCount;
+          final fromItems =
+              items.where((it) => it['status'] == 'SUCCEEDED').length;
+          return remote > fromItems ? remote : fromItems;
+        }(),
+        failedCount: () {
+          final remote = task.failedCount;
+          final fromItems = items
+              .where((it) =>
+                  it['status'] == 'FAILED' || it['status'] == 'NEEDS_REVIEW')
+              .length;
+          return remote > fromItems ? remote : fromItems;
+        }(),
+        totalCountOverride: task.totalCountOverride,
+        note: task.note,
+        items: items,
+      );
+      final hIdx = historyTasks.indexWhere((t) => t.id == task.id);
+      if (hIdx != -1) {
+        historyTasks[hIdx] = enriched;
+      }
+      return enriched;
+    } catch (_) {
+      return task;
     }
   }
 
@@ -7175,7 +7281,7 @@ class TasksScreen extends StatefulWidget {
 }
 
 class _TasksScreenState extends State<TasksScreen> {
-  bool _recentBatchesExpanded = false;
+  int _activeTab = 0; // 0: 最新批次, 1: 历史任务
   Timer? _pollTimer;
 
   DemoRepository get repository => widget.repository;
@@ -7186,7 +7292,7 @@ class _TasksScreenState extends State<TasksScreen> {
     if (repository.remoteMode) {
       repository.syncAutomationTasksFromSupabase();
       _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-        if (mounted && repository.remoteMode) {
+        if (mounted && repository.remoteMode && _activeTab == 0) {
           repository.syncAutomationTasksFromSupabase();
         }
       });
@@ -7203,7 +7309,7 @@ class _TasksScreenState extends State<TasksScreen> {
   Widget build(BuildContext context) {
 
     return AppPage(
-      eyebrow: 'AUTOMATION QUEUE · ${repository.tasks.length} BATCHES',
+      eyebrow: 'AUTOMATION QUEUE · ${repository.tasks.length} LATEST BATCHES',
       title: '任务队列',
       subtitle: '手机负责创建任务，Worker 负责领取、逐项执行和写回结果。',
       trailing: Wrap(
@@ -7214,12 +7320,18 @@ class _TasksScreenState extends State<TasksScreen> {
         children: [
           IconButton.outlined(
             onPressed: () async {
-              final error = await repository.syncAutomationTasksFromSupabase();
-              if (!context.mounted) return;
-              if (error != null) {
-                showToast(context, error, error: true);
+              if (_activeTab == 0) {
+                final error = await repository.syncAutomationTasksFromSupabase();
+                if (!context.mounted) return;
+                if (error != null) {
+                  showToast(context, error, error: true);
+                } else {
+                  showToast(context, '已刷新最新自动化任务。');
+                }
               } else {
-                showToast(context, '已刷新 Supabase MDAC 任务状态。');
+                await repository.fetchBatchHistory(refresh: true);
+                if (!context.mounted) return;
+                showToast(context, '已刷新历史任务批次。');
               }
             },
             icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
@@ -7234,64 +7346,253 @@ class _TasksScreenState extends State<TasksScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             WorkerBanner(repository: repository),
-            const SizedBox(height: 20),
-            Card(
-              clipBehavior: Clip.antiAlias,
-              child: Column(
+            const SizedBox(height: 16),
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.line),
+              ),
+              padding: const EdgeInsets.all(4),
+              child: Row(
                 children: [
-                  InkWell(
-                    onTap: () => setState(
-                      () => _recentBatchesExpanded = !_recentBatchesExpanded,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 17,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '最近批次 · ${repository.tasks.length}',
-                              style: Theme.of(context).textTheme.titleMedium,
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => setState(() => _activeTab = 0),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(
+                          color: _activeTab == 0 ? Colors.white : Colors.transparent,
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: _activeTab == 0
+                              ? [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.06),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ]
+                              : null,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.bolt_rounded,
+                              size: 18,
+                              color: _activeTab == 0 ? AppTheme.teal : AppTheme.muted,
                             ),
-                          ),
-                          AnimatedRotation(
-                            turns: _recentBatchesExpanded ? 0.5 : 0,
-                            duration: const Duration(milliseconds: 180),
-                            child: const Icon(
-                              Icons.keyboard_arrow_down_rounded,
-                              color: AppTheme.teal,
+                            const SizedBox(width: 6),
+                            Text(
+                              '最新任务 · ${repository.tasks.length}',
+                              style: TextStyle(
+                                fontWeight: _activeTab == 0 ? FontWeight.w700 : FontWeight.w500,
+                                color: _activeTab == 0 ? AppTheme.ink : AppTheme.muted,
+                                fontSize: 13,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeInOut,
-                    child: _recentBatchesExpanded
-                        ? Padding(
-                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-                            child: Column(
-                              children: repository.tasks
-                                  .map(
-                                    (task) => TaskRow(
-                                      task: task,
-                                      repository: repository,
-                                      onOpenCustomersWithSelection:
-                                          widget.onOpenCustomersWithSelection,
-                                    ),
-                                  )
-                                  .toList(),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        setState(() => _activeTab = 1);
+                        if (repository.historyTasks.isEmpty && repository.remoteMode) {
+                          repository.fetchBatchHistory(refresh: true);
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(
+                          color: _activeTab == 1 ? Colors.white : Colors.transparent,
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: _activeTab == 1
+                              ? [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.06),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ]
+                              : null,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.history_rounded,
+                              size: 18,
+                              color: _activeTab == 1 ? AppTheme.teal : AppTheme.muted,
                             ),
-                          )
-                        : const SizedBox.shrink(),
+                            const SizedBox(width: 6),
+                            Text(
+                              '历史任务',
+                              style: TextStyle(
+                                fontWeight: _activeTab == 1 ? FontWeight.w700 : FontWeight.w500,
+                                color: _activeTab == 1 ? AppTheme.ink : AppTheme.muted,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 16),
+            if (_activeTab == 0) ...[
+              if (repository.tasks.isEmpty)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Center(
+                      child: Column(
+                        children: [
+                          const Icon(Icons.inbox_outlined, size: 40, color: AppTheme.muted),
+                          const SizedBox(height: 10),
+                          const Text('暂无最新自动化任务', style: TextStyle(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 4),
+                          const Text('可在“客户档案”勾选客户发起任务', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Card(
+                  clipBehavior: Clip.antiAlias,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                    child: Column(
+                      children: repository.tasks
+                          .map(
+                            (task) => TaskRow(
+                              task: task,
+                              repository: repository,
+                              onOpenCustomersWithSelection:
+                                  widget.onOpenCustomersWithSelection,
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ),
+            ] else ...[
+              Card(
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            '历史批次列表 (${repository.historyTasks.length})',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.refresh_rounded, size: 20, color: AppTheme.teal),
+                            tooltip: '刷新历史任务',
+                            onPressed: () => repository.fetchBatchHistory(refresh: true),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    if (repository.historyTasks.isEmpty && repository.isLoadingHistory)
+                      const Padding(
+                        padding: EdgeInsets.all(36),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (repository.historyTasks.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(36),
+                        child: Center(
+                          child: Text('暂无历史批次记录', style: TextStyle(color: AppTheme.muted)),
+                        ),
+                      )
+                    else
+                      ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: repository.historyTasks.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 20, endIndent: 20),
+                        itemBuilder: (context, idx) {
+                          final task = repository.historyTasks[idx];
+                          return ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                            leading: Container(
+                              width: 38,
+                              height: 38,
+                              decoration: BoxDecoration(
+                                color: taskTypeColor(task.type).withValues(alpha: .12),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(taskTypeIcon(task.type), color: taskTypeColor(task.type), size: 20),
+                            ),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    task.note.isNotEmpty ? task.note : taskTypeLabel(task.type),
+                                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                TaskStatusPill(status: task.status),
+                              ],
+                            ),
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                '${task.successCount}/${task.totalCount} 成功 · ${task.failedCount} 失败 · ${formatDate(task.createdAt)} · ${task.createdBy}',
+                                style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                              ),
+                            ),
+                            trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.muted),
+                            onTap: () => showTaskDetail(
+                              context,
+                              task,
+                              repository,
+                              onOpenCustomersWithSelection: widget.onOpenCustomersWithSelection,
+                            ),
+                          );
+                        },
+                      ),
+                    if (repository.hasMoreHistory) ...[
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        child: Center(
+                          child: repository.isLoadingHistory
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : OutlinedButton.icon(
+                                  onPressed: () => repository.fetchBatchHistory(),
+                                  icon: const Icon(Icons.expand_more_rounded, size: 18),
+                                  label: const Text('加载更多历史批次 (每页 20 条)'),
+                                ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             SectionCard(
               title: '状态说明',
@@ -11092,7 +11393,57 @@ Future<void> showTaskDetail(
 }) async {
   await showDialog<void>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (dialogContext) => _TaskDetailDialog(
+      task: task,
+      repository: repository,
+      onOpenCustomersWithSelection: onOpenCustomersWithSelection,
+    ),
+  );
+}
+
+class _TaskDetailDialog extends StatefulWidget {
+  const _TaskDetailDialog({
+    required this.task,
+    required this.repository,
+    this.onOpenCustomersWithSelection,
+  });
+
+  final AutomationTask task;
+  final DemoRepository repository;
+  final void Function(List<String> customerIds)? onOpenCustomersWithSelection;
+
+  @override
+  State<_TaskDetailDialog> createState() => _TaskDetailDialogState();
+}
+
+class _TaskDetailDialogState extends State<_TaskDetailDialog> {
+  late AutomationTask task;
+  bool _loadingItems = false;
+
+  @override
+  void initState() {
+    super.initState();
+    task = widget.task;
+    if (task.items.isEmpty && widget.repository.remoteMode) {
+      _loadingItems = true;
+      widget.repository.loadTaskDetailOnDemand(widget.task).then((enriched) {
+        if (mounted) {
+          setState(() {
+            task = enriched;
+            _loadingItems = false;
+          });
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dialogContext = context;
+    final repository = widget.repository;
+    final onOpenCustomersWithSelection = widget.onOpenCustomersWithSelection;
+
+    return AlertDialog(
       title: Row(
         children: [
           Icon(taskTypeIcon(task.type), color: taskTypeColor(task.type)),
@@ -11159,7 +11510,27 @@ Future<void> showTaskDetail(
                   ),
                 ),
               ],
-              if (task.items.isNotEmpty) ...[
+              if (_loadingItems)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Column(
+                      children: [
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        SizedBox(height: 10),
+                        Text(
+                          '正在按需加载该批次客户明细与结果...',
+                          style: TextStyle(color: AppTheme.muted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else if (task.items.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 Text(
                   '客户明细清单 (${task.items.length} 位)',
@@ -11463,8 +11834,8 @@ Future<void> showTaskDetail(
           child: const Text('关闭'),
         ),
       ],
-    ),
-  );
+    );
+  }
 }
 
 void showToast(BuildContext context, String message, {bool error = false}) {
