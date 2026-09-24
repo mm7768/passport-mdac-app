@@ -54,7 +54,7 @@ jobs:
           flutter build apk --debug \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.32.apk
 
       - name: Show Failure Log
         if: failure()
@@ -77,8 +77,8 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.31-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
+          name: PassportMDAC-v1.0.32-APK
+          path: build/app/outputs/flutter-apk/PassportMDAC-v1.0.32.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -86,18 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.31
-          name: "Passport MDAC Desk v1.0.31 (修复自动化任务同步400错误：仅同步最新Batch与历史按需加载)"
+          tag_name: v1.0.32
+          name: "Passport MDAC Desk v1.0.32 (Excel导出升级为原生.xlsx格式)"
           body: |
-            ### v1.0.31 更新内容：
-            - **彻底修复任务同步 400 Bad Request**：
-              - 默认仅同步各模块（MDAC注册/Gmail PIN/注册校验/通行证检查）最新一次批次任务，不再一次性请求全部历史任务；
-              - 针对结果关联表（mdac_registrations、email_pin_records、registration_checks、visit_pass_checks）按当前模块精准查询；
-              - 增加防守型分块过滤机制 (`chunkSize: 50`)，彻底杜绝 GET URL 超出服务器上限引发的 400 报错；
-            - **新增“最新任务 / 历史任务”按需分段切换与详情懒加载**：
-              - 3秒轮询仅对“最新任务”生效，历史任务在进入时按需分页加载（20条/页）；
-              - 点击历史任务弹窗查看时按需拉取单批次完整子项与结果，极大提升 App 响应速度与流畅度。
+            ### v1.0.32 更新内容：
+            - **Excel 导出全面升级为原生 Office Open XML (.xlsx) 格式**：
+              - 将原 XML 架构的旧版 .xls 格式全面替换为标准的现代 Office Open XML (.xlsx) 格式；
+              - 采用原生企业级 Excel 引擎渲染，彻底解决在部分移动办公端（WPS、微信等）或新版 Microsoft Excel 打开旧版 .xls 时的格式兼容警告或提示文件损坏问题；
+              - 保留清晰专业的表头样式、列宽自适应、等宽字体与强制文本格式（防止护照号与手机号前导零丢失或超长数字失真）。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.31.apk
+            build/app/outputs/flutter-apk/PassportMDAC-v1.0.32.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

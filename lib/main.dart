@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'mdac_human_review.dart';
 import 'human_query_review.dart';
 import 'customer_bundle_exporter.dart';
+import 'customer_excel_exporter.dart';
 import 'supabase_gateway.dart';
 
 Future<void> main() async {
@@ -5699,15 +5700,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return '+$region $rawPhone';
   }
 
-  String _escapeXml(String value) {
-    return value
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&apos;');
-  }
-
   String _escapeCsv(String value) {
     if (value.contains(',') ||
         value.contains('"') ||
@@ -5769,86 +5761,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
     final csvBytes = Uint8List.fromList(utf8.encode(csvBuffer.toString()));
 
-    // 3. 生成 Excel XML (.xls)
-    final xmlBuffer = StringBuffer();
-    xmlBuffer.writeln('<?xml version="1.0" encoding="UTF-8"?>');
-    xmlBuffer.writeln('<?mso-application progid="Excel.Sheet"?>');
-    xmlBuffer.writeln(
-      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"',
-    );
-    xmlBuffer.writeln(' xmlns:o="urn:schemas-microsoft-com:office:office"');
-    xmlBuffer.writeln(' xmlns:x="urn:schemas-microsoft-com:office:excel"');
-    xmlBuffer.writeln(' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"');
-    xmlBuffer.writeln(' xmlns:html="http://www.w3.org/TR/REC-html40">');
-    xmlBuffer.writeln(' <Styles>');
-    xmlBuffer.writeln('  <Style ss:ID="Default" ss:Name="Normal">');
-    xmlBuffer.writeln('   <Alignment ss:Vertical="Center"/>');
-    xmlBuffer.writeln('   <Font ss:FontName="Microsoft YaHei" ss:Size="10"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln('  <Style ss:ID="Header">');
-    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
-    xmlBuffer.writeln('   <Borders>');
-    xmlBuffer.writeln(
-      '    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CCCCCC"/>',
-    );
-    xmlBuffer.writeln('   </Borders>');
-    xmlBuffer.writeln(
-      '   <Font ss:FontName="Microsoft YaHei" ss:Size="11" ss:Bold="1" ss:Color="#0F172A"/>',
-    );
-    xmlBuffer.writeln('   <Interior ss:Color="#F1F5F9" ss:Pattern="Solid"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln('  <Style ss:ID="TextCell">');
-    xmlBuffer.writeln('   <Alignment ss:Vertical="Center"/>');
-    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln('  <Style ss:ID="CenterCell">');
-    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
-    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln('  <Style ss:ID="PinCell">');
-    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
-    xmlBuffer.writeln(
-      '   <Font ss:FontName="Consolas" ss:Size="10" ss:Bold="1" ss:Color="#0F766E"/>',
-    );
-    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln('  <Style ss:ID="PassportCell">');
-    xmlBuffer.writeln('   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>');
-    xmlBuffer.writeln('   <Font ss:FontName="Consolas" ss:Size="10" ss:Bold="1"/>');
-    xmlBuffer.writeln('   <NumberFormat ss:Format="@"/>');
-    xmlBuffer.writeln('  </Style>');
-    xmlBuffer.writeln(' </Styles>');
-    xmlBuffer.writeln(' <Worksheet ss:Name="PIN客户列表">');
-    xmlBuffer.writeln('  <Table>');
-    xmlBuffer.writeln('   <Column ss:Width="140"/>');
-    xmlBuffer.writeln('   <Column ss:Width="120"/>');
-    xmlBuffer.writeln('   <Column ss:Width="100"/>');
-    xmlBuffer.writeln('   <Column ss:Width="200"/>');
-    xmlBuffer.writeln('   <Column ss:Width="160"/>');
-    xmlBuffer.writeln('   <Row ss:Height="26">');
-    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">名字</Data></Cell>');
-    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">护照号</Data></Cell>');
-    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">pin</Data></Cell>');
-    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">注册使用的gmail</Data></Cell>');
-    xmlBuffer.writeln('    <Cell ss:StyleID="Header"><Data ss:Type="String">注册使用的手机号码</Data></Cell>');
-    xmlBuffer.writeln('   </Row>');
-    for (final c in withPinCustomers) {
-      xmlBuffer.writeln('   <Row ss:Height="22">');
-      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(c.fullName)}</Data></Cell>');
-      xmlBuffer.writeln('    <Cell ss:StyleID="PassportCell"><Data ss:Type="String">${_escapeXml(c.passportNumber)}</Data></Cell>');
-      xmlBuffer.writeln('    <Cell ss:StyleID="PinCell"><Data ss:Type="String">${_escapeXml(c.pin!.trim())}</Data></Cell>');
-      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(mdacEmail)}</Data></Cell>');
-      xmlBuffer.writeln('    <Cell ss:StyleID="TextCell"><Data ss:Type="String">${_escapeXml(formattedPhone)}</Data></Cell>');
-      xmlBuffer.writeln('   </Row>');
-    }
-    xmlBuffer.writeln('  </Table>');
-    xmlBuffer.writeln(' </Worksheet>');
-    xmlBuffer.writeln('</Workbook>');
-    final xlsBytes = Uint8List.fromList(utf8.encode(xmlBuffer.toString()));
+    // 3. 生成 Excel (.xlsx)
+    final exportItems = withPinCustomers
+        .map(
+          (c) => CustomerExportItem(
+            fullName: c.fullName,
+            passportNumber: c.passportNumber,
+            pin: (c.pin ?? '').trim(),
+            mdacEmail: mdacEmail,
+            formattedPhone: formattedPhone,
+          ),
+        )
+        .toList();
+    final xlsxBytes =
+        CustomerExcelExporter.exportCustomersToXlsx(items: exportItems);
 
     final now = DateTime.now();
-    final dateSuffix = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
-    final fileNameXls = 'mdac_pin_customers_$dateSuffix.xls';
+    final dateSuffix =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+    final fileNameXlsx = 'mdac_pin_customers_$dateSuffix.xlsx';
     final fileNameCsv = 'mdac_pin_customers_$dateSuffix.csv';
 
     Future<void> saveExportFile(String fileName, Uint8List bytes, String ext) async {
@@ -6074,9 +6005,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
             label: const Text('保存 CSV'),
           ),
           FilledButton.icon(
-            onPressed: () => saveExportFile(fileNameXls, xlsBytes, 'xls'),
+            onPressed: () => saveExportFile(fileNameXlsx, xlsxBytes, 'xlsx'),
             icon: const Icon(Icons.table_chart_rounded, size: 16),
-            label: const Text('保存 Excel (.xls)'),
+            label: const Text('保存 Excel (.xlsx)'),
           ),
         ],
       ),

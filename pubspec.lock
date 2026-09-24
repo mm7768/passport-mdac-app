@@ -304,6 +304,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
+  image:
+    dependency: transitive
+    description:
+      name: image
+      sha256: a1e7f4951e538a568e14b856702afc9ae1d2f4b202daced8d22c1b9cd211ce89
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.10.1"
   intl:
     dependency: transitive
     description:
@@ -312,6 +320,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.20.3"
+  jiffy:
+    dependency: transitive
+    description:
+      name: jiffy
+      sha256: cabced5ddea4612f5e0c498df065ee8a1bd810f7ed757db910e95d2aba80161d
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.4.5"
   json_annotation:
     dependency: transitive
     description:
@@ -480,6 +496,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.9.1"
+  quiver:
+    dependency: transitive
+    description:
+      name: quiver
+      sha256: ea0b925899e64ecdfbf9c7becb60d5b50e706ade44a85b2363be2a22d88117d2
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.2"
   realtime_client:
     dependency: transitive
     description:
@@ -626,6 +650,22 @@ packages:
     description:
       name: syncfusion_flutter_pdf
       sha256: "5d8b54a77c15d35a4a92f4b14f4b31b5d5891d400a6d235a996dce265d7c6414"
+      url: "https://pub.dev"
+    source: hosted
+    version: "34.2.7"
+  syncfusion_flutter_xlsio:
+    dependency: "direct main"
+    description:
+      name: syncfusion_flutter_xlsio
+      sha256: "10fabfbf3b081c171007d1dc1ed2efd8b050ea6dc4bb091af4c25a4082cccd87"
+      url: "https://pub.dev"
+    source: hosted
+    version: "34.2.7"
+  syncfusion_officecore:
+    dependency: transitive
+    description:
+      name: syncfusion_officecore
+      sha256: "7a82af4efaa614c83dfe14dcae1623d4aaff3657f6402869f0a31eb10f2af27e"
       url: "https://pub.dev"
     source: hosted
     version: "34.2.7"
