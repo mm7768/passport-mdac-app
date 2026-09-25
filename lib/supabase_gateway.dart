@@ -838,9 +838,20 @@ class SupabaseGateway {
   }
 
   /// Default sync method: fetches ONLY the latest batch for each task type.
-  /// Strictly prevents 400 Bad Request caused by pulling all historic automation_items.
+  /// Uses single aggregated RPC get_latest_task_dashboard() for maximum performance.
   static Future<List<Map<String, dynamic>>> fetchLatestAutomationBatches() async {
     final client = _requiredClient;
+    try {
+      final res = await client.rpc('get_latest_task_dashboard');
+      if (res is List) {
+        return res
+            .map((b) => Map<String, dynamic>.from(b as Map))
+            .toList(growable: false);
+      }
+    } catch (_) {
+      // Graceful fallback to multi-query if RPC is unavailable
+    }
+
     final batchesFutures = supportedAutomationTaskTypes.map((taskType) async {
       final row = await client
           .from('automation_batches')
@@ -996,47 +1007,64 @@ class SupabaseGateway {
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
-    final rows = await client
-        .from('customers')
-        .select(
-          'id, full_name, date_of_birth, place_of_birth, passport_number, '
-          'nationality, gender, passport_expiry_date, passport_image_path, '
-          'business_status, created_by, created_at, deleted_at',
-        )
-        .isFilter('deleted_at', null)
-        .order('created_at', ascending: false)
-        .limit(200);
-    final pins = await client
-        .from('email_pin_records')
-        .select('customer_id, pin_value, status, received_at, created_at')
-        .order('created_at', ascending: false)
-        .limit(500);
-    final profiles = await client
-        .from('profiles')
-        .select('id, name')
-        .limit(200);
+    try {
+      final rows = await client
+          .from('customer_current_state')
+          .select(
+            'id, full_name, date_of_birth, place_of_birth, passport_number, '
+            'nationality, gender, passport_expiry_date, passport_image_path, '
+            'business_status, created_by, created_at, deleted_at, '
+            'created_by_name, pin_record',
+          )
+          .order('created_at', ascending: false)
+          .limit(200);
 
-    final latestPins = <String, Map<String, dynamic>>{};
-    for (final pin in pins) {
-      final customerId = pin['customer_id'] as String?;
-      if (customerId != null && !latestPins.containsKey(customerId)) {
-        latestPins[customerId] = Map<String, dynamic>.from(pin);
+      return rows
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+    } catch (_) {
+      final rows = await client
+          .from('customers')
+          .select(
+            'id, full_name, date_of_birth, place_of_birth, passport_number, '
+            'nationality, gender, passport_expiry_date, passport_image_path, '
+            'business_status, created_by, created_at, deleted_at',
+          )
+          .isFilter('deleted_at', null)
+          .order('created_at', ascending: false)
+          .limit(200);
+      final pins = await client
+          .from('email_pin_records')
+          .select('customer_id, pin_value, status, received_at, created_at')
+          .order('created_at', ascending: false)
+          .limit(500);
+      final profiles = await client
+          .from('profiles')
+          .select('id, name')
+          .limit(200);
+
+      final latestPins = <String, Map<String, dynamic>>{};
+      for (final pin in pins) {
+        final customerId = pin['customer_id'] as String?;
+        if (customerId != null && !latestPins.containsKey(customerId)) {
+          latestPins[customerId] = Map<String, dynamic>.from(pin);
+        }
       }
-    }
-    final names = <String, String>{
-      for (final profile in profiles)
-        if (profile['id'] != null && profile['name'] != null)
-          profile['id'] as String: profile['name'] as String,
-    };
+      final names = <String, String>{
+        for (final profile in profiles)
+          if (profile['id'] != null && profile['name'] != null)
+            profile['id'] as String: profile['name'] as String,
+      };
 
-    return [
-      for (final row in rows)
-        {
-          ...Map<String, dynamic>.from(row),
-          'created_by_name': names[row['created_by']] ?? row['created_by'],
-          'pin_record': latestPins[row['id']],
-        },
-    ];
+      return [
+        for (final row in rows)
+          {
+            ...Map<String, dynamic>.from(row),
+            'created_by_name': names[row['created_by']] ?? row['created_by'],
+            'pin_record': latestPins[row['id']],
+          },
+      ];
+    }
   }
 
   static Future<Map<String, dynamic>> insertCustomer({

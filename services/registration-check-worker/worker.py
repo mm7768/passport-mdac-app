@@ -275,6 +275,30 @@ class SupabaseAdminClient:
             },
         )
 
+    def heartbeat_tick(
+        self,
+        *,
+        status: str = "ONLINE",
+        batch_id: str | None = None,
+        item_id: str | None = None,
+        force: bool = False,
+        idle_interval: float = 60.0,
+        busy_interval: float = 20.0,
+    ) -> None:
+        now = time.monotonic()
+        if not hasattr(self, "_last_heartbeat_at"):
+            self._last_heartbeat_at = 0.0
+            self._last_hb_status = None
+            self._last_hb_batch_id = None
+
+        interval = busy_interval if status == "BUSY" else idle_interval
+        state_changed = (status != self._last_hb_status or batch_id != self._last_hb_batch_id)
+        if force or state_changed or (now - self._last_heartbeat_at >= interval):
+            self.heartbeat(status=status, batch_id=batch_id, item_id=item_id)
+            self._last_heartbeat_at = now
+            self._last_hb_status = status
+            self._last_hb_batch_id = batch_id
+
     def upload_evidence(self, item_id: str, content: bytes, extension: str = "png") -> str:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         safe_item_id = re.sub(r"[^a-zA-Z0-9-]", "", item_id)
@@ -725,7 +749,7 @@ class RegistrationCheckWorker:
 
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
-        self.supabase.heartbeat(status="BUSY", batch_id=batch_id)
+        self.supabase.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
         log_event(
             logging.INFO,
             step="batch_claim",
@@ -853,7 +877,7 @@ class RegistrationCheckWorker:
                         error_message="Registration Check failure writeback failed",
                     )
 
-        self.supabase.heartbeat(status="ONLINE")
+        self.supabase.heartbeat_tick(status="ONLINE", force=True)
         log_event(
             logging.INFO,
             step="batch_complete",
@@ -864,7 +888,6 @@ class RegistrationCheckWorker:
         return processed
 
     def run_once(self) -> int:
-        self.supabase.heartbeat(status="ONLINE")
         batch = self.supabase.claim_batch()
         if batch is None:
             log_event(logging.DEBUG, step="batch_claim", status="idle")
@@ -878,8 +901,12 @@ class RegistrationCheckWorker:
             status="online",
             result={"mode": self.config.mode, "poll_seconds": self.config.poll_seconds},
         )
+        self.supabase.heartbeat_tick(status="ONLINE", force=True)
+        backoff_steps = [2.0, 5.0, 10.0]
+        backoff_idx = 0
         while True:
             try:
+                self.supabase.heartbeat_tick(status="ONLINE")
                 processed = self.run_once()
                 if processed:
                     log_event(
@@ -888,6 +915,14 @@ class RegistrationCheckWorker:
                         status="completed",
                         result={"processed_count": processed},
                     )
+                    # 发现并处理任务后立即重置退避计时，连续拉取下一任务
+                    backoff_idx = 0
+                    continue
+
+                sleep_sec = backoff_steps[backoff_idx]
+                if backoff_idx < len(backoff_steps) - 1:
+                    backoff_idx += 1
+                time.sleep(sleep_sec)
             except Exception:
                 log_event(
                     logging.ERROR,
@@ -906,7 +941,7 @@ class RegistrationCheckWorker:
                         error_code="HEARTBEAT_WRITE_FAILED",
                         error_message="Registration Check error heartbeat write failed",
                     )
-            time.sleep(self.config.poll_seconds)
+                time.sleep(5.0)
 
 
 def configure_logging(level: str) -> None:

@@ -3076,33 +3076,31 @@ class _MdacShellState extends State<MdacShell> {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.repository,
-      builder: (context, _) {
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 840;
-            final content = _sectionContent();
-            return Scaffold(
-              body: wide
-                  ? Row(
-                      children: [
-                        SideRail(
-                          current: section,
-                          onSelect: open,
-                          userName: widget.userName,
-                          role: widget.role,
-                          onSignOut: widget.onSignOut,
-                        ),
-                        Expanded(child: content),
-                      ],
-                    )
-                  : content,
-              bottomNavigationBar: wide
-                  ? null
-                  : MobileNav(current: section, onSelect: open),
-            );
-          },
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 840;
+        final content = AnimatedBuilder(
+          animation: widget.repository,
+          builder: (context, _) => _sectionContent(),
+        );
+        return Scaffold(
+          body: wide
+              ? Row(
+                  children: [
+                    SideRail(
+                      current: section,
+                      onSelect: open,
+                      userName: widget.userName,
+                      role: widget.role,
+                      onSignOut: widget.onSignOut,
+                    ),
+                    Expanded(child: content),
+                  ],
+                )
+              : content,
+          bottomNavigationBar: wide
+              ? null
+              : MobileNav(current: section, onSelect: open),
         );
       },
     );

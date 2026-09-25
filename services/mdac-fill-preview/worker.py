@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import sys
+import time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -214,6 +215,30 @@ class SupabaseAdminClient:
                 "p_version": WORKER_VERSION,
             },
         )
+
+    def heartbeat_tick(
+        self,
+        *,
+        status: str = "ONLINE",
+        batch_id: str | None = None,
+        item_id: str | None = None,
+        force: bool = False,
+        idle_interval: float = 60.0,
+        busy_interval: float = 20.0,
+    ) -> None:
+        now = time.monotonic()
+        if not hasattr(self, "_last_heartbeat_at"):
+            self._last_heartbeat_at = 0.0
+            self._last_hb_status = None
+            self._last_hb_batch_id = None
+
+        interval = busy_interval if status == "BUSY" else idle_interval
+        state_changed = (status != self._last_hb_status or batch_id != self._last_hb_batch_id)
+        if force or state_changed or (now - self._last_heartbeat_at >= interval):
+            self.heartbeat(status=status, batch_id=batch_id, item_id=item_id)
+            self._last_heartbeat_at = now
+            self._last_hb_status = status
+            self._last_hb_batch_id = batch_id
 
     def upload_screenshot(self, path: str, content: bytes) -> str:
         object_path = path.strip("/")
@@ -804,7 +829,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
         return False
 
     batch_id = str(batch["id"])
-    client.heartbeat(status="BUSY", batch_id=batch_id)
+    client.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
     LOG.info(
         "已领取 MDAC 批次 %s；模式=%s 允许提交=%s",
         batch_id,
@@ -841,6 +866,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
                 item = client.claim_item(batch_id)
                 if not item:
                     break
+                client.heartbeat_tick(status="BUSY", batch_id=batch_id)
                 try:
                     await process_item(
                         page=page,
@@ -860,33 +886,42 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
             if browser is not None:
                 await browser.close()
 
-    client.heartbeat(status="ONLINE")
+    client.heartbeat_tick(status="ONLINE", force=True)
     LOG.info("批次 %s 处理完成", batch_id)
     return True
 
 
 async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
-    client.heartbeat(status="ONLINE")
+    client.heartbeat_tick(status="ONLINE", force=True)
+    backoff_steps = [2.0, 5.0, 10.0]
+    backoff_idx = 0
     while True:
         try:
-            client.heartbeat(status="ONLINE")
+            client.heartbeat_tick(status="ONLINE")
             processed = await run_once(config, client)
-            if not processed:
-                await asyncio.sleep(config.poll_seconds)
+            if processed:
+                # 任务处理完成后重置退避计时，立即拉取下一批次连续处理
+                backoff_idx = 0
+                continue
+
+            sleep_duration = backoff_steps[backoff_idx]
+            if backoff_idx < len(backoff_steps) - 1:
+                backoff_idx += 1
+            await asyncio.sleep(sleep_duration)
         except (WorkerError, requests.RequestException) as exc:
             LOG.error("MDAC fill-preview Worker 错误：%s", exc)
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001 - keep poll loop alive
                 LOG.exception("错误状态心跳写入失败")
-            await asyncio.sleep(config.poll_seconds)
+            await asyncio.sleep(5.0)
         except Exception:
             LOG.exception("MDAC fill-preview Worker 未预期错误")
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001
                 LOG.exception("未预期错误心跳写入失败")
-            await asyncio.sleep(config.poll_seconds)
+            await asyncio.sleep(5.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
