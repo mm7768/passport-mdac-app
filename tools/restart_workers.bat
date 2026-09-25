@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 echo ===================================================
 echo     正在重启 MDAC ^& Visit Pass 自动核验 Worker
@@ -8,9 +8,11 @@ echo [1/3] 正在终止旧版常驻 Python Worker 进程...
 taskkill /F /FI "WINDOWTITLE eq *Visit Pass*" /T >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq *Registration*" /T >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq *MDAC*" /T >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq *Azure 护照 OCR*" /T >nul 2>&1
 wmic process where "commandline like '%%visit-pass-check-worker%%' and name='python.exe'" call terminate >nul 2>&1
 wmic process where "commandline like '%%registration-check-worker%%' and name='python.exe'" call terminate >nul 2>&1
 wmic process where "commandline like '%%mdac-fill-preview%%' and name='python.exe'" call terminate >nul 2>&1
+wmic process where "commandline like '%%azure_ocr_worker%%' and name='python.exe'" call terminate >nul 2>&1
 
 timeout /t 2 /nobreak >nul
 

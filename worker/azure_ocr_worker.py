@@ -54,6 +54,28 @@ class SupabaseError(RuntimeError):
     """Raised when the Supabase REST or Storage API fails."""
 
 
+def _load_env_file() -> None:
+    env_file = os.getenv("ENV_FILE", "").strip()
+    candidates = [env_file] if env_file else [".env.local", ".env"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(script_dir)
+    for c in candidates:
+        if not c:
+            continue
+        for base in (script_dir, repo_root):
+            path = c if os.path.isabs(c) else os.path.join(base, c)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+
+
 @dataclass(frozen=True)
 class WorkerConfig:
     supabase_url: str
@@ -65,6 +87,7 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
+        _load_env_file()
         names = {
             "SUPABASE_URL": os.getenv("SUPABASE_URL", "").strip(),
             "SUPABASE_SERVICE_ROLE_KEY": os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip(),

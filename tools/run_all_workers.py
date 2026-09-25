@@ -39,6 +39,12 @@ WORKERS = [
         "script": "services/visit-pass-check-worker/worker.py",
         "args": ["--poll"],
     },
+    {
+        "name": "Azure 护照 OCR",
+        "tag": "OCR",
+        "script": "worker/azure_ocr_worker.py",
+        "args": ["--poll"],
+    },
 ]
 
 # ANSI color codes
@@ -47,6 +53,7 @@ COLORS = {
     "GMAIL-PIN": "\033[93m",   # Yellow
     "CHECK-REG": "\033[92m",   # Green
     "CHECK-VP": "\033[95m",    # Magenta
+    "OCR": "\033[94m",         # Blue
     "RESET": "\033[0m",
     "BOLD": "\033[1m",
 }
