@@ -9,10 +9,12 @@ taskkill /F /FI "WINDOWTITLE eq *Visit Pass*" /T >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq *Registration*" /T >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq *MDAC*" /T >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq *Azure 护照 OCR*" /T >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq *Gmail PIN*" /T >nul 2>&1
 wmic process where "commandline like '%%visit-pass-check-worker%%' and name='python.exe'" call terminate >nul 2>&1
 wmic process where "commandline like '%%registration-check-worker%%' and name='python.exe'" call terminate >nul 2>&1
 wmic process where "commandline like '%%mdac-fill-preview%%' and name='python.exe'" call terminate >nul 2>&1
 wmic process where "commandline like '%%azure_ocr_worker%%' and name='python.exe'" call terminate >nul 2>&1
+wmic process where "commandline like '%%gmail-pin-worker%%' and name='python.exe'" call terminate >nul 2>&1
 
 timeout /t 2 /nobreak >nul
 

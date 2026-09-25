@@ -32,6 +32,10 @@ def build_command(mode: str) -> list[str]:
         f'chcp 65001 >nul & title Azure 护照 OCR & cd /d "{REPO_ROOT}" & '
         f'"{PYTHON_EXE}" worker/azure_ocr_worker.py --poll'
     )
+    w5_cmd = (
+        f'chcp 65001 >nul & title Gmail PIN 抓取 & cd /d "{REPO_ROOT}" & '
+        f'"{PYTHON_EXE}" services/gmail-pin-worker/worker.py --poll'
+    )
 
     if mode == "split":
         # Split-pane layout: Left half for MDAC, Right-top for Reg Check, Right-bottom for Visit Pass
@@ -50,7 +54,7 @@ def build_command(mode: str) -> list[str]:
             "cmd", "/k", w3_cmd,
         ]
     else:
-        # Default: 4 tabs in a single window
+        # Default: 5 tabs in a single window
         return [
             "wt",
             "-w", "0",
@@ -69,6 +73,10 @@ def build_command(mode: str) -> list[str]:
             "new-tab",
             "--title", "4. Azure 护照 OCR",
             "cmd", "/k", w4_cmd,
+            ";",
+            "new-tab",
+            "--title", "5. Gmail PIN 抓取",
+            "cmd", "/k", w5_cmd,
         ]
 
 

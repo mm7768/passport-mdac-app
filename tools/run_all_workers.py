@@ -45,6 +45,12 @@ WORKERS = [
         "script": "worker/azure_ocr_worker.py",
         "args": ["--poll"],
     },
+    {
+        "name": "Gmail PIN 抓取",
+        "tag": "GMAIL-PIN",
+        "script": "services/gmail-pin-worker/worker.py",
+        "args": ["--poll"],
+    },
 ]
 
 # ANSI color codes
