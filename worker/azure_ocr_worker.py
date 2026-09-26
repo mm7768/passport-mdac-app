@@ -29,7 +29,8 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+import socket
 from pathlib import PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -221,6 +222,32 @@ class SupabaseAdminClient:
         self._raise(response, "写入 OCR 结果")
         rows = response.json()
         return rows[0] if rows else payload
+
+    def heartbeat(
+        self,
+        *,
+        worker_id: str,
+        status: str = "ONLINE",
+        batch_id: str | None = None,
+    ) -> None:
+        payload = {
+            "worker_id": worker_id,
+            "hostname": socket.gethostname(),
+            "version": "azure-ocr-1",
+            "status": status,
+            "current_batch_id": batch_id,
+            "last_seen_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"execution_mode": "AZURE_OCR"},
+        }
+        try:
+            self.session.post(
+                f"{self.rest_url}/worker_heartbeats",
+                headers={"Prefer": "resolution=merge-duplicates"},
+                json=payload,
+                timeout=self.config.request_timeout,
+            )
+        except Exception:
+            pass
 
     def _raise(self, response: requests.Response, action: str) -> None:
         if response.ok:
@@ -488,8 +515,14 @@ def run_poll_loop(
     azure = AzureIdentityDocumentClient(config)
     interval = max(queue_poll_seconds, 5.0)
     LOG.info("OCR Worker 已启动：worker_id=%s，轮询间隔 %.1fs", worker_id, interval)
+    last_hb_time = 0.0
     while True:
         try:
+            now_mono = time.monotonic()
+            if now_mono - last_hb_time >= 45.0:
+                supabase.heartbeat(worker_id=worker_id, status="ONLINE")
+                last_hb_time = now_mono
+
             batch = supabase.claim_next_batch()
             if batch is None:
                 if once:
@@ -497,6 +530,7 @@ def run_poll_loop(
                 time.sleep(interval)
                 continue
             batch_id = str(batch["id"])
+            supabase.heartbeat(worker_id=worker_id, status="BUSY", batch_id=batch_id)
             LOG.info("Worker %s 开始处理批次 %s", worker_id, batch_id)
             try:
                 result = process_batch(

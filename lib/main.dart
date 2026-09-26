@@ -811,6 +811,36 @@ class DemoRepository extends ChangeNotifier {
   bool mdacSettingsLoading = false;
   GmailSettings? gmailSettings;
   bool gmailSettingsLoading = false;
+  Map<String, dynamic> workersHealth = const {};
+  bool workersHealthLoading = false;
+
+  int get onlineWorkersCount {
+    if (workersHealth.isEmpty) return 0;
+    var count = 0;
+    for (final v in workersHealth.values) {
+      if (v is Map && v['is_online'] == true) count++;
+    }
+    return count;
+  }
+
+  Future<String?> syncWorkersHealthFromSupabase() async {
+    if (!remoteMode) return null;
+    workersHealthLoading = true;
+    notifyListeners();
+    try {
+      final res = await SupabaseGateway.fetchWorkersHealth();
+      workersHealth = res;
+      final online = onlineWorkersCount;
+      workerOnline = online > 0;
+      currentWorkerActivity = '$online/5 个 Worker 服务在线运行中';
+      return null;
+    } catch (e) {
+      return 'Worker 健康状态查询失败：$e';
+    } finally {
+      workersHealthLoading = false;
+      notifyListeners();
+    }
+  }
 
   void _seed() {
     final now = DateTime.now();
@@ -923,6 +953,7 @@ class DemoRepository extends ChangeNotifier {
         ..clear()
         ..addAll(rows.map(_customerFromRemote));
       auditEvents.insert(0, '已从 Supabase 同步 ${customers.length} 个客户档案');
+      syncWorkersHealthFromSupabase();
       notifyListeners();
       return null;
     } catch (exception) {
@@ -3093,6 +3124,7 @@ class _MdacShellState extends State<MdacShell> {
                       userName: widget.userName,
                       role: widget.role,
                       onSignOut: widget.onSignOut,
+                      repository: widget.repository,
                     ),
                     Expanded(child: content),
                   ],
@@ -3146,6 +3178,7 @@ class SideRail extends StatelessWidget {
     required this.userName,
     required this.role,
     required this.onSignOut,
+    required this.repository,
     super.key,
   });
 
@@ -3154,6 +3187,7 @@ class SideRail extends StatelessWidget {
   final String userName;
   final UserRole role;
   final VoidCallback onSignOut;
+  final DemoRepository repository;
 
   @override
   Widget build(BuildContext context) {
@@ -3212,39 +3246,58 @@ class SideRail extends StatelessWidget {
             onTap: () => onSelect(AppSection.settings),
           ),
           const Spacer(),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: .08),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                const WorkerDot(),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Worker 在线',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                        ),
-                      ),
-                      Text(
-                        'fill-preview 0.1.0 · 只填写不提交',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: .55),
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
+          InkWell(
+            onTap: () => showWorkersHealthDialog(context, repository),
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: repository.onlineWorkersCount == 5
+                      ? const Color(0xFF35B778).withValues(alpha: .35)
+                      : Colors.white.withValues(alpha: .15),
                 ),
-              ],
+              ),
+              child: Row(
+                children: [
+                  WorkerDot(
+                    active: repository.onlineWorkersCount > 0,
+                    light: repository.onlineWorkersCount == 5,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${repository.onlineWorkersCount}/5 Worker 在线',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          repository.onlineWorkersCount == 5
+                              ? '全部 5 项服务就绪 · 点击查看'
+                              : '点击查看各 Worker 详细心跳',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: .55),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white38,
+                    size: 18,
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -3322,6 +3375,240 @@ class MobileNav extends StatelessWidget {
           label: '设置',
         ),
       ],
+    );
+  }
+}
+
+void showWorkersHealthDialog(BuildContext context, DemoRepository repository) {
+  showDialog<void>(
+    context: context,
+    builder: (dlgCtx) => StatefulBuilder(
+      builder: (dlgCtx, setDlgState) {
+        final health = repository.workersHealth;
+        final services = [
+          ('mdac', 'MDAC 自动注册', Icons.app_registration_rounded),
+          ('reg_check', '登记核验 (Registration)', Icons.how_to_reg_rounded),
+          ('visit_pass', 'Visit Pass 核验', Icons.badge_outlined),
+          ('ocr', 'Azure 护照 OCR', Icons.document_scanner_rounded),
+          ('gmail_pin', 'Gmail PIN 抓取', Icons.mark_email_read_rounded),
+        ];
+
+        return AlertDialog(
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AppTheme.teal.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.monitor_heart_rounded, color: AppTheme.teal),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Worker 运行健康监控', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+                    Text(
+                      '${repository.onlineWorkersCount}/5 项服务在线运行',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: repository.onlineWorkersCount == 5 ? const Color(0xFF16A34A) : AppTheme.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ...services.map((item) {
+                    final key = item.$1;
+                    final title = item.$2;
+                    final icon = item.$3;
+                    final info = health[key] is Map ? Map<String, dynamic>.from(health[key] as Map) : null;
+                    final isOnline = info?['is_online'] == true;
+                    final lastSeen = info?['last_seen_at'] != null
+                        ? DateTime.tryParse(info!['last_seen_at'].toString())?.toLocal()
+                        : null;
+                    final hostname = info?['hostname']?.toString() ?? '未知';
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      decoration: BoxDecoration(
+                        color: isOnline ? const Color(0xFFF0FDF4) : const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isOnline ? const Color(0xFFBBF7D0) : const Color(0xFFE2E8F0),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            icon,
+                            size: 22,
+                            color: isOnline ? const Color(0xFF16A34A) : Colors.grey,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      title,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: isOnline ? const Color(0xFF15803D) : AppTheme.ink,
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: isOnline ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 7,
+                                            height: 7,
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: isOnline ? const Color(0xFF16A34A) : Colors.grey,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 5),
+                                          Text(
+                                            isOnline ? '正常在线' : '离线未运行',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700,
+                                              color: isOnline ? const Color(0xFF15803D) : Colors.grey.shade600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  lastSeen != null
+                                      ? '主机: $hostname · 最近心跳: ${formatDateTime(lastSeen)}'
+                                      : '主机: $hostname · 暂无心跳',
+                                  style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF2563EB)),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '提示：本地 Worker 心跳间隔为 60 秒。若服务显示离线，请双击电脑桌面的「一键重启Workers.bat」即可启动。已包含单实例防重复保护。',
+                            style: TextStyle(fontSize: 11, color: Color(0xFF1E40AF), height: 1.4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                await repository.syncWorkersHealthFromSupabase();
+                setDlgState(() {});
+              },
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('刷新状态'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dlgCtx),
+              child: const Text('我知道了'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class WorkerStatusChip extends StatelessWidget {
+  const WorkerStatusChip({required this.repository, super.key});
+  final DemoRepository repository;
+
+  @override
+  Widget build(BuildContext context) {
+    final online = repository.onlineWorkersCount;
+    final allGood = online == 5;
+    return InkWell(
+      onTap: () => showWorkersHealthDialog(context, repository),
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: allGood ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: allGood ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: allGood ? const Color(0xFF10B981) : (online > 0 ? const Color(0xFFF59E0B) : Colors.grey),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Worker $online/5 在线',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: allGood ? const Color(0xFF047857) : (online > 0 ? const Color(0xFFB45309) : Colors.grey.shade700),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -3603,11 +3890,123 @@ class _CustomersScreenState extends State<CustomersScreen> {
   final Set<String> _expandedGroupIds = <String>{};
   final Map<String, String> _customGroupNames = <String, String>{};
   late String businessStatusFilter;
+  String customerFunnelFilter = 'ALL';
   String createdDateFilter = '全部日期';
   String nationalityFilter = '全部国家';
   DateTimeRange? createdDateRange;
   bool onlyWithPinFilter = false;
   String sortOption = 'DEFAULT'; // 'DEFAULT' (录入时间倒序), 'NAME_ASC' (姓名 A-Z), 'NAME_DESC' (姓名 Z-A)
+
+  int get allCount => widget.repository.activeCustomers.length;
+  int get needMdacCount => widget.repository.activeCustomers
+      .where((c) => c.businessStatus == 'PENDING')
+      .length;
+  int get needPinCount => widget.repository.activeCustomers
+      .where((c) => c.businessStatus != 'PENDING' && (c.pin ?? '').trim().isEmpty)
+      .length;
+  int get needVisitPassCount => widget.repository.activeCustomers
+      .where((c) => (c.pin ?? '').trim().isNotEmpty && c.businessStatus != 'VISIT_PASS_CHECKED')
+      .length;
+  int get completedCount => widget.repository.activeCustomers
+      .where((c) => c.businessStatus == 'VISIT_PASS_CHECKED')
+      .length;
+
+  Widget _buildFunnelBar() {
+    final tabs = [
+      ('ALL', '全部客户', allCount, Icons.people_alt_rounded, AppTheme.teal),
+      ('NEED_MDAC', '待办 MDAC', needMdacCount, Icons.hourglass_top_rounded, const Color(0xFFEA580C)),
+      ('NEED_PIN', '待取 PIN', needPinCount, Icons.vpn_key_rounded, const Color(0xFF2563EB)),
+      ('NEED_VISIT_PASS', '待查 Visit Pass', needVisitPassCount, Icons.badge_outlined, const Color(0xFF0D9488)),
+      ('COMPLETED', '已完成', completedCount, Icons.check_circle_rounded, const Color(0xFF16A34A)),
+    ];
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: tabs.map((tab) {
+          final key = tab.$1;
+          final title = tab.$2;
+          final count = tab.$3;
+          final icon = tab.$4;
+          final themeColor = tab.$5;
+          final isSelected = customerFunnelFilter == key;
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: InkWell(
+              onTap: () {
+                setState(() {
+                  customerFunnelFilter = key;
+                  selected.clear();
+                });
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected ? themeColor : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected ? themeColor : AppTheme.line,
+                    width: isSelected ? 1.5 : 1,
+                  ),
+                  boxShadow: isSelected
+                      ? [
+                          BoxShadow(
+                            color: themeColor.withValues(alpha: 0.25),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      icon,
+                      size: 16,
+                      color: isSelected ? Colors.white : themeColor,
+                    ),
+                    const SizedBox(width: 7),
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                        color: isSelected ? Colors.white : AppTheme.ink,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? Colors.white.withValues(alpha: 0.25)
+                            : (count > 0 ? themeColor.withValues(alpha: 0.12) : const Color(0xFFF1F5F9)),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '$count',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: isSelected
+                              ? Colors.white
+                              : (count > 0 ? themeColor : AppTheme.muted),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -3660,6 +4059,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
           query.isEmpty ||
           customer.fullName.toLowerCase().contains(query) ||
           customer.passportNumber.toLowerCase().contains(query);
+
+      final matchesFunnel = switch (customerFunnelFilter) {
+        'NEED_MDAC' => customer.businessStatus == 'PENDING',
+        'NEED_PIN' => customer.businessStatus != 'PENDING' && (customer.pin ?? '').trim().isEmpty,
+        'NEED_VISIT_PASS' => (customer.pin ?? '').trim().isNotEmpty && customer.businessStatus != 'VISIT_PASS_CHECKED',
+        'COMPLETED' => customer.businessStatus == 'VISIT_PASS_CHECKED',
+        _ => true,
+      };
+
       final matchesStatus =
           businessStatusFilter == '全部' ||
           businessStatusLabel(customer.businessStatus) == businessStatusFilter;
@@ -3674,6 +4082,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       final matchesPin =
           !onlyWithPinFilter || (customer.pin ?? '').trim().isNotEmpty;
       return matchesQuery &&
+          matchesFunnel &&
           matchesStatus &&
           matchesDate &&
           matchesNationality &&
@@ -3729,6 +4138,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   void clearCustomerFilters() {
     setState(() {
+      customerFunnelFilter = 'ALL';
       businessStatusFilter = '全部';
       createdDateFilter = '全部日期';
       nationalityFilter = '全部国家';
@@ -6263,11 +6673,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          WorkerStatusChip(repository: widget.repository),
           IconButton.outlined(
             onPressed: () async {
               final results = await Future.wait([
                 widget.repository.syncCustomersFromSupabase(),
                 widget.repository.syncAutomationTasksFromSupabase(),
+                widget.repository.syncWorkersHealthFromSupabase(),
               ]);
               if (!context.mounted) return;
               final error =
@@ -6276,11 +6688,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 showToast(context, error, error: true);
               } else {
                 setState(() {});
-                showToast(context, '已刷新客户档案与批次。');
+                showToast(context, '已刷新客户档案、批次与 Worker 状态。');
               }
             },
             icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
-            tooltip: '刷新客户档案与批次',
+            tooltip: '刷新客户档案、批次与 Worker 状态',
           ),
           OutlinedButton.icon(
             onPressed: createManualCustomer,
@@ -6388,6 +6800,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     ),
                   );
                   final hasCategoryFilters =
+                      customerFunnelFilter != 'ALL' ||
                       businessStatusFilter != '全部' ||
                       createdDateFilter != '全部日期' ||
                       nationalityFilter != '全部国家' ||
@@ -6452,6 +6865,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      _buildFunnelBar(),
+                      const SizedBox(height: 12),
                       search,
                       const SizedBox(height: 10),
                       Align(
@@ -9907,24 +10322,39 @@ class RailItem extends StatelessWidget {
 }
 
 class WorkerDot extends StatelessWidget {
-  const WorkerDot({this.light = false, super.key});
+  const WorkerDot({
+    this.light = false,
+    this.active = true,
+    this.color,
+    super.key,
+  });
   final bool light;
+  final bool active;
+  final Color? color;
+
   @override
-  Widget build(BuildContext context) => Container(
-    width: 9,
-    height: 9,
-    decoration: BoxDecoration(
-      color: light ? const Color(0xFF8CE3B5) : const Color(0xFF35B778),
-      shape: BoxShape.circle,
-      boxShadow: [
-        BoxShadow(
-          color: (light ? const Color(0xFF8CE3B5) : const Color(0xFF35B778))
-              .withValues(alpha: .4),
-          blurRadius: 5,
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final dotColor = color ??
+        (active
+            ? (light ? const Color(0xFF8CE3B5) : const Color(0xFF35B778))
+            : Colors.white38);
+    return Container(
+      width: 9,
+      height: 9,
+      decoration: BoxDecoration(
+        color: dotColor,
+        shape: BoxShape.circle,
+        boxShadow: active
+            ? [
+                BoxShadow(
+                  color: dotColor.withValues(alpha: .4),
+                  blurRadius: 5,
+                ),
+              ]
+            : null,
+      ),
+    );
+  }
 }
 
 class ConfidenceBanner extends StatelessWidget {

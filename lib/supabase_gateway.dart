@@ -1497,6 +1497,17 @@ class SupabaseGateway {
   static SupabaseClient get _requiredClient =>
       _client ?? (throw const AuthException('Supabase 尚未初始化。'));
 
+  static Future<Map<String, dynamic>> fetchWorkersHealth() async {
+    final client = _requiredClient;
+    try {
+      final result = await client.rpc('get_workers_health');
+      if (result is Map) {
+        return Map<String, dynamic>.from(result);
+      }
+    } catch (_) {}
+    return const {};
+  }
+
   static String get _requiredUserId =>
       currentUserId ?? (throw const AuthException('当前没有登录用户。'));
 

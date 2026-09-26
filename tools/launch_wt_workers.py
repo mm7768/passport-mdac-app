@@ -11,8 +11,15 @@ import os
 import subprocess
 import sys
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 PYTHON_EXE = sys.executable
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 
 def build_command(mode: str) -> list[str]:
@@ -89,12 +96,20 @@ def main() -> None:
         help="Display layout: 'tabs' (multi-tab) or 'split' (split-pane)",
     )
     args = parser.parse_args()
+
+    # 防重复启动保护：先优雅清理所有旧版或重复运行的同名 Worker 进程
+    try:
+        from tools.stop_workers import stop_workers
+        stop_workers()
+    except Exception as e:
+        print(f"终止旧 Worker 进程提示：{e}")
+
     cmd = build_command(args.mode)
     try:
         subprocess.Popen(cmd)
-        mode_text = "【同窗口 3 标签页 (Tabs)】" if args.mode == "tabs" else "【同窗口 3 分屏 (Split-Pane)】"
+        mode_text = "【同窗口 5 标签页 (Tabs)】" if args.mode == "tabs" else "【同窗口分屏 (Split-Pane)】"
         print(f"成功唤起 Windows Terminal {mode_text}！")
-        print("所有 3 个 Worker 已在同一个窗口中就绪并在后台监听。")
+        print("所有 5 个 Worker 已在同一个窗口中就绪并在后台监听。")
     except Exception as e:
         print(f"调起 Windows Terminal 失败: {e}")
 
