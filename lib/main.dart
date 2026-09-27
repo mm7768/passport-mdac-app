@@ -12,6 +12,8 @@ import 'human_query_review.dart';
 import 'customer_bundle_exporter.dart';
 import 'customer_excel_exporter.dart';
 import 'supabase_gateway.dart';
+import 'features/batches/batch_models.dart';
+import 'features/batches/batches_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,6 +56,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
           .syncGmailSettingsFromSupabase();
       final membershipSyncError = await repository
           .syncMdacBatchMembershipsFromSupabase();
+      final activeBatchesSyncError = await repository
+          .syncActiveBatchesFromSupabase();
       if (syncError != null) repository.auditEvents.insert(0, syncError);
       if (batchSyncError != null)
         repository.auditEvents.insert(0, batchSyncError);
@@ -67,6 +71,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
         repository.auditEvents.insert(0, gmailSettingsSyncError);
       if (membershipSyncError != null)
         repository.auditEvents.insert(0, membershipSyncError);
+      if (activeBatchesSyncError != null)
+        repository.auditEvents.insert(0, activeBatchesSyncError);
       if (!mounted) return;
       signedIn = true;
       signedInName = session.name;
@@ -110,6 +116,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                     .syncGmailSettingsFromSupabase();
                 final membershipSyncError = await repository
                     .syncMdacBatchMembershipsFromSupabase();
+                final activeBatchesSyncError = await repository
+                    .syncActiveBatchesFromSupabase();
                 if (syncError != null) {
                   repository.auditEvents.insert(0, syncError);
                 }
@@ -130,6 +138,9 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                 }
                 if (membershipSyncError != null) {
                   repository.auditEvents.insert(0, membershipSyncError);
+                }
+                if (activeBatchesSyncError != null) {
+                  repository.auditEvents.insert(0, activeBatchesSyncError);
                 }
                 if (!mounted) return;
                 setState(() {
@@ -837,6 +848,9 @@ class DemoRepository extends ChangeNotifier {
   final List<AutomationTask> tasks = [];
   final List<AutomationTask> historyTasks = [];
   final List<MdacBatchMembership> mdacBatchMemberships = [];
+  final List<AppOperationalBatch> activeBatches = [];
+  bool activeBatchesLoading = false;
+  String? activeBatchesError;
   bool isLoadingHistory = false;
   int historyPage = 0;
   bool hasMoreHistory = true;
@@ -1404,6 +1418,48 @@ class DemoRepository extends ChangeNotifier {
     } catch (exception) {
       return 'MDAC 客户批次索引同步失败：$exception';
     }
+  }
+
+  /// 同步当前进行中 (OPEN) 的排单批次及统计 (来自 get_app_active_batches)
+  Future<String?> syncActiveBatchesFromSupabase() async {
+    if (!remoteMode) return null;
+    activeBatchesLoading = true;
+    activeBatchesError = null;
+    notifyListeners();
+    try {
+      final rows = await SupabaseGateway.fetchAppActiveBatches();
+      activeBatches
+        ..clear()
+        ..addAll(rows.map(AppOperationalBatch.fromMap));
+      activeBatchesError = null;
+      auditEvents.insert(0, '已同步 ${activeBatches.length} 个活跃排单批次');
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      activeBatchesError = exception.toString();
+      notifyListeners();
+      return '活跃批次同步失败：$exception';
+    } finally {
+      activeBatchesLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// 获取指定 OPEN 批次内当前有效的订单列表 (来自 get_app_batch_orders)
+  Future<List<AppBatchOrder>> fetchBatchOrders(String batchId) async {
+    if (!remoteMode) return const <AppBatchOrder>[];
+    final rows = await SupabaseGateway.fetchAppBatchOrders(batchId);
+    return rows.map(AppBatchOrder.fromMap).toList(growable: false);
+  }
+
+  /// 获取单笔订单的完整执行上下文 (来自 get_app_order_execution_context)
+  Future<AppOrderExecutionContext?> fetchOrderExecutionContext(
+    String orderId,
+  ) async {
+    if (!remoteMode) return null;
+    final row = await SupabaseGateway.fetchAppOrderExecutionContext(orderId);
+    if (row == null) return null;
+    return AppOrderExecutionContext.fromMap(row);
   }
 
   Future<String?> syncAutomationTasksFromSupabase() async {
@@ -2778,6 +2834,7 @@ class DemoRepository extends ChangeNotifier {
         syncAutomationTasksFromSupabase(),
         syncCustomersFromSupabase(),
         syncMdacBatchMembershipsFromSupabase(),
+        syncActiveBatchesFromSupabase(),
       ]);
       notifyListeners();
       return null;
@@ -3221,11 +3278,11 @@ class _MdacShellState extends State<MdacShell> {
   Widget _sectionContent() {
     switch (section) {
       case AppSection.overview:
-        return OverviewScreen(
+        return ActiveBatchesScreen(
           repository: widget.repository,
           userName: widget.userName,
+          role: widget.role,
           onNavigate: open,
-          onOpenCustomers: openCustomers,
         );
       case AppSection.customers:
         return CustomersScreen(
@@ -3291,14 +3348,14 @@ class SideRail extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           RailItem(
-            icon: Icons.grid_view_rounded,
-            label: '总览',
+            icon: Icons.view_agenda_rounded,
+            label: '批次工作台',
             selected: current == AppSection.overview,
             onTap: () => onSelect(AppSection.overview),
           ),
           RailItem(
             icon: Icons.people_alt_outlined,
-            label: '客户档案',
+            label: '客户总库 (历史)',
             selected: current == AppSection.customers,
             onTap: () => onSelect(AppSection.customers),
           ),
@@ -3435,14 +3492,14 @@ class MobileNav extends StatelessWidget {
       onDestinationSelected: (value) => onSelect(AppSection.values[value]),
       destinations: const [
         NavigationDestination(
-          icon: Icon(Icons.grid_view_outlined),
-          selectedIcon: Icon(Icons.grid_view_rounded),
-          label: '总览',
+          icon: Icon(Icons.view_agenda_outlined),
+          selectedIcon: Icon(Icons.view_agenda_rounded),
+          label: '批次工作台',
         ),
         NavigationDestination(
           icon: Icon(Icons.people_outline),
           selectedIcon: Icon(Icons.people_alt_rounded),
-          label: '客户',
+          label: '客户总库',
         ),
         NavigationDestination(
           icon: Icon(Icons.layers_outlined),

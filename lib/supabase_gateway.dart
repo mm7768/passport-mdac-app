@@ -1524,6 +1524,56 @@ class SupabaseGateway {
     }
   }
 
+  /// 获取所有当前进行中 (status = 'OPEN') 的排单批次及统计
+  static Future<List<Map<String, dynamic>>> fetchAppActiveBatches() async {
+    final client = _requiredClient;
+    final result = await client.rpc('get_app_active_batches');
+    if (result is! List) {
+      return const <Map<String, dynamic>>[];
+    }
+    return result
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+  }
+
+  /// 获取指定 OPEN 批次内当前有效的订单列表 (排除已 released 项)
+  static Future<List<Map<String, dynamic>>> fetchAppBatchOrders(
+    String batchId,
+  ) async {
+    final client = _requiredClient;
+    final result = await client.rpc(
+      'get_app_batch_orders',
+      params: {'p_batch_id': batchId},
+    );
+    if (result is! List) {
+      return const <Map<String, dynamic>>[];
+    }
+    return result
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+  }
+
+  /// 获取指定订单的执行上下文 (包含客户身份快照及最新自动化执行记录状态)
+  static Future<Map<String, dynamic>?> fetchAppOrderExecutionContext(
+    String orderId,
+  ) async {
+    final client = _requiredClient;
+    final result = await client.rpc(
+      'get_app_order_execution_context',
+      params: {'p_order_id': orderId},
+    );
+    if (result is List && result.isNotEmpty && result.first is Map) {
+      return Map<String, dynamic>.from(result.first as Map);
+    }
+    if (result is Map) {
+      return Map<String, dynamic>.from(result);
+    }
+    return null;
+  }
+
+
   static String get _requiredUserId =>
       currentUserId ?? (throw const AuthException('当前没有登录用户。'));
 
