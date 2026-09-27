@@ -1508,6 +1508,22 @@ class SupabaseGateway {
     return const {};
   }
 
+  static Future<List<Map<String, dynamic>>> fetchMdacBatchMemberships() async {
+    final client = _requiredClient;
+    try {
+      final result = await client.rpc('get_mdac_batch_memberships');
+      if (result is! List) {
+        return const <Map<String, dynamic>>[];
+      }
+      return result
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
   static String get _requiredUserId =>
       currentUserId ?? (throw const AuthException('当前没有登录用户。'));
 

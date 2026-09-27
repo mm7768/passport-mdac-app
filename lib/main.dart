@@ -52,6 +52,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
           .syncMdacSettingsFromSupabase();
       final gmailSettingsSyncError = await repository
           .syncGmailSettingsFromSupabase();
+      final membershipSyncError = await repository
+          .syncMdacBatchMembershipsFromSupabase();
       if (syncError != null) repository.auditEvents.insert(0, syncError);
       if (batchSyncError != null)
         repository.auditEvents.insert(0, batchSyncError);
@@ -63,6 +65,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
         repository.auditEvents.insert(0, mdacSettingsSyncError);
       if (gmailSettingsSyncError != null)
         repository.auditEvents.insert(0, gmailSettingsSyncError);
+      if (membershipSyncError != null)
+        repository.auditEvents.insert(0, membershipSyncError);
       if (!mounted) return;
       signedIn = true;
       signedInName = session.name;
@@ -104,6 +108,8 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                     .syncMdacSettingsFromSupabase();
                 final gmailSettingsSyncError = await repository
                     .syncGmailSettingsFromSupabase();
+                final membershipSyncError = await repository
+                    .syncMdacBatchMembershipsFromSupabase();
                 if (syncError != null) {
                   repository.auditEvents.insert(0, syncError);
                 }
@@ -121,6 +127,9 @@ class _MdacPilotAppState extends State<MdacPilotApp> {
                 }
                 if (gmailSettingsSyncError != null) {
                   repository.auditEvents.insert(0, gmailSettingsSyncError);
+                }
+                if (membershipSyncError != null) {
+                  repository.auditEvents.insert(0, membershipSyncError);
                 }
                 if (!mounted) return;
                 setState(() {
@@ -594,6 +603,35 @@ class CustomerHardDeleteOutcome {
   final int storageObjectCount;
 }
 
+class MdacBatchMembership {
+  const MdacBatchMembership({
+    required this.batchId,
+    required this.name,
+    required this.createdAt,
+    required this.customerIds,
+  });
+
+  final String batchId;
+  final String name;
+  final DateTime createdAt;
+  final List<String> customerIds;
+
+  factory MdacBatchMembership.fromMap(Map<String, dynamic> map) {
+    final rawIds = map['customer_ids'];
+
+    return MdacBatchMembership(
+      batchId: map['batch_id'].toString(),
+      name: (map['name']?.toString().trim().isNotEmpty ?? false)
+          ? map['name'].toString().trim()
+          : '1',
+      createdAt: DateTime.parse(map['created_at'].toString()),
+      customerIds: rawIds is List
+          ? rawIds.map((e) => e.toString()).toList(growable: false)
+          : const <String>[],
+    );
+  }
+}
+
 const johorStateCode = '01';
 const defaultJohorCityCode = '0100';
 const johorCityCodes = <String, String>{
@@ -798,6 +836,7 @@ class DemoRepository extends ChangeNotifier {
   final List<OcrDraft> ocrDrafts = [];
   final List<AutomationTask> tasks = [];
   final List<AutomationTask> historyTasks = [];
+  final List<MdacBatchMembership> mdacBatchMemberships = [];
   bool isLoadingHistory = false;
   int historyPage = 0;
   bool hasMoreHistory = true;
@@ -1156,8 +1195,11 @@ class DemoRepository extends ChangeNotifier {
         targetBatchId: targetBatchId,
         actor: actor,
       );
-      await syncAutomationTasksFromSupabase();
-      await syncCustomersFromSupabase();
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncMdacBatchMembershipsFromSupabase(),
+      ]);
       auditEvents.insert(0, '$actor 合并批次 $sourceBatchId 到 $targetBatchId');
       notifyListeners();
       return null;
@@ -1194,8 +1236,11 @@ class DemoRepository extends ChangeNotifier {
         targetBatchId: targetBatchId,
         actor: actor,
       );
-      await syncAutomationTasksFromSupabase();
-      await syncCustomersFromSupabase();
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncMdacBatchMembershipsFromSupabase(),
+      ]);
       auditEvents.insert(0, '$actor 将 ${customerIds.length} 位客户合并至批次 $targetBatchId');
       notifyListeners();
       return null;
@@ -1282,8 +1327,11 @@ class DemoRepository extends ChangeNotifier {
         actor: actor,
       );
       final newBatchId = res['new_batch_id']?.toString();
-      await syncAutomationTasksFromSupabase();
-      await syncCustomersFromSupabase();
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncMdacBatchMembershipsFromSupabase(),
+      ]);
       auditEvents.insert(0, '$actor 从批次 $sourceBatchId 拆分 ${customerIds.length} 位客户至新批次 $newBatchId ($finalName)');
       notifyListeners();
       return (error: null, newBatchId: newBatchId);
@@ -1314,19 +1362,48 @@ class DemoRepository extends ChangeNotifier {
         note: trimmed,
         items: task.items,
       );
-      notifyListeners();
     }
+    final memIdx = mdacBatchMemberships.indexWhere((m) => m.batchId == batchId);
+    if (memIdx != -1) {
+      final old = mdacBatchMemberships[memIdx];
+      mdacBatchMemberships[memIdx] = MdacBatchMembership(
+        batchId: old.batchId,
+        name: trimmed,
+        createdAt: old.createdAt,
+        customerIds: old.customerIds,
+      );
+    }
+    notifyListeners();
     if (remoteMode) {
       try {
         await SupabaseGateway.updateAutomationBatchNote(
           batchId: batchId,
           note: trimmed,
         );
+        await syncMdacBatchMembershipsFromSupabase();
       } catch (e) {
         // non-blocking
       }
     }
     return null;
+  }
+
+  Future<String?> syncMdacBatchMembershipsFromSupabase() async {
+    if (!remoteMode) return null;
+    try {
+      final rows = await SupabaseGateway.fetchMdacBatchMemberships();
+      mdacBatchMemberships
+        ..clear()
+        ..addAll(rows.map(MdacBatchMembership.fromMap));
+      auditEvents.insert(
+        0,
+        '已同步 ${mdacBatchMemberships.length} 个 MDAC 客户批次索引',
+      );
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return 'MDAC 客户批次索引同步失败：$exception';
+    }
   }
 
   Future<String?> syncAutomationTasksFromSupabase() async {
@@ -2697,8 +2774,11 @@ class DemoRepository extends ChangeNotifier {
         );
         currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
       }
-      await syncAutomationTasksFromSupabase();
-      await syncCustomersFromSupabase();
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncMdacBatchMembershipsFromSupabase(),
+      ]);
       notifyListeners();
       return null;
     } catch (exception) {
@@ -3854,12 +3934,14 @@ class _CustomerBatchGroup {
 
 class _BatchBucket {
   _BatchBucket({
-    required this.task,
+    this.task,
+    this.membership,
     required this.batchTime,
     required this.customers,
   });
 
   final AutomationTask? task;
+  final MdacBatchMembership? membership;
   final DateTime batchTime;
   final List<Customer> customers;
 }
@@ -4016,10 +4098,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
         widget.initialSelectedCustomerIds!.isNotEmpty) {
       selected.addAll(widget.initialSelectedCustomerIds!);
     }
-    if (widget.repository.tasks.isEmpty && widget.repository.remoteMode) {
-      widget.repository.syncAutomationTasksFromSupabase().then((_) {
+    if (widget.repository.remoteMode) {
+      widget.repository.syncMdacBatchMembershipsFromSupabase().then((_) {
         if (mounted) setState(() {});
       });
+      if (widget.repository.tasks.isEmpty) {
+        widget.repository.syncAutomationTasksFromSupabase().then((_) {
+          if (mounted) setState(() {});
+        });
+      }
     }
   }
 
@@ -4180,7 +4267,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   List<_CustomerBatchGroup> _buildCustomerGroups(List<Customer> customerList) {
-    // Map customerId -> latest MDAC registration task
+    // 1. Map customerId -> latest MDAC batch membership from remote DB
+    final customerMdacBatch = <String, MdacBatchMembership>{};
+    for (final batch in widget.repository.mdacBatchMemberships) {
+      for (final customerId in batch.customerIds) {
+        final existing = customerMdacBatch[customerId];
+        if (existing == null || batch.createdAt.isAfter(existing.createdAt)) {
+          customerMdacBatch[customerId] = batch;
+        }
+      }
+    }
+
+    // 2. Map customerId -> latest MDAC registration task (fallback for mock or freshly created local tasks)
     final customerMdacTask = <String, AutomationTask>{};
     for (final task in widget.repository.tasks) {
       if (task.type == TaskType.mdacRegistration) {
@@ -4198,23 +4296,28 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final batchBuckets = <String, _BatchBucket>{};
 
     for (final customer in customerList) {
+      final batch = customerMdacBatch[customer.id];
       final task = customerMdacTask[customer.id];
+      final hasBatch = batch != null || task != null;
       final isPending = customer.businessStatus == 'PENDING';
       final isActionRequired = customer.businessStatus == 'ACTION_REQUIRED';
 
-      if (isActionRequired || (task != null && isPending)) {
+      if (isActionRequired || (hasBatch && isPending)) {
         rolledBack.add(customer);
-      } else if (isPending && task == null) {
+      } else if (isPending && !hasBatch) {
         unregistered.add(customer);
       } else {
-        final batchKey = task != null
-            ? 'batch_${task.id}'
-            : 'date_${_dateOnly(customer.createdAt).toIso8601String()}';
-        final batchTime = task?.createdAt ?? customer.createdAt;
+        final batchKey = batch != null
+            ? 'batch_${batch.batchId}'
+            : (task != null
+                ? 'batch_${task.id}'
+                : 'date_${_dateOnly(customer.createdAt).toIso8601String()}');
+        final batchTime = batch?.createdAt ?? task?.createdAt ?? customer.createdAt;
         final bucket = batchBuckets[batchKey];
         if (bucket == null) {
           batchBuckets[batchKey] = _BatchBucket(
             task: task,
+            membership: batch,
             batchTime: batchTime,
             customers: [customer],
           );
@@ -4260,14 +4363,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
     for (final entry in sortedBatches) {
       final bucket = entry.value;
       final customName = _customGroupNames[entry.key] ??
-          ((bucket.task?.note.trim().isNotEmpty ?? false)
-              ? bucket.task!.note.trim()
-              : '1');
+          ((bucket.membership?.name.trim().isNotEmpty ?? false)
+              ? bucket.membership!.name.trim()
+              : ((bucket.task?.note.trim().isNotEmpty ?? false)
+                  ? bucket.task!.note.trim()
+                  : '1'));
       final baseTitle = _formatBatchTitle(bucket.batchTime);
       final title = '【$customName】 $baseTitle';
-      final batchIdShort = bucket.task != null && bucket.task!.id.length > 8
-          ? bucket.task!.id.substring(0, 8)
-          : bucket.task?.id;
+      final batchId = bucket.membership?.batchId ?? bucket.task?.id;
+      final batchIdShort = batchId != null && batchId.length > 8
+          ? batchId.substring(0, 8)
+          : batchId;
       final subtitle = batchIdShort != null
           ? '批次: $batchIdShort · 提交时间: ${formatDateTime(bucket.batchTime.toLocal())}'
           : '提交时间: ${formatDateTime(bucket.batchTime.toLocal())}';
@@ -6678,6 +6784,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             onPressed: () async {
               final results = await Future.wait([
                 widget.repository.syncCustomersFromSupabase(),
+                widget.repository.syncMdacBatchMembershipsFromSupabase(),
                 widget.repository.syncAutomationTasksFromSupabase(),
                 widget.repository.syncWorkersHealthFromSupabase(),
               ]);
@@ -9508,6 +9615,7 @@ Future<void> openMdacHumanReview(
   final syncErrors = await Future.wait<String?>([
     repository.syncAutomationTasksFromSupabase(),
     repository.syncCustomersFromSupabase(),
+    repository.syncMdacBatchMembershipsFromSupabase(),
   ]);
   final errors = syncErrors.whereType<String>().toList();
   if (errors.isNotEmpty && context.mounted) {
@@ -12086,6 +12194,7 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
                                     );
                                     await repository.syncAutomationTasksFromSupabase();
                                     await repository.syncCustomersFromSupabase();
+                                    await repository.syncMdacBatchMembershipsFromSupabase();
                                   },
                                   icon: const Icon(Icons.touch_app_rounded, size: 14),
                                   label: const Text('人工核验 / 滑块', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
