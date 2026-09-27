@@ -542,24 +542,63 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
     });
 
     try {
-      final orders = await widget.repository.fetchBatchOrders(widget.batch.batchId);
-      if (mounted) {
+      final orders =
+          await widget.repository.fetchBatchOrders(widget.batch.batchId);
+      if (!mounted) return;
+
+      if (orders.isNotEmpty) {
         setState(() {
           _orders = orders;
           _isLoading = false;
           _isBatchClosed = false;
         });
+      } else {
+        // Backend 合约：Closed Batch 的 get_app_batch_orders() 返回空列表，不一定抛异常
+        // 因此返回空列表时，刷新 get_app_active_batches() 判定是否仍 OPEN
+        await widget.repository.syncActiveBatchesFromSupabase();
+        if (!mounted) return;
+
+        final isStillActive = widget.repository.activeBatches.any(
+          (b) => b.batchId == widget.batch.batchId,
+        );
+
+        if (!isStillActive) {
+          // 当前 batchId 已不存在于 Active Batch List，判定已被 Closed
+          setState(() {
+            _orders = [];
+            _selectedOrderIds.clear();
+            _isBatchClosed = true;
+            _isLoading = false;
+          });
+        } else {
+          // 批次仍在 active 列表中，只是此时有效订单为 0
+          setState(() {
+            _orders = [];
+            _isBatchClosed = false;
+            _isLoading = false;
+          });
+        }
       }
     } catch (e) {
-      if (mounted) {
-        final errText = e.toString();
-        final closed = errText.contains('CLOSED') || errText.contains('not found');
-        setState(() {
-          _error = errText;
-          _isLoading = false;
-          _isBatchClosed = closed;
-        });
-      }
+      if (!mounted) return;
+      await widget.repository.syncActiveBatchesFromSupabase();
+      if (!mounted) return;
+
+      final isStillActive = widget.repository.activeBatches.any(
+        (b) => b.batchId == widget.batch.batchId,
+      );
+
+      setState(() {
+        _isLoading = false;
+        if (!isStillActive) {
+          _orders = [];
+          _selectedOrderIds.clear();
+          _isBatchClosed = true;
+          _error = null;
+        } else {
+          _error = e.toString();
+        }
+      });
     }
   }
 
@@ -737,10 +776,23 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
 
     if (confirmed != true || !mounted) return;
 
-    final customerIds = selectedOrders.map((o) => o.customerId).toList();
-    final err = await widget.repository.createTaskAsync(
+    // 执行前二次确认当前批次有效性 (Pre-enqueue Revalidation)
+    await _loadBatchOrders();
+    if (!mounted) return;
+    if (_isBatchClosed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('批次已被管理后台关闭或归档，无法继续执行！'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final err = await widget.repository.createBatchDrivenTaskAsync(
       type: TaskType.mdacRegistration,
-      customerIds: customerIds,
+      batchId: widget.batch.batchId,
+      orders: selectedOrders,
       actor: widget.actor,
       entryDate: entry,
       exitDate: exit,
@@ -759,7 +811,8 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
         ),
       );
       _selectedOrderIds.clear();
-      _loadBatchOrders();
+      await _loadBatchOrders();
+      await widget.repository.syncActiveBatchesFromSupabase();
     }
   }
 
@@ -772,13 +825,26 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
       return;
     }
 
+    // 执行前二次确认当前批次有效性 (Pre-enqueue Revalidation)
+    await _loadBatchOrders();
+    if (!mounted) return;
+    if (_isBatchClosed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('批次已被管理后台关闭或归档，无法继续执行！'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     final selectedOrders =
         _orders.where((o) => _selectedOrderIds.contains(o.orderId)).toList();
-    final customerIds = selectedOrders.map((o) => o.customerId).toList();
 
-    final err = await widget.repository.createTaskAsync(
+    final err = await widget.repository.createBatchDrivenTaskAsync(
       type: type,
-      customerIds: customerIds,
+      batchId: widget.batch.batchId,
+      orders: selectedOrders,
       actor: widget.actor,
     );
 
@@ -795,7 +861,8 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
         ),
       );
       _selectedOrderIds.clear();
-      _loadBatchOrders();
+      await _loadBatchOrders();
+      await widget.repository.syncActiveBatchesFromSupabase();
     }
   }
 

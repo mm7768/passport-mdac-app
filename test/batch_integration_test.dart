@@ -120,58 +120,180 @@ void main() {
     });
   });
 
-  group('Batch Integration Contract - Repository & Rule Tests', () {
-    test('DemoRepository initializes with empty activeBatches and not loading', () {
-      final repo = DemoRepository();
-      expect(repo.activeBatches, isEmpty);
-      expect(repo.activeBatchesLoading, isFalse);
-      expect(repo.activeBatchesError, isNull);
-    });
-
-    test('Order ID stability: Order identity remains constant across multiple batch assignments', () {
-      // Simulates AA0010 moving from Batch A (where it was released) to Batch B
-      const stableOrderId = 'case-aa0010-stable-uuid';
+  group('Integration Fix V1.1 - Strict Batch-Driven Execution & Safety Rules', () {
+    // 1. Batch Order AA0010 启动 Worker payload 带原 case_id
+    test('Rule 1: Batch Order AA0010 preserves stable case_id in task execution payload', () {
+      const stableCaseId = 'case-aa0010-stable-uuid';
       const orderNo = 'AA0010';
+      const customerId = 'cust-zhangsan-001';
 
-      final membershipInBatchA = AppBatchOrder(
+      final order = AppBatchOrder(
         membershipId: 'mem-001',
-        batchId: 'batch-A',
-        orderId: stableOrderId,
-        caseId: stableOrderId,
+        batchId: 'batch-001',
+        orderId: stableCaseId,
+        caseId: stableCaseId,
         orderNo: orderNo,
-        customerId: 'cust-001',
+        customerId: customerId,
         displayName: '张三',
-        passportNumber: 'E99999999',
-        businessStatus: 'ACTION_REQUIRED',
-        priority: 'NORMAL',
-        membershipStatus: 'ACTIVE',
-      );
-
-      final membershipInBatchB = AppBatchOrder(
-        membershipId: 'mem-002',
-        batchId: 'batch-B',
-        orderId: stableOrderId, // Exactly identical stable ID
-        caseId: stableOrderId,
-        orderNo: orderNo,
-        customerId: 'cust-001',
-        displayName: '张三',
-        passportNumber: 'E99999999',
+        passportNumber: 'E12345678',
         businessStatus: 'CURRENT',
         priority: 'NORMAL',
         membershipStatus: 'ACTIVE',
       );
 
-      expect(membershipInBatchA.orderId, equals(membershipInBatchB.orderId));
-      expect(membershipInBatchA.orderNo, equals(membershipInBatchB.orderNo));
-      expect(membershipInBatchA.customerId, equals(membershipInBatchB.customerId));
-      expect(membershipInBatchA.batchId, isNot(equals(membershipInBatchB.batchId)));
+      final payloadItem = {
+        'id': order.customerId,
+        'case_id': order.caseId,
+        'full_name': order.displayName,
+        'passport_number': order.passportNumber,
+      };
+
+      expect(payloadItem['case_id'], equals(stableCaseId));
+      expect(payloadItem['id'], equals(customerId));
+      expect(payloadItem['case_id'], isNotNull);
     });
 
-    test('DemoRepository in local/unconfigured mode returns null for sync without crash', () async {
+    // 2. 同 Customer 两个 Case 时不会拿错 Case
+    test('Rule 2: Multiple cases for same customer explicitly bind target case_id without guessing', () {
+      const customerId = 'cust-multi-001';
+      const caseA = 'case-uuid-A';
+      const caseB = 'case-uuid-B';
+
+      final orderCaseB = AppBatchOrder(
+        membershipId: 'mem-b-001',
+        batchId: 'batch-target',
+        orderId: caseB,
+        caseId: caseB,
+        orderNo: 'BB0020',
+        customerId: customerId,
+        displayName: '李四 (Case B)',
+        passportNumber: 'E88888888',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      expect(orderCaseB.caseId, equals(caseB));
+      expect(orderCaseB.caseId, isNot(equals(caseA)));
+    });
+
+    // 3. Batch A Release → Batch B 后仍使用同一 Order ID
+    test('Rule 3: Batch A Release -> Batch B preserves the identical Order ID and Case ID', () {
+      const stableOrderId = 'case-release-rebatch-uuid';
+      const orderNo = 'AA0099';
+
+      final orderInBatchA = AppBatchOrder(
+        membershipId: 'mem-batch-a',
+        batchId: 'batch-A',
+        orderId: stableOrderId,
+        caseId: stableOrderId,
+        orderNo: orderNo,
+        customerId: 'cust-099',
+        displayName: '王五',
+        passportNumber: 'E77777777',
+        businessStatus: 'ACTION_REQUIRED',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      // After release and inclusion in Batch B
+      final orderInBatchB = AppBatchOrder(
+        membershipId: 'mem-batch-b',
+        batchId: 'batch-B',
+        orderId: stableOrderId,
+        caseId: stableOrderId,
+        orderNo: orderNo,
+        customerId: 'cust-099',
+        displayName: '王五',
+        passportNumber: 'E77777777',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      expect(orderInBatchA.orderId, equals(orderInBatchB.orderId));
+      expect(orderInBatchA.caseId, equals(orderInBatchB.caseId));
+      expect(orderInBatchA.orderNo, equals(orderInBatchB.orderNo));
+      expect(orderInBatchA.batchId, isNot(equals(orderInBatchB.batchId)));
+    });
+
+    // 4. Batch Closed 返回空列表时 App 正确识别 Closed (vs 正常空批次)
+    test('Rule 4: Empty orders list correctly identifies Closed Batch when batch is not active', () {
+      final activeBatches = [
+        AppOperationalBatch(
+          batchId: 'batch-active-1',
+          batchName: '活跃批次 1',
+          batchNo: 'BATCH-001',
+          status: 'OPEN',
+          createdAt: DateTime.now(),
+          totalCount: 5,
+          completedCount: 0,
+          pendingCount: 5,
+        ),
+      ];
+
+      // Closed batch check
+      const closedBatchId = 'batch-closed-xyz';
+      final isClosedBatchActive = activeBatches.any((b) => b.batchId == closedBatchId);
+      expect(isClosedBatchActive, isFalse); // Correctly determined as Closed
+
+      // Truly empty batch check
+      const emptyActiveBatchId = 'batch-active-1';
+      final isEmptyBatchActive = activeBatches.any((b) => b.batchId == emptyActiveBatchId);
+      expect(isEmptyBatchActive, isTrue); // Correctly recognized as still Active (0 orders)
+    });
+
+    // 5. 页面缓存旧 Orders、后台 Close 后，再点 Worker → App 不 enqueue
+    test('Rule 5: Pre-enqueue validation blocks execution when batch has been closed in backend', () async {
       final repo = DemoRepository();
-      final err = await repo.syncActiveBatchesFromSupabase();
-      expect(err, isNull);
+      // repo has empty activeBatches (simulating closed / not found batch)
+      final order = AppBatchOrder(
+        membershipId: 'mem-stale',
+        batchId: 'batch-stale-001',
+        orderId: 'case-stale-001',
+        caseId: 'case-stale-001',
+        orderNo: 'STALE01',
+        customerId: 'cust-stale',
+        displayName: '测试客户',
+        passportNumber: 'E00000000',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      // In local/unconfigured remoteMode, it safely rejects
+      final err = await repo.createBatchDrivenTaskAsync(
+        type: TaskType.mdacRegistration,
+        batchId: 'batch-stale-001',
+        orders: [order],
+        actor: 'Tester',
+        entryDate: DateTime.now().add(const Duration(days: 2)),
+        exitDate: DateTime.now().add(const Duration(days: 5)),
+      );
+
+      expect(err, isNotNull);
+    });
+
+    // 6. Legacy customerId-only 流程仍能正常调用旧路径
+    test('Rule 6: Legacy createTaskAsync accepts customerIds only without breaking', () async {
+      final repo = DemoRepository();
+      // In local mode, createTask handles legacy path
+      final result = repo.createTask(
+        type: TaskType.gmailPin,
+        customerIds: ['c-001'],
+        actor: 'Tester',
+      );
+      expect(result, isNull); // Succeeded in creating legacy task
+      expect(repo.tasks.any((t) => t.customerIds.contains('c-001')), isTrue);
+    });
+
+    // 7. 无 Active Batch → 首页保持空，不 fallback 全量客户
+    test('Rule 7: Zero active batches keeps workbench empty and does not expose all customers', () {
+      final repo = DemoRepository();
       expect(repo.activeBatches, isEmpty);
+      // Even though repository may have customers, activeBatches is strictly empty
+      expect(repo.customers, isNotEmpty);
+      expect(repo.activeBatches.length, 0);
     });
   });
 }

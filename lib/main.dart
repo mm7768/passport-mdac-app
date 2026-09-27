@@ -2843,6 +2843,133 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
+  /// Batch-driven strict task execution (V1.1 Contract)
+  /// 严格绑定稳定的 Order ID / Case ID，严禁推测或创建新 Case
+  Future<String?> createBatchDrivenTaskAsync({
+    required TaskType type,
+    required String batchId,
+    required List<AppBatchOrder> orders,
+    required String actor,
+    DateTime? entryDate,
+    DateTime? exitDate,
+  }) async {
+    if (!remoteMode) {
+      return '离线模式不支持批次驱动任务执行。';
+    }
+    if (orders.isEmpty) return '请先选择需要执行的订单。';
+    if (type != TaskType.mdacRegistration &&
+        type != TaskType.gmailPin &&
+        type != TaskType.registrationCheck &&
+        type != TaskType.visitPassCheck) {
+      return '当前只有 MDAC、Gmail PIN、Check Registration 和 Check Visit Pass Worker 已接入。';
+    }
+    if (type == TaskType.mdacRegistration &&
+        (entryDate == null || exitDate == null)) {
+      return 'MDAC 注册必须提供入境和出境日期。';
+    }
+    if (type == TaskType.mdacRegistration && exitDate!.isBefore(entryDate!)) {
+      return '出境日期不能早于入境日期。';
+    }
+
+    // 1. 执行前严格二次确认当前批次状态及所选订单 (Section 4 双保险)
+    await syncActiveBatchesFromSupabase();
+    final isBatchActive = activeBatches.any((b) => b.batchId == batchId);
+    if (!isBatchActive) {
+      return '当前批次已在管理后台关闭或已归档，无法继续执行任务。';
+    }
+
+    final latestBatchOrders = await fetchBatchOrders(batchId);
+    final activeCaseIds = latestBatchOrders.map((o) => o.caseId).toSet();
+    final invalidOrders =
+        orders.where((o) => !activeCaseIds.contains(o.caseId)).toList();
+    if (invalidOrders.isNotEmpty) {
+      return '所选订单中有 ${invalidOrders.length} 单已被管理后台 Release 或不再属于当前批次，请刷新后重试。';
+    }
+
+    // 2. 构造携带 stable case_id 的 payload
+    final customerPayloads = [
+      for (final order in orders)
+        {
+          'id': order.customerId,
+          'case_id': order.caseId, // 绑定稳定的 customer_cases.id
+          'full_name': order.displayName,
+          'passport_number': order.passportNumber,
+          'date_of_birth': findCustomer(order.customerId)?.dateOfBirth ?? '',
+          'place_of_birth': findCustomer(order.customerId)?.placeOfBirth ?? '',
+          'nationality': findCustomer(order.customerId)?.nationality ?? '',
+          'gender': findCustomer(order.customerId)?.gender ?? '',
+          'passport_expiry_date':
+              findCustomer(order.customerId)?.passportExpiryDate ?? '',
+        },
+    ];
+
+    try {
+      if (type == TaskType.gmailPin) {
+        await SupabaseGateway.createGmailPinBatch(
+          customers: customerPayloads,
+          note: '$actor 从批次 $batchId 触发 Gmail PIN 获取；绑定稳定 Case',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 从批次 $batchId 触发 Gmail PIN 获取，共 ${orders.length} 单',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
+      } else if (type == TaskType.registrationCheck) {
+        await SupabaseGateway.createRegistrationCheckBatch(
+          customers: customerPayloads,
+          note: '$actor 从批次 $batchId 触发 Check Registration；绑定稳定 Case',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 从批次 $batchId 触发 Check Registration，共 ${orders.length} 单',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Registration Worker';
+      } else if (type == TaskType.visitPassCheck) {
+        final settings = mdacSettings;
+        if (settings == null ||
+            settings.mdacEmail.trim().isEmpty ||
+            settings.mdacPhone.trim().isEmpty ||
+            settings.regionCode.trim().isEmpty) {
+          return '请先在 MDAC 默认业务配置中填写邮箱、手机号和国家/地区代码。';
+        }
+        await SupabaseGateway.createVisitPassCheckBatch(
+          customers: customerPayloads,
+          email: settings.mdacEmail,
+          regionCode: settings.regionCode,
+          mobile: settings.mdacPhone,
+          note: '$actor 从批次 $batchId 触发 Check Visit Pass；绑定稳定 Case',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 从批次 $batchId 触发 Check Visit Pass，共 ${orders.length} 单',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Visit Pass Worker';
+      } else {
+        await SupabaseGateway.createMdacRegistrationBatch(
+          entryDate: entryDate!,
+          exitDate: exitDate!,
+          customers: customerPayloads,
+          note: '$actor 从批次 $batchId 触发 MDAC fill-preview；绑定稳定 Case',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 从批次 $batchId 触发 MDAC 注册，共 ${orders.length} 单',
+        );
+        currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
+      }
+
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncActiveBatchesFromSupabase(),
+      ]);
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '${taskTypeLabel(type)} 批次执行失败：$exception';
+    }
+  }
+
   String? createTask({
     required TaskType type,
     required List<String> customerIds,

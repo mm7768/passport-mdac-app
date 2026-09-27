@@ -261,6 +261,9 @@ class SupabaseGateway {
       for (final customer in customers)
         {
           'customer_id': customer['id'],
+          if (customer['case_id'] != null &&
+              customer['case_id'].toString().trim().isNotEmpty)
+            'case_id': customer['case_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -304,6 +307,9 @@ class SupabaseGateway {
       for (final customer in customers)
         {
           'customer_id': customer['id'],
+          if (customer['case_id'] != null &&
+              customer['case_id'].toString().trim().isNotEmpty)
+            'case_id': customer['case_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -340,6 +346,9 @@ class SupabaseGateway {
       for (final customer in customers)
         {
           'customer_id': customer['id'],
+          if (customer['case_id'] != null &&
+              customer['case_id'].toString().trim().isNotEmpty)
+            'case_id': customer['case_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -378,6 +387,9 @@ class SupabaseGateway {
       for (final customer in customers)
         {
           'customer_id': customer['id'],
+          if (customer['case_id'] != null &&
+              customer['case_id'].toString().trim().isNotEmpty)
+            'case_id': customer['case_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -386,6 +398,7 @@ class SupabaseGateway {
           },
         },
     ];
+
     final result = await _requiredClient.rpc(
       'create_visit_pass_check_batch',
       params: {
