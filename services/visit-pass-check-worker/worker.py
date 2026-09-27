@@ -550,7 +550,7 @@ class SupabaseAdminClient:
 
 
 def entry_window_candidates(iso_date: str | None) -> list[str]:
-    """根据登记入境日期生成 [当天, +1天, +2天] 的多种日期格式字符串"""
+    """根据登记入境日期生成 [当天, +1天, +2天, +3天, +4天] 的多种日期格式字符串"""
     if not iso_date:
         return []
     try:
@@ -559,7 +559,7 @@ def entry_window_candidates(iso_date: str | None) -> list[str]:
     except Exception:
         return []
     candidates: list[str] = []
-    for i in range(3):
+    for i in range(5):
         d = base + timedelta(days=i)
         candidates.extend([
             d.strftime("%d/%m/%Y"),
