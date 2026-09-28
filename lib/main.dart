@@ -2886,12 +2886,26 @@ class DemoRepository extends ChangeNotifier {
       return '所选订单中有 ${invalidOrders.length} 单已被管理后台 Release 或不再属于当前批次，请刷新后重试。';
     }
 
-    // 2. 构造携带 stable case_id 的 payload
+    // 2. V1.2 Section 10: 执行前逐单重新校验 Execution Context (双重校验 case_id, membership_id, batch_id)
+    for (final order in orders) {
+      final ctx = await fetchOrderExecutionContext(order.orderId);
+      if (ctx == null ||
+          ctx.caseId != order.caseId ||
+          ctx.membershipId != order.membershipId ||
+          ctx.batchId != order.batchId) {
+        return '订单已被重新排单或当前批次状态已变化，请刷新后重试。';
+      }
+    }
+
+    // 3. 构造携带 stable case_id, membership_id, operational_batch_id 的 payload (V1.2 Contract Section 9)
     final customerPayloads = [
       for (final order in orders)
         {
           'id': order.customerId,
+          'customer_id': order.customerId,
           'case_id': order.caseId, // 绑定稳定的 customer_cases.id
+          'membership_id': order.membershipId, // 绑定当前 unreleased membership
+          'operational_batch_id': order.batchId, // 绑定当前 OPEN operational batch
           'full_name': order.displayName,
           'passport_number': order.passportNumber,
           'date_of_birth': findCustomer(order.customerId)?.dateOfBirth ?? '',

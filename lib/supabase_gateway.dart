@@ -260,10 +260,20 @@ class SupabaseGateway {
     final items = <Map<String, dynamic>>[
       for (final customer in customers)
         {
-          'customer_id': customer['id'],
+          'customer_id': customer['id'] ?? customer['customer_id'],
           if (customer['case_id'] != null &&
               customer['case_id'].toString().trim().isNotEmpty)
             'case_id': customer['case_id'].toString().trim(),
+          if (customer['membership_id'] != null &&
+              customer['membership_id'].toString().trim().isNotEmpty)
+            'membership_id': customer['membership_id'].toString().trim(),
+          if (customer['operational_batch_id'] != null &&
+              customer['operational_batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id':
+                customer['operational_batch_id'].toString().trim()
+          else if (customer['batch_id'] != null &&
+              customer['batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id': customer['batch_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -306,10 +316,20 @@ class SupabaseGateway {
     final items = <Map<String, dynamic>>[
       for (final customer in customers)
         {
-          'customer_id': customer['id'],
+          'customer_id': customer['id'] ?? customer['customer_id'],
           if (customer['case_id'] != null &&
               customer['case_id'].toString().trim().isNotEmpty)
             'case_id': customer['case_id'].toString().trim(),
+          if (customer['membership_id'] != null &&
+              customer['membership_id'].toString().trim().isNotEmpty)
+            'membership_id': customer['membership_id'].toString().trim(),
+          if (customer['operational_batch_id'] != null &&
+              customer['operational_batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id':
+                customer['operational_batch_id'].toString().trim()
+          else if (customer['batch_id'] != null &&
+              customer['batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id': customer['batch_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -345,10 +365,20 @@ class SupabaseGateway {
     final items = <Map<String, dynamic>>[
       for (final customer in customers)
         {
-          'customer_id': customer['id'],
+          'customer_id': customer['id'] ?? customer['customer_id'],
           if (customer['case_id'] != null &&
               customer['case_id'].toString().trim().isNotEmpty)
             'case_id': customer['case_id'].toString().trim(),
+          if (customer['membership_id'] != null &&
+              customer['membership_id'].toString().trim().isNotEmpty)
+            'membership_id': customer['membership_id'].toString().trim(),
+          if (customer['operational_batch_id'] != null &&
+              customer['operational_batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id':
+                customer['operational_batch_id'].toString().trim()
+          else if (customer['batch_id'] != null &&
+              customer['batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id': customer['batch_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':
@@ -386,10 +416,20 @@ class SupabaseGateway {
     final items = <Map<String, dynamic>>[
       for (final customer in customers)
         {
-          'customer_id': customer['id'],
+          'customer_id': customer['id'] ?? customer['customer_id'],
           if (customer['case_id'] != null &&
               customer['case_id'].toString().trim().isNotEmpty)
             'case_id': customer['case_id'].toString().trim(),
+          if (customer['membership_id'] != null &&
+              customer['membership_id'].toString().trim().isNotEmpty)
+            'membership_id': customer['membership_id'].toString().trim(),
+          if (customer['operational_batch_id'] != null &&
+              customer['operational_batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id':
+                customer['operational_batch_id'].toString().trim()
+          else if (customer['batch_id'] != null &&
+              customer['batch_id'].toString().trim().isNotEmpty)
+            'operational_batch_id': customer['batch_id'].toString().trim(),
           'customer_snapshot': {
             'full_name': customer['full_name']?.toString().trim() ?? '',
             'passport_number':

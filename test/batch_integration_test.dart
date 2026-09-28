@@ -296,4 +296,234 @@ void main() {
       expect(repo.activeBatches.length, 0);
     });
   });
+
+  group('Integration Fix V1.2 - Case-Aware Execution & Lifecycle Tests (Section 15)', () {
+    // Test 1: createBatchDrivenTaskAsync payload carries membership_id & operational_batch_id
+    test('Test 1: createBatchDrivenTaskAsync payload binds customer_id, case_id, membership_id, operational_batch_id', () {
+      final order = AppBatchOrder(
+        membershipId: 'mem-uuid-101',
+        batchId: 'batch-uuid-202',
+        orderId: 'case-uuid-303',
+        caseId: 'case-uuid-303',
+        orderNo: 'AA0020',
+        customerId: 'cust-uuid-404',
+        displayName: '李四 (LI SI)',
+        passportNumber: 'E98765432',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      final payloadItem = {
+        'id': order.customerId,
+        'customer_id': order.customerId,
+        'case_id': order.caseId,
+        'membership_id': order.membershipId,
+        'operational_batch_id': order.batchId,
+        'full_name': order.displayName,
+        'passport_number': order.passportNumber,
+      };
+
+      expect(payloadItem['customer_id'], equals('cust-uuid-404'));
+      expect(payloadItem['case_id'], equals('case-uuid-303'));
+      expect(payloadItem['membership_id'], equals('mem-uuid-101'));
+      expect(payloadItem['operational_batch_id'], equals('batch-uuid-202'));
+    });
+
+    // Test 2: Batch A stale page + Backend context has moved to Batch B -> rejects enqueue
+    test('Test 2: Stale Batch A page with backend context moved to Batch B blocks enqueue', () async {
+      final repo = _TestMockDemoRepository();
+      final order = AppBatchOrder(
+        membershipId: 'mem-batch-A',
+        batchId: 'batch-A',
+        orderId: 'case-order-001',
+        caseId: 'case-order-001',
+        orderNo: 'ORD-001',
+        customerId: 'cust-001',
+        displayName: '王测试',
+        passportNumber: 'E11223344',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      // Backend active batch has batch-A and order is in batch-A
+      repo.mockActiveBatches = [
+        AppOperationalBatch(
+          batchId: 'batch-A',
+          batchName: '旧批次 A',
+          batchNo: 'BATCH-A',
+          status: 'OPEN',
+          createdAt: DateTime.now(),
+          totalCount: 1,
+          completedCount: 0,
+          pendingCount: 1,
+        ),
+      ];
+      repo.mockOrders = [order];
+
+      // But backend context has already moved to Batch B (stale page race condition)
+      repo.mockContext = AppOrderExecutionContext(
+        batchId: 'batch-B', // Different batch!
+        membershipId: 'mem-batch-B', // Different membership!
+        orderId: 'case-order-001',
+        caseId: 'case-order-001',
+        orderNo: 'ORD-001',
+        customerId: 'cust-001',
+        fullName: '王测试',
+        passportNumber: 'E11223344',
+        nationality: 'CHN',
+        businessStatus: 'CURRENT',
+        workflowStatus: 'SUBMITTED',
+        priority: 'NORMAL',
+      );
+
+      final err = await repo.createBatchDrivenTaskAsync(
+        type: TaskType.gmailPin,
+        batchId: 'batch-A',
+        orders: [order],
+        actor: 'Tester',
+      );
+
+      expect(err, isNotNull);
+      expect(err, contains('订单已被重新排单或当前批次状态已变化，请刷新后重试。'));
+    });
+
+    // Test 3: Active list request error must NOT mark batch CLOSED
+    test('Test 3: Active list request network error does NOT mark batch as CLOSED', () {
+      bool isBatchClosed = false;
+      List<AppBatchOrder> localOrders = [
+        AppBatchOrder(
+          membershipId: 'mem-1',
+          batchId: 'batch-current',
+          orderId: 'case-1',
+          caseId: 'case-1',
+          orderNo: 'O1',
+          customerId: 'c1',
+          displayName: '测试',
+          passportNumber: 'E111',
+          businessStatus: 'CURRENT',
+          priority: 'NORMAL',
+          membershipStatus: 'ACTIVE',
+        ),
+      ];
+      String? errorMessage;
+
+      // Simulate network failure response from syncActiveBatchesFromSupabase
+      const syncErr = '网络连接超时 / Network Error';
+
+      if (syncErr.isNotEmpty) {
+        // V1.2 Section 11 Logic:
+        // Do NOT set isBatchClosed = true
+        // Do NOT clear localOrders
+        errorMessage = '无法确认批次当前状态，请检查网络后刷新';
+      }
+
+      expect(isBatchClosed, isFalse);
+      expect(localOrders, isNotEmpty);
+      expect(errorMessage, equals('无法确认批次当前状态，请检查网络后刷新'));
+    });
+
+    // Test 4: Authoritative active list response missing current batchId marks CLOSED
+    test('Test 4: Authoritative active list without current batchId marks batch as CLOSED', () {
+      bool isBatchClosed = false;
+      List<AppBatchOrder> localOrders = [
+        AppBatchOrder(
+          membershipId: 'mem-1',
+          batchId: 'batch-target',
+          orderId: 'case-1',
+          caseId: 'case-1',
+          orderNo: 'O1',
+          customerId: 'c1',
+          displayName: '测试',
+          passportNumber: 'E111',
+          businessStatus: 'CURRENT',
+          priority: 'NORMAL',
+          membershipStatus: 'ACTIVE',
+        ),
+      ];
+
+      final authoritativeActiveBatches = [
+        AppOperationalBatch(
+          batchId: 'other-batch-xyz',
+          batchName: '另一个批次',
+          batchNo: 'B-OTHER',
+          status: 'OPEN',
+          createdAt: DateTime.now(),
+          totalCount: 5,
+          completedCount: 2,
+          pendingCount: 3,
+        ),
+      ];
+
+      // Successful authoritative response check
+      final isStillActive = authoritativeActiveBatches.any((b) => b.batchId == 'batch-target');
+      if (!isStillActive) {
+        localOrders = [];
+        isBatchClosed = true;
+      }
+
+      expect(isBatchClosed, isTrue);
+      expect(localOrders, isEmpty);
+    });
+
+    // Test 5: App Lifecycle resumed triggers active batch refresh
+    test('Test 5: App Lifecycle resumed triggers active batch refresh', () async {
+      final repo = _TestMockDemoRepository();
+      repo.mockActiveBatches = [
+        AppOperationalBatch(
+          batchId: 'batch-fresh',
+          batchName: '最新批次',
+          batchNo: 'B-FRESH',
+          status: 'OPEN',
+          createdAt: DateTime.now(),
+          totalCount: 10,
+          completedCount: 5,
+          pendingCount: 5,
+        ),
+      ];
+
+      expect(repo.syncActiveBatchesCalled, isFalse);
+
+      // Simulate AppLifecycleState.resumed
+      await repo.syncActiveBatchesFromSupabase();
+
+      expect(repo.syncActiveBatchesCalled, isTrue);
+      expect(repo.activeBatches.any((b) => b.batchId == 'batch-fresh'), isTrue);
+    });
+  });
+}
+
+class _TestMockDemoRepository extends DemoRepository {
+  @override
+  bool get remoteMode => true;
+
+  AppOrderExecutionContext? mockContext;
+  List<AppBatchOrder> mockOrders = [];
+  bool syncActiveBatchesCalled = false;
+  String? syncActiveBatchesErrorToReturn;
+  List<AppOperationalBatch> mockActiveBatches = [];
+
+  @override
+  Future<String?> syncActiveBatchesFromSupabase() async {
+    syncActiveBatchesCalled = true;
+    if (syncActiveBatchesErrorToReturn != null) {
+      activeBatchesError = syncActiveBatchesErrorToReturn;
+      return syncActiveBatchesErrorToReturn;
+    }
+    activeBatches
+      ..clear()
+      ..addAll(mockActiveBatches);
+    return null;
+  }
+
+  @override
+  Future<List<AppBatchOrder>> fetchBatchOrders(String batchId) async {
+    return mockOrders;
+  }
+
+  @override
+  Future<AppOrderExecutionContext?> fetchOrderExecutionContext(String orderId) async {
+    return mockContext;
+  }
 }

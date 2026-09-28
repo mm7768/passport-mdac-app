@@ -242,11 +242,49 @@ class VisitPassWorkerTests(unittest.TestCase):
         entry_date_cell = "10/09/2026"
         self.assertEqual(simulate_table_row_match(entry_date_cell), "NO_RECORD")
 
+    def test_get_case_entry_date_queries_by_case_id(self) -> None:
+        client = MODULE.SupabaseAdminClient.__new__(MODULE.SupabaseAdminClient)
+        client.rest_url = "https://example.supabase.co/rest/v1"
+        client.config = SimpleNamespace(request_timeout_seconds=5)
+
+        mock_resp = SimpleNamespace(ok=True, json=lambda: [{"entry_date": "2026-09-20"}])
+        with patch.object(requests.Session, "get", return_value=mock_resp) as mock_get:
+            client.session = requests.Session()
+            date = client.get_case_entry_date("case-uuid-123")
+            self.assertEqual(date, "2026-09-20")
+            _, kwargs = mock_get.call_args
+            self.assertEqual(kwargs["params"]["case_id"], "eq.case-uuid-123")
+
+    def test_delete_case_old_visit_pass_evidence_scoped_to_case_id(self) -> None:
+        client = MODULE.SupabaseAdminClient.__new__(MODULE.SupabaseAdminClient)
+        client.rest_url = "https://example.supabase.co/rest/v1"
+        client.storage_url = "https://example.supabase.co/storage/v1/object"
+        client.config = SimpleNamespace(screenshot_bucket="test-bucket", request_timeout_seconds=5)
+
+        query_resp = SimpleNamespace(
+            ok=True,
+            json=lambda: [
+                {"id": "rec-1", "screenshot_path": "old_path.png"},
+                {"id": "rec-2", "screenshot_path": "current_path.png"},
+            ],
+        )
+        del_resp = SimpleNamespace(ok=True, status_code=200)
+
+        with patch.object(requests.Session, "get", return_value=query_resp) as mock_get, \
+             patch.object(requests.Session, "delete", return_value=del_resp) as mock_delete:
+            client.session = requests.Session()
+            deleted = client.delete_case_old_visit_pass_evidence(
+                "case-uuid-123", current_screenshot_path="current_path.png"
+            )
+            self.assertEqual(deleted, ["old_path.png"])
+            self.assertEqual(mock_get.call_args.kwargs["params"]["case_id"], "eq.case-uuid-123")
+
 
 class _FakeSupabase:
     def __init__(self) -> None:
-        self.items = [{"id": "item-1", "customer_id": "customer-1"}]
+        self.items = [{"id": "item-1", "customer_id": "customer-1", "case_id": "case-1"}]
         self.finished: list[dict] = []
+        self.deleted_cases: list[str] = []
 
     def heartbeat(self, **kwargs) -> None:
         return None
@@ -257,8 +295,18 @@ class _FakeSupabase:
     def claim_item(self, batch_id: str) -> dict | None:
         return self.items.pop(0) if self.items else None
 
+    def get_case_entry_date(self, case_id: str) -> str | None:
+        return "2026-09-24"
+
     def get_customer_entry_date(self, customer_id: str) -> str | None:
         return "2026-09-24"
+
+    def delete_case_old_visit_pass_evidence(self, case_id: str, current_screenshot_path: str | None = None) -> list[str]:
+        self.deleted_cases.append(case_id)
+        return []
+
+    def delete_customer_old_visit_pass_screenshots(self, customer_id: str, current_screenshot_path: str | None = None) -> list[str]:
+        return []
 
     def get_runtime_input(self, item_id: str) -> dict[str, str]:
         return {
@@ -268,6 +316,8 @@ class _FakeSupabase:
             "region_code": "60",
             "mobile": "123456789",
             "pin_value": "SECRET",
+            "entry_date": "2026-09-24",
+            "case_id": "case-1",
         }
 
     def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:

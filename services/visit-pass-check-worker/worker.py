@@ -41,6 +41,7 @@ def log_event(
     batch_id: str | None = None,
     item_id: str | None = None,
     customer_id: str | None = None,
+    case_id: str | None = None,
     result: Any = None,
     error_code: str | None = None,
     error_message: str | None = None,
@@ -52,6 +53,7 @@ def log_event(
         "batch_id": batch_id,
         "item_id": item_id,
         "customer_id": customer_id,
+        "case_id": case_id,
         "step": step,
         "status": status,
         "result": result,
@@ -233,8 +235,8 @@ class SupabaseAdminClient:
             raise WorkerError("claim_visit_pass_check_item 返回格式不正确")
         return dict(rows[0])
 
-    def get_runtime_input(self, item_id: str) -> dict[str, str]:
-        # 1. 优先尝试调用 RPC
+    def get_runtime_input(self, item_id: str) -> dict[str, Any]:
+        # 1. 优先尝试调用 RPC (V1.2 public.get_visit_pass_check_runtime_input)
         try:
             rows = self._rpc(
                 "get_visit_pass_check_runtime_input",
@@ -242,7 +244,7 @@ class SupabaseAdminClient:
             )
             if isinstance(rows, list) and rows and isinstance(rows[0], dict):
                 row = dict(rows[0])
-                return {
+                res = {
                     "passport_number": normalize_passport(row.get("passport_number")),
                     "nationality": normalize_nationality(row.get("nationality")),
                     "email": normalize_email(row.get("email")),
@@ -250,13 +252,18 @@ class SupabaseAdminClient:
                     "mobile": normalize_mobile(row.get("mobile")),
                     "pin_value": normalize_pin(row.get("pin_value")),
                 }
+                if row.get("entry_date"):
+                    res["entry_date"] = str(row["entry_date"]).strip()
+                if row.get("case_id"):
+                    res["case_id"] = str(row["case_id"]).strip()
+                return res
         except Exception:
             pass
 
         # 2. 若 RPC 不存在，直接通过服务角色权限查询对应表
         item_resp = self.session.get(
             f"{self.rest_url}/automation_items",
-            params={"id": f"eq.{item_id}", "select": "id, batch_id, customer_id, customer_snapshot"},
+            params={"id": f"eq.{item_id}", "select": "id, batch_id, customer_id, case_id, customer_snapshot"},
             timeout=self.config.request_timeout_seconds,
         )
         if not item_resp.ok or not item_resp.json():
@@ -264,6 +271,7 @@ class SupabaseAdminClient:
         item = item_resp.json()[0]
         batch_id = item.get("batch_id")
         customer_id = item.get("customer_id")
+        case_id = item.get("case_id")
         snapshot = item.get("customer_snapshot") or {}
 
         passport = snapshot.get("passport_number") or ""
@@ -299,9 +307,24 @@ class SupabaseAdminClient:
                 region_code = vp_s.get("region_code") or mdac_s.get("region_code") or ""
                 mobile = vp_s.get("mobile") or mdac_s.get("mobile") or ""
 
-        # 读取该客户最新的有效 PIN
+        # 读取有效 PIN: V1.2 Section 4: 若存在 case_id，严格按 case_id 获取，严禁 customer 级别回退
         pin_val = None
-        if customer_id:
+        if case_id:
+            p_resp = self.session.get(
+                f"{self.rest_url}/email_pin_records",
+                params={
+                    "case_id": f"eq.{case_id}",
+                    "status": "eq.RECEIVED",
+                    "order": "received_at.desc,created_at.desc",
+                    "limit": "1",
+                    "select": "pin_value",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if p_resp.ok and p_resp.json():
+                pin_val = p_resp.json()[0].get("pin_value")
+        elif customer_id:
+            # 仅在 Legacy item (case_id is None) 时允许 customer_id fallback
             p_resp = self.session.get(
                 f"{self.rest_url}/email_pin_records",
                 params={
@@ -316,6 +339,12 @@ class SupabaseAdminClient:
             if p_resp.ok and p_resp.json():
                 pin_val = p_resp.json()[0].get("pin_value")
 
+        entry_date = None
+        if case_id:
+            entry_date = self.get_case_entry_date(case_id)
+        elif customer_id:
+            entry_date = self.get_customer_entry_date(customer_id)
+
         result = {
             "passport_number": normalize_passport(passport),
             "nationality": normalize_nationality(nationality),
@@ -323,6 +352,8 @@ class SupabaseAdminClient:
             "region_code": normalize_region_code(region_code),
             "mobile": normalize_mobile(mobile),
             "pin_value": normalize_pin(pin_val),
+            "entry_date": entry_date,
+            "case_id": case_id,
         }
         if not result["passport_number"] or not result["nationality"] or not result["pin_value"]:
             raise WorkerError("Check Visit Pass 运行时输入缺少护照号、国籍或 PIN")
@@ -452,7 +483,49 @@ class SupabaseAdminClient:
             raise WorkerError("finish_visit_pass_check_worker 返回格式不正确")
         return result
 
+    def get_case_entry_date(self, case_id: str) -> str | None:
+        """V1.2 Section 6: entry_date 必须按 Case 获取，禁止按 customer_id 查询最新 MDAC 记录"""
+        if not case_id:
+            return None
+        try:
+            # 严格按 case_id 查找该订单成功完成的 MDAC 登记入境日期
+            resp = self.session.get(
+                f"{self.rest_url}/mdac_registrations",
+                params={
+                    "case_id": f"eq.{case_id}",
+                    "registration_status": "eq.SUCCEEDED",
+                    "order": "registered_at.desc,created_at.desc",
+                    "limit": "1",
+                    "select": "entry_date",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if resp.ok:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0 and data[0].get("entry_date"):
+                    return str(data[0]["entry_date"]).strip()
+
+            # 若没有成功的，尝试读取该 case_id 下任意最新登记的 entry_date
+            resp2 = self.session.get(
+                f"{self.rest_url}/mdac_registrations",
+                params={
+                    "case_id": f"eq.{case_id}",
+                    "order": "created_at.desc",
+                    "limit": "1",
+                    "select": "entry_date",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if resp2.ok:
+                data2 = resp2.json()
+                if isinstance(data2, list) and len(data2) > 0 and data2[0].get("entry_date"):
+                    return str(data2[0]["entry_date"]).strip()
+        except Exception as exc:
+            LOG.warning("查询 Case %s 入境日期失败: %s", case_id, exc)
+        return None
+
     def get_customer_entry_date(self, customer_id: str) -> str | None:
+        """Legacy helper for customer-only compatibility when case_id is null."""
         if not customer_id:
             return None
         try:
@@ -492,10 +565,66 @@ class SupabaseAdminClient:
             LOG.warning("查询客户 %s 入境日期失败: %s", customer_id, exc)
         return None
 
+    def delete_case_old_visit_pass_evidence(
+        self, case_id: str, current_screenshot_path: str | None = None
+    ) -> list[str]:
+        """V1.2 Section 8: 找到新记录后，只清理该 Case (Order) 以往的旧 Visit Pass 截图及数据库引用，严禁影响同客户其他 Case"""
+        if not case_id:
+            return []
+        deleted_paths: list[str] = []
+        try:
+            resp = self.session.get(
+                f"{self.rest_url}/visit_pass_checks",
+                params={
+                    "case_id": f"eq.{case_id}",
+                    "select": "id, screenshot_path",
+                },
+                timeout=self.config.request_timeout_seconds,
+            )
+            if not resp.ok:
+                return []
+            rows = resp.json()
+            bucket = quote(self.config.screenshot_bucket, safe="")
+            for row in rows:
+                old_path = row.get("screenshot_path")
+                check_id = row.get("id")
+                if not check_id:
+                    continue
+                # 当前刚保存的新截图严禁删除
+                if old_path and old_path == current_screenshot_path:
+                    continue
+
+                # 1. 从 Storage 中删除旧截图文件
+                if old_path:
+                    try:
+                        del_resp = self.session.delete(
+                            f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
+                            timeout=self.config.request_timeout_seconds,
+                        )
+                        if del_resp.ok or del_resp.status_code == 404:
+                            deleted_paths.append(old_path)
+                            LOG.info("已删除 Case %s 旧 Visit Pass 截图文件: %s", case_id, old_path)
+                    except Exception as e:
+                        LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
+
+                # 2. 从 visit_pass_checks 中物理删除该旧记录行（避免当前 Case 呈现两条凭证）
+                try:
+                    self.session.delete(
+                        f"{self.rest_url}/visit_pass_checks",
+                        params={"id": f"eq.{check_id}"},
+                        timeout=self.config.request_timeout_seconds,
+                    )
+                    LOG.info("已物理删除 Case %s 旧 Visit Pass 检查记录: %s", case_id, check_id)
+                except Exception as e:
+                    LOG.warning("删除 Case %s 旧记录 %s 失败: %s", check_id, e)
+        except Exception as exc:
+            LOG.warning("清理 Case %s 旧 Visit Pass 证据异常: %s", case_id, exc)
+        return deleted_paths
+
     def delete_customer_old_visit_pass_screenshots(
         self, customer_id: str, current_screenshot_path: str | None = None
     ) -> list[str]:
-        """找到新记录后，删除该客户以往所有的旧 Visit Pass 截图文件及数据库引用"""
+        """Legacy helper for customer-level evidence cleanup when case_id is null."""
         if not customer_id:
             return []
         deleted_paths: list[str] = []
@@ -504,6 +633,7 @@ class SupabaseAdminClient:
                 f"{self.rest_url}/visit_pass_checks",
                 params={
                     "customer_id": f"eq.{customer_id}",
+                    "case_id": "is.null",
                     "select": "id, screenshot_path",
                 },
                 timeout=self.config.request_timeout_seconds,
@@ -1004,6 +1134,7 @@ class VisitPassCheckWorker:
                 break
             item_id = str(item["id"])
             customer_id = str(item.get("customer_id") or "") or None
+            case_id = str(item.get("case_id") or "") or None
             self.supabase.heartbeat_tick(status="BUSY", batch_id=batch_id, item_id=item_id)
             log_event(
                 logging.INFO,
@@ -1012,10 +1143,21 @@ class VisitPassCheckWorker:
                 batch_id=batch_id,
                 item_id=item_id,
                 customer_id=customer_id,
+                case_id=case_id,
             )
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
-                target_entry_date = self.supabase.get_customer_entry_date(customer_id) if customer_id else None
+                if not case_id and runtime_input.get("case_id"):
+                    case_id = runtime_input["case_id"]
+
+                # V1.2 Section 6: entry_date 必须按 Case 获取，禁止跨 Case / Customer-level 猜测
+                target_entry_date = runtime_input.get("entry_date")
+                if not target_entry_date:
+                    if case_id:
+                        target_entry_date = self.supabase.get_case_entry_date(case_id)
+                    elif customer_id:
+                        target_entry_date = self.supabase.get_customer_entry_date(customer_id)
+
                 outcome, screenshot, summary = asyncio.run(
                     query_and_capture_page(self.config, runtime_input, target_entry_date=target_entry_date)
                 )
@@ -1032,6 +1174,7 @@ class VisitPassCheckWorker:
                         batch_id=batch_id,
                         item_id=item_id,
                         customer_id=customer_id,
+                        case_id=case_id,
                         error_code="SCREENSHOT_UPLOAD_FAILED",
                         error_message=str(upload_err),
                     )
@@ -1063,14 +1206,19 @@ class VisitPassCheckWorker:
                     error_message=error_message,
                 )
 
-                # 找到记录后返回目标截图，并将该客户以往所有的旧截图删掉
-                if outcome == "FOUND" and customer_id and screenshot_path:
+                # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
+                if outcome == "FOUND" and screenshot_path:
                     try:
-                        self.supabase.delete_customer_old_visit_pass_screenshots(
-                            customer_id, current_screenshot_path=screenshot_path
-                        )
+                        if case_id:
+                            self.supabase.delete_case_old_visit_pass_evidence(
+                                case_id, current_screenshot_path=screenshot_path
+                            )
+                        elif customer_id:
+                            self.supabase.delete_customer_old_visit_pass_screenshots(
+                                customer_id, current_screenshot_path=screenshot_path
+                            )
                     except Exception as clean_err:
-                        LOG.warning("清理客户 %s 旧 Visit Pass 截图失败: %s", customer_id, clean_err)
+                        LOG.warning("清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", case_id, customer_id, clean_err)
 
                 processed += 1
 
@@ -1081,6 +1229,7 @@ class VisitPassCheckWorker:
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
+                    case_id=case_id,
                     result=outcome,
                     error_code=error_code,
                     error_message=error_message,
@@ -1094,6 +1243,7 @@ class VisitPassCheckWorker:
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
+                    case_id=case_id,
                     result="RESULT_UNKNOWN",
                     error_code=error_code,
                     error_message=error_message,

@@ -23,15 +23,30 @@ class ActiveBatchesScreen extends StatefulWidget {
   State<ActiveBatchesScreen> createState() => _ActiveBatchesScreenState();
 }
 
-class _ActiveBatchesScreenState extends State<ActiveBatchesScreen> {
+class _ActiveBatchesScreenState extends State<ActiveBatchesScreen>
+    with WidgetsBindingObserver {
   AppOperationalBatch? _selectedBatch;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.repository.syncActiveBatchesFromSupabase();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      widget.repository.syncActiveBatchesFromSupabase();
+    }
   }
 
   void _openBatch(AppOperationalBatch batch) {
@@ -519,7 +534,8 @@ class BatchDetailScreen extends StatefulWidget {
   State<BatchDetailScreen> createState() => _BatchDetailScreenState();
 }
 
-class _BatchDetailScreenState extends State<BatchDetailScreen> {
+class _BatchDetailScreenState extends State<BatchDetailScreen>
+    with WidgetsBindingObserver {
   List<AppBatchOrder> _orders = [];
   bool _isLoading = true;
   String? _error;
@@ -532,7 +548,25 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadBatchOrders();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      widget.repository.syncActiveBatchesFromSupabase().then((_) {
+        if (mounted) {
+          _loadBatchOrders();
+        }
+      });
+    }
   }
 
   Future<void> _loadBatchOrders() async {
@@ -551,23 +585,34 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
           _orders = orders;
           _isLoading = false;
           _isBatchClosed = false;
+          _error = null;
         });
       } else {
         // Backend 合约：Closed Batch 的 get_app_batch_orders() 返回空列表，不一定抛异常
-        // 因此返回空列表时，刷新 get_app_active_batches() 判定是否仍 OPEN
-        await widget.repository.syncActiveBatchesFromSupabase();
+        // 因此返回空列表时，权威刷新 get_app_active_batches() 判定是否仍 OPEN
+        final syncErr = await widget.repository.syncActiveBatchesFromSupabase();
         if (!mounted) return;
+
+        if (syncErr != null) {
+          // 网络同步失败，无法确认批次权威状态：严禁判定为 CLOSED，不清空 orders，禁止 enqueue
+          setState(() {
+            _isLoading = false;
+            _error = '无法确认批次当前状态，请检查网络后刷新';
+          });
+          return;
+        }
 
         final isStillActive = widget.repository.activeBatches.any(
           (b) => b.batchId == widget.batch.batchId,
         );
 
         if (!isStillActive) {
-          // 当前 batchId 已不存在于 Active Batch List，判定已被 Closed
+          // 仅在权威收到成功 response 且 batchId 不在活跃列表时，判定已被 Closed
           setState(() {
             _orders = [];
             _selectedOrderIds.clear();
             _isBatchClosed = true;
+            _error = null;
             _isLoading = false;
           });
         } else {
@@ -575,29 +620,21 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
           setState(() {
             _orders = [];
             _isBatchClosed = false;
+            _error = null;
             _isLoading = false;
           });
         }
       }
     } catch (e) {
       if (!mounted) return;
-      await widget.repository.syncActiveBatchesFromSupabase();
-      if (!mounted) return;
-
-      final isStillActive = widget.repository.activeBatches.any(
-        (b) => b.batchId == widget.batch.batchId,
-      );
-
+      // 网络请求异常/超时：
+      // 必须严格遵守 V1.2 Section 11:
+      // - 不设置 _isBatchClosed = true
+      // - 不清空本地 Orders（保留原页面数据仅供查看）
+      // - 显示：无法确认批次当前状态，请检查网络后刷新
       setState(() {
         _isLoading = false;
-        if (!isStillActive) {
-          _orders = [];
-          _selectedOrderIds.clear();
-          _isBatchClosed = true;
-          _error = null;
-        } else {
-          _error = e.toString();
-        }
+        _error = '无法确认批次当前状态，请检查网络后刷新';
       });
     }
   }
@@ -671,6 +708,15 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
     if (_isBatchClosed) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('批次已关闭，不可触发 Worker 执行。')),
+      );
+      return;
+    }
+    if (_error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('无法确认批次当前状态，请检查网络后刷新'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -788,6 +834,15 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
       );
       return;
     }
+    if (_error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('无法确认批次当前状态，请检查网络后刷新'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
 
     final err = await widget.repository.createBatchDrivenTaskAsync(
       type: TaskType.mdacRegistration,
@@ -800,6 +855,12 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
 
     if (!mounted) return;
     if (err != null) {
+      if (err.contains('重新排单') ||
+          err.contains('状态已变化') ||
+          err.contains('不再属于当前批次')) {
+        _selectedOrderIds.clear();
+        await _loadBatchOrders();
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(err), backgroundColor: Colors.red),
       );
@@ -824,6 +885,15 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
       );
       return;
     }
+    if (_error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('无法确认批次当前状态，请检查网络后刷新'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
 
     // 执行前二次确认当前批次有效性 (Pre-enqueue Revalidation)
     await _loadBatchOrders();
@@ -833,6 +903,15 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
         const SnackBar(
           content: Text('批次已被管理后台关闭或归档，无法继续执行！'),
           backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    if (_error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('无法确认批次当前状态，请检查网络后刷新'),
+          backgroundColor: Colors.orange,
         ),
       );
       return;
@@ -850,6 +929,12 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
 
     if (!mounted) return;
     if (err != null) {
+      if (err.contains('重新排单') ||
+          err.contains('状态已变化') ||
+          err.contains('不再属于当前批次')) {
+        _selectedOrderIds.clear();
+        await _loadBatchOrders();
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(err), backgroundColor: Colors.red),
       );
@@ -929,6 +1014,36 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
                 ],
               ),
             ),
+          if (_error != null && !_isBatchClosed)
+            Container(
+              margin: const EdgeInsets.fromLTRB(28, 0, 28, 16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFDBA74)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.wifi_off_rounded, color: Color(0xFFC2410C)),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      '无法确认批次当前状态，请检查网络后刷新。已暂停自动化任务执行，原数据仅供离线查看。',
+                      style: TextStyle(
+                        color: Color(0xFF9A3412),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _loadBatchOrders,
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('重试刷新'),
+                  ),
+                ],
+              ),
+            ),
           // 统计指标与过滤栏
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 28),
@@ -974,12 +1089,15 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _error != null && !_isBatchClosed
+                : _orders.isEmpty && _error != null && !_isBatchClosed
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text('加载订单失败: $_error'),
+                            const Text(
+                              '无法确认批次当前状态，请检查网络后刷新',
+                              style: TextStyle(color: Color(0xFF9A3412)),
+                            ),
                             const SizedBox(height: 12),
                             ElevatedButton(
                               onPressed: _loadBatchOrders,
@@ -1008,7 +1126,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
                               return _BatchOrderRow(
                                 order: order,
                                 isSelected: isSelected,
-                                onSelectChanged: _isBatchClosed
+                                onSelectChanged: (_isBatchClosed || _error != null)
                                     ? null
                                     : (val) => _toggleOrderSelection(order.orderId),
                                 onOpenContext: () =>
@@ -1027,6 +1145,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
 
   Widget _buildBottomActionBar(BuildContext context) {
     final count = _selectedOrderIds.length;
+    final isBlocked = _isBatchClosed || _error != null;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
       decoration: const BoxDecoration(
@@ -1047,7 +1166,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
                 _selectedOrderIds.length == _filteredOrders.length,
             tristate: _selectedOrderIds.isNotEmpty &&
                 _selectedOrderIds.length < _filteredOrders.length,
-            onChanged: (val) => _toggleSelectAll(),
+            onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
           ),
           Text(
             count > 0 ? '已选 $count 单' : '全选待办',
@@ -1056,7 +1175,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
           if (count > 0) ...[
             const SizedBox(width: 8),
             TextButton(
-              onPressed: _selectOnlyActive,
+              onPressed: isBlocked ? null : _selectOnlyActive,
               child: const Text('仅选中未完成项'),
             ),
             TextButton(
@@ -1072,7 +1191,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
               backgroundColor: AppTheme.teal,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             ),
-            onPressed: count == 0 ? null : _startMdacRegistration,
+            onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
           ),
           const SizedBox(width: 10),
           OutlinedButton.icon(
@@ -1082,7 +1201,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
             onPressed:
-                count == 0 ? null : () => _startQueryTask(TaskType.gmailPin),
+                (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
           ),
           const SizedBox(width: 10),
           OutlinedButton.icon(
@@ -1091,7 +1210,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
-            onPressed: count == 0
+            onPressed: (count == 0 || isBlocked)
                 ? null
                 : () => _startQueryTask(TaskType.registrationCheck),
           ),
@@ -1102,7 +1221,7 @@ class _BatchDetailScreenState extends State<BatchDetailScreen> {
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
-            onPressed: count == 0
+            onPressed: (count == 0 || isBlocked)
                 ? null
                 : () => _startQueryTask(TaskType.visitPassCheck),
           ),

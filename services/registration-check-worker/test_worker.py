@@ -175,6 +175,9 @@ class _FakeSupabase:
     def heartbeat(self, **kwargs) -> None:
         return None
 
+    def heartbeat_tick(self, **kwargs) -> None:
+        return None
+
     def claim_item(self, batch_id: str) -> dict | None:
         return self.items.pop(0) if self.items else None
 
