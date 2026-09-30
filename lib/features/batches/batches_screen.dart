@@ -983,170 +983,399 @@ class _BatchDetailScreenState extends State<BatchDetailScreen>
           ),
         ],
       ),
-      child: Column(
-        children: [
-          if (_isBatchClosed)
-            Container(
-              margin: const EdgeInsets.fromLTRB(28, 0, 28, 16),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFECEB),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFF09893)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFC7362E)),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      '当前批次已在管理后台（Website）关闭或归档！不可继续执行自动化任务。已 Release 的订单已回到后台 Master List。',
-                      style: TextStyle(
-                        color: Color(0xFF7A1C16),
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 640;
+          return Column(
+            children: [
+              if (_isBatchClosed)
+                Container(
+                  margin: EdgeInsets.fromLTRB(isCompact ? 16 : 28, 0, isCompact ? 16 : 28, 16),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFECEB),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFF09893)),
                   ),
-                  FilledButton(
-                    onPressed: widget.onBack,
-                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFFC7362E)),
-                    child: const Text('退出详情'),
-                  ),
-                ],
-              ),
-            ),
-          if (_error != null && !_isBatchClosed)
-            Container(
-              margin: const EdgeInsets.fromLTRB(28, 0, 28, 16),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF7ED),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFFDBA74)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.wifi_off_rounded, color: Color(0xFFC2410C)),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      '无法确认批次当前状态，请检查网络后刷新。已暂停自动化任务执行，原数据仅供离线查看。',
-                      style: TextStyle(
-                        color: Color(0xFF9A3412),
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _loadBatchOrders,
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('重试刷新'),
-                  ),
-                ],
-              ),
-            ),
-          // 统计指标与过滤栏
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: '搜索客户姓名、护照号、订单编号...',
-                      prefixIcon: const Icon(Icons.search_rounded),
-                      filled: true,
-                      fillColor: Colors.white,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppTheme.line),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppTheme.line),
-                      ),
-                    ),
-                    onChanged: (val) => setState(() => _searchQuery = val),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'ALL', label: Text('全部')),
-                    ButtonSegment(value: 'ACTIVE', label: Text('进行中')),
-                    ButtonSegment(value: 'COMPLETED', label: Text('已完成')),
-                    ButtonSegment(value: 'ACTION_REQUIRED', label: Text('需关注')),
-                  ],
-                  selected: {_statusFilter},
-                  onSelectionChanged: (val) =>
-                      setState(() => _statusFilter = val.first),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
-          // 订单列表主体
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _orders.isEmpty && _error != null && !_isBatchClosed
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                  child: isCompact
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              '无法确认批次当前状态，请检查网络后刷新',
-                              style: TextStyle(color: Color(0xFF9A3412)),
+                            Row(
+                              children: [
+                                const Icon(Icons.warning_amber_rounded, color: Color(0xFFC7362E)),
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Text(
+                                    '当前批次已在管理后台关闭或归档！',
+                                    style: TextStyle(
+                                      color: Color(0xFF7A1C16),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 12),
-                            ElevatedButton(
-                              onPressed: _loadBatchOrders,
-                              child: const Text('重新加载'),
+                            const SizedBox(height: 6),
+                            const Text(
+                              '不可继续执行自动化任务。已 Release 的订单已回到后台 Master List。',
+                              style: TextStyle(color: Color(0xFF7A1C16), fontSize: 12),
+                            ),
+                            const SizedBox(height: 10),
+                            FilledButton(
+                              onPressed: widget.onBack,
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFFC7362E)),
+                              child: const Text('退出详情'),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          children: [
+                            const Icon(Icons.warning_amber_rounded, color: Color(0xFFC7362E)),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                '当前批次已在管理后台（Website）关闭或归档！不可继续执行自动化任务。已 Release 的订单已回到后台 Master List。',
+                                style: TextStyle(
+                                  color: Color(0xFF7A1C16),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            FilledButton(
+                              onPressed: widget.onBack,
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFFC7362E)),
+                              child: const Text('退出详情'),
                             ),
                           ],
                         ),
+                ),
+              if (_error != null && !_isBatchClosed)
+                Container(
+                  margin: EdgeInsets.fromLTRB(isCompact ? 16 : 28, 0, isCompact ? 16 : 28, 16),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF7ED),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFDBA74)),
+                  ),
+                  child: isCompact
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.wifi_off_rounded, color: Color(0xFFC2410C)),
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Text(
+                                    '无法确认批次当前状态，请检查网络后刷新',
+                                    style: TextStyle(
+                                      color: Color(0xFF9A3412),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              '已暂停自动化任务执行，原数据仅供离线查看。',
+                              style: TextStyle(color: Color(0xFF9A3412), fontSize: 12),
+                            ),
+                            const SizedBox(height: 10),
+                            OutlinedButton.icon(
+                              onPressed: _loadBatchOrders,
+                              icon: const Icon(Icons.refresh, size: 16),
+                              label: const Text('重试刷新'),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          children: [
+                            const Icon(Icons.wifi_off_rounded, color: Color(0xFFC2410C)),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                '无法确认批次当前状态，请检查网络后刷新。已暂停自动化任务执行，原数据仅供离线查看。',
+                                style: TextStyle(
+                                  color: Color(0xFF9A3412),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: _loadBatchOrders,
+                              icon: const Icon(Icons.refresh, size: 16),
+                              label: const Text('重试刷新'),
+                            ),
+                          ],
+                        ),
+                ),
+              // 统计指标与过滤栏
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: isCompact ? 16 : 28),
+                child: isCompact
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          TextField(
+                            decoration: InputDecoration(
+                              hintText: '搜索客户姓名、护照号、订单编号...',
+                              prefixIcon: const Icon(Icons.search_rounded),
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: AppTheme.line),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: AppTheme.line),
+                              ),
+                            ),
+                            onChanged: (val) => setState(() => _searchQuery = val),
+                          ),
+                          const SizedBox(height: 10),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: SegmentedButton<String>(
+                              segments: const [
+                                ButtonSegment(value: 'ALL', label: Text('全部')),
+                                ButtonSegment(value: 'ACTIVE', label: Text('进行中')),
+                                ButtonSegment(value: 'COMPLETED', label: Text('已完成')),
+                                ButtonSegment(value: 'ACTION_REQUIRED', label: Text('需关注')),
+                              ],
+                              selected: {_statusFilter},
+                              onSelectionChanged: (val) =>
+                                  setState(() => _statusFilter = val.first),
+                            ),
+                          ),
+                        ],
                       )
-                    : filtered.isEmpty
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              decoration: InputDecoration(
+                                hintText: '搜索客户姓名、护照号、订单编号...',
+                                prefixIcon: const Icon(Icons.search_rounded),
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: AppTheme.line),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: AppTheme.line),
+                                ),
+                              ),
+                              onChanged: (val) => setState(() => _searchQuery = val),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment(value: 'ALL', label: Text('全部')),
+                              ButtonSegment(value: 'ACTIVE', label: Text('进行中')),
+                              ButtonSegment(value: 'COMPLETED', label: Text('已完成')),
+                              ButtonSegment(value: 'ACTION_REQUIRED', label: Text('需关注')),
+                            ],
+                            selected: {_statusFilter},
+                            onSelectionChanged: (val) =>
+                                setState(() => _statusFilter = val.first),
+                          ),
+                        ],
+                      ),
+              ),
+              const SizedBox(height: 14),
+              // 订单列表主体
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _orders.isEmpty && _error != null && !_isBatchClosed
                         ? Center(
-                            child: Text(
-                              _searchQuery.isNotEmpty
-                                  ? '没有匹配的订单'
-                                  : '本批次当前无有效订单记录（或已全部 Release）',
-                              style: const TextStyle(color: AppTheme.muted),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Text(
+                                  '无法确认批次当前状态，请检查网络后刷新',
+                                  style: TextStyle(color: Color(0xFF9A3412)),
+                                ),
+                                const SizedBox(height: 12),
+                                ElevatedButton(
+                                  onPressed: _loadBatchOrders,
+                                  child: const Text('重新加载'),
+                                ),
+                              ],
                             ),
                           )
-                        : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(28, 0, 28, 90),
-                            itemCount: filtered.length,
-                            separatorBuilder: (ctx, i) => const SizedBox(height: 10),
-                            itemBuilder: (ctx, idx) {
-                              final order = filtered[idx];
-                              final isSelected =
-                                  _selectedOrderIds.contains(order.orderId);
-                              return _BatchOrderRow(
-                                order: order,
-                                isSelected: isSelected,
-                                onSelectChanged: (_isBatchClosed || _error != null)
-                                    ? null
-                                    : (val) => _toggleOrderSelection(order.orderId),
-                                onOpenContext: () =>
-                                    _showExecutionContextDialog(order),
-                              );
-                            },
-                          ),
-          ),
-          // 底部操作栏 (悬浮浮层)
-          if (!_isBatchClosed)
-            _buildBottomActionBar(context),
-        ],
+                        : filtered.isEmpty
+                            ? Center(
+                                child: Text(
+                                  _searchQuery.isNotEmpty
+                                      ? '没有匹配的订单'
+                                      : '本批次当前无有效订单记录（或已全部 Release）',
+                                  style: const TextStyle(color: AppTheme.muted),
+                                ),
+                              )
+                            : ListView.separated(
+                                padding: EdgeInsets.fromLTRB(
+                                  isCompact ? 16 : 28,
+                                  0,
+                                  isCompact ? 16 : 28,
+                                  isCompact ? 130 : 90,
+                                ),
+                                itemCount: filtered.length,
+                                separatorBuilder: (ctx, i) => const SizedBox(height: 10),
+                                itemBuilder: (ctx, idx) {
+                                  final order = filtered[idx];
+                                  final isSelected =
+                                      _selectedOrderIds.contains(order.orderId);
+                                  return _BatchOrderRow(
+                                    order: order,
+                                    isSelected: isSelected,
+                                    onSelectChanged: (_isBatchClosed || _error != null)
+                                        ? null
+                                        : (val) => _toggleOrderSelection(order.orderId),
+                                    onOpenContext: () =>
+                                        _showExecutionContextDialog(order),
+                                  );
+                                },
+                              ),
+              ),
+              // 底部操作栏 (悬浮浮层)
+              if (!_isBatchClosed)
+                _buildBottomActionBar(context, isCompact: isCompact),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildBottomActionBar(BuildContext context) {
+  Widget _buildBottomActionBar(BuildContext context, {required bool isCompact}) {
     final count = _selectedOrderIds.length;
     final isBlocked = _isBatchClosed || _error != null;
+
+    if (isCompact) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: AppTheme.line)),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0x0F000000),
+              blurRadius: 10,
+              offset: Offset(0, -3),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Checkbox(
+                    value: _selectedOrderIds.isNotEmpty &&
+                        _selectedOrderIds.length == _filteredOrders.length,
+                    tristate: _selectedOrderIds.isNotEmpty &&
+                        _selectedOrderIds.length < _filteredOrders.length,
+                    onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    count > 0 ? '已选 $count 单' : '全选待办',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                  if (count > 0) ...[
+                    const SizedBox(width: 8),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: isBlocked ? null : _selectOnlyActive,
+                      child: const Text('仅未完成', style: TextStyle(fontSize: 12)),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () => setState(() => _selectedOrderIds.clear()),
+                      child: const Text('取消全选', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 8),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    FilledButton.icon(
+                      icon: const Icon(Icons.flight_takeoff_rounded, size: 16),
+                      label: const Text('启动 MDAC 注册'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.teal,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.pin_rounded, size: 16),
+                      label: const Text('获取 PIN'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed:
+                          (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.assignment_turned_in_rounded, size: 16),
+                      label: const Text('核对 Registration'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: (count == 0 || isBlocked)
+                          ? null
+                          : () => _startQueryTask(TaskType.registrationCheck),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.fact_check_rounded, size: 16),
+                      label: const Text('核对 Visit Pass'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: (count == 0 || isBlocked)
+                          ? null
+                          : () => _startQueryTask(TaskType.visitPassCheck),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
       decoration: const BoxDecoration(
@@ -1160,73 +1389,76 @@ class _BatchDetailScreenState extends State<BatchDetailScreen>
           ),
         ],
       ),
-      child: Row(
-        children: [
-          Checkbox(
-            value: _selectedOrderIds.isNotEmpty &&
-                _selectedOrderIds.length == _filteredOrders.length,
-            tristate: _selectedOrderIds.isNotEmpty &&
-                _selectedOrderIds.length < _filteredOrders.length,
-            onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
-          ),
-          Text(
-            count > 0 ? '已选 $count 单' : '全选待办',
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-          if (count > 0) ...[
-            const SizedBox(width: 8),
-            TextButton(
-              onPressed: isBlocked ? null : _selectOnlyActive,
-              child: const Text('仅选中未完成项'),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            Checkbox(
+              value: _selectedOrderIds.isNotEmpty &&
+                  _selectedOrderIds.length == _filteredOrders.length,
+              tristate: _selectedOrderIds.isNotEmpty &&
+                  _selectedOrderIds.length < _filteredOrders.length,
+              onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
             ),
-            TextButton(
-              onPressed: () => setState(() => _selectedOrderIds.clear()),
-              child: const Text('取消全选'),
+            Text(
+              count > 0 ? '已选 $count 单' : '全选待办',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            if (count > 0) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: isBlocked ? null : _selectOnlyActive,
+                child: const Text('仅选中未完成项'),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _selectedOrderIds.clear()),
+                child: const Text('取消全选'),
+              ),
+            ],
+            const Spacer(),
+            FilledButton.icon(
+              icon: const Icon(Icons.flight_takeoff_rounded, size: 18),
+              label: const Text('启动 MDAC 注册'),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.teal,
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              ),
+              onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.pin_rounded, size: 18),
+              label: const Text('获取 PIN'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              onPressed:
+                  (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.assignment_turned_in_rounded, size: 18),
+              label: const Text('核对 Registration'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              onPressed: (count == 0 || isBlocked)
+                  ? null
+                  : () => _startQueryTask(TaskType.registrationCheck),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.fact_check_rounded, size: 18),
+              label: const Text('核对 Visit Pass'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              onPressed: (count == 0 || isBlocked)
+                  ? null
+                  : () => _startQueryTask(TaskType.visitPassCheck),
             ),
           ],
-          const Spacer(),
-          FilledButton.icon(
-            icon: const Icon(Icons.flight_takeoff_rounded, size: 18),
-            label: const Text('启动 MDAC 注册'),
-            style: FilledButton.styleFrom(
-              backgroundColor: AppTheme.teal,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            ),
-            onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.pin_rounded, size: 18),
-            label: const Text('获取 PIN'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            onPressed:
-                (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.assignment_turned_in_rounded, size: 18),
-            label: const Text('核对 Registration'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            onPressed: (count == 0 || isBlocked)
-                ? null
-                : () => _startQueryTask(TaskType.registrationCheck),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.fact_check_rounded, size: 18),
-            label: const Text('核对 Visit Pass'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            onPressed: (count == 0 || isBlocked)
-                ? null
-                : () => _startQueryTask(TaskType.visitPassCheck),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1257,22 +1489,24 @@ class _BatchOrderRow extends StatelessWidget {
           width: isSelected ? 1.5 : 1.0,
         ),
       ),
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          Checkbox(
-            value: isSelected,
-            onChanged: onSelectChanged,
-          ),
-          const SizedBox(width: 8),
-          // 订单编号 & 稳定 Case ID 标识
-          Expanded(
-            flex: 2,
-            child: Column(
+      padding: const EdgeInsets.all(14),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 600;
+          if (isCompact) {
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Top row: Checkbox, OrderNo, Priority, Spacer, Info button
                 Row(
                   children: [
+                    Checkbox(
+                      value: isSelected,
+                      onChanged: onSelectChanged,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    const SizedBox(width: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
@@ -1312,9 +1546,68 @@ class _BatchOrderRow extends StatelessWidget {
                         ),
                       ),
                     ],
+                    const Spacer(),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                      tooltip: '查看订单执行上下文 (PIN/核对结果)',
+                      icon: const Icon(Icons.info_outline_rounded, color: AppTheme.teal, size: 20),
+                      onPressed: onOpenContext,
+                    ),
                   ],
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 8),
+                // Middle row: Customer name & Status Chips
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        order.displayName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15,
+                          color: AppTheme.ink,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildStatusChip(order.businessStatus),
+                    const SizedBox(width: 4),
+                    _buildMembershipChip(order.membershipStatus),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                // Third row: Passport & Dates
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '护照: ${order.passportNumber}',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: AppTheme.muted,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        order.arrivalDate != null
+                            ? '抵达: ${order.arrivalDate}${order.departureDate != null ? ' · 离开: ${order.departureDate}' : ''}'
+                            : '无行程日期',
+                        style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                // Fourth row: Order ID
                 Tooltip(
                   message: '稳定 Order / Case ID: ${order.orderId}',
                   child: Text(
@@ -1327,74 +1620,150 @@ class _BatchOrderRow extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-          // 客户全名 & 证件号
-          Expanded(
-            flex: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  order.displayName,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
-                    color: AppTheme.ink,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+            );
+          }
+
+          // Desktop multi-column row
+          return Row(
+            children: [
+              Checkbox(
+                value: isSelected,
+                onChanged: onSelectChanged,
+              ),
+              const SizedBox(width: 8),
+              // 订单编号 & 稳定 Case ID 标识
+              Expanded(
+                flex: 2,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.teal.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            order.orderNo,
+                            style: const TextStyle(
+                              color: AppTheme.teal,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                        if (order.priority.toUpperCase() == 'URGENT') ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFECEB),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              '加急',
+                              style: TextStyle(
+                                color: Color(0xFFC7362E),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Tooltip(
+                      message: '稳定 Order / Case ID: ${order.orderId}',
+                      child: Text(
+                        'ID: ${order.orderId.length > 8 ? order.orderId.substring(0, 8) : order.orderId}...',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          color: AppTheme.muted,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  '护照: ${order.passportNumber}',
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                    color: AppTheme.muted,
-                  ),
+              ),
+              // 客户全名 & 证件号
+              Expanded(
+                flex: 3,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      order.displayName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: AppTheme.ink,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '护照: ${order.passportNumber}',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: AppTheme.muted,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-          // 行程日期
-          Expanded(
-            flex: 2,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  order.arrivalDate != null
-                      ? '抵达: ${order.arrivalDate}'
-                      : '无行程日期',
-                  style: const TextStyle(fontSize: 12, color: AppTheme.ink),
+              ),
+              // 行程日期
+              Expanded(
+                flex: 2,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      order.arrivalDate != null
+                          ? '抵达: ${order.arrivalDate}'
+                          : '无行程日期',
+                      style: const TextStyle(fontSize: 12, color: AppTheme.ink),
+                    ),
+                    if (order.departureDate != null)
+                      Text(
+                        '离开: ${order.departureDate}',
+                        style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                      ),
+                  ],
                 ),
-                if (order.departureDate != null)
-                  Text(
-                    '离开: ${order.departureDate}',
-                    style: const TextStyle(fontSize: 11, color: AppTheme.muted),
-                  ),
-              ],
-            ),
-          ),
-          // 状态标签
-          Expanded(
-            flex: 2,
-            child: Row(
-              children: [
-                _buildStatusChip(order.businessStatus),
-                const SizedBox(width: 6),
-                _buildMembershipChip(order.membershipStatus),
-              ],
-            ),
-          ),
-          // 操作按钮: 查看执行上下文
-          IconButton(
-            tooltip: '查看订单执行上下文 (PIN/核对结果)',
-            icon: const Icon(Icons.info_outline_rounded, color: AppTheme.teal),
-            onPressed: onOpenContext,
-          ),
-        ],
+              ),
+              // 状态标签
+              Expanded(
+                flex: 2,
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    _buildStatusChip(order.businessStatus),
+                    _buildMembershipChip(order.membershipStatus),
+                  ],
+                ),
+              ),
+              // 操作按钮: 查看执行上下文
+              IconButton(
+                tooltip: '查看订单执行上下文 (PIN/核对结果)',
+                icon: const Icon(Icons.info_outline_rounded, color: AppTheme.teal),
+                onPressed: onOpenContext,
+              ),
+            ],
+          );
+        },
       ),
     );
   }

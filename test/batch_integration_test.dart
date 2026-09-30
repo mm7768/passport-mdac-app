@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:passport_mdac_app/features/batches/batch_models.dart';
+import 'package:passport_mdac_app/features/batches/batches_screen.dart';
 import 'package:passport_mdac_app/main.dart';
 
 void main() {
@@ -532,6 +534,71 @@ void main() {
       );
 
       expect(err, equals('无法确认批次当前状态，请检查网络后刷新'));
+    });
+
+    testWidgets('Batch Detail screen renders without overflow on 360px mobile screen', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b1000',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'm1',
+        batchId: 'b1000',
+        orderId: 'fe0bc53a-0000-0000-0000-000000000001',
+        orderNo: 'AA0180',
+        customerId: 'c1',
+        caseId: 'case1',
+        displayName: 'ZHANG SAN',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        arrivalDate: null,
+        departureDate: null,
+        priority: 'STANDARD',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('OB0004'), findsWidgets);
+      expect(find.text('AA0180'), findsOneWidget);
+      expect(find.text('ZHANG SAN'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // Tap order checkbox to select it and verify bottom bar when items are selected
+      await tester.tap(find.byType(Checkbox).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('已选 1 单'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }
