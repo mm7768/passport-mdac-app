@@ -94,16 +94,20 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (全链路性能优化与UI重绘治理)"
+          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (V1.3 订单原子进单与V1.2.1批次防护)"
           body: |
             ### v${{ steps.get_version.outputs.VERSION }} 更新内容：
-            - **全链路性能优化与数据极速同步**：
-              - 客户列表读取速度提升 74.3%（请求数 3 次减为 1 次，耗时从 500ms 降至 128ms）；
-              - 任务中心同步速度提升 86.7%（请求数 12 次减为 1 次，耗时从 1,337ms 降至 178ms）；
-            - **彻底治理 Flutter 顶层重绘风暴 (Rebuild Storm)**：
-              - 局部作用域化 AnimatedBuilder，后台同步时侧边栏、状态栏和主窗口骨架保持静止，彻底消除数据刷新时的闪烁与微卡顿；
-            - **后端与 Worker 架构轻量化**：
-              - 移除云端重复 Worker 冲突，空闲心跳 RPC 频率降低 92.5%，空闲轮询采用自适应退避。
+            - **原子进单与客户复用 (V1.3 Gate 2)**：
+              - OCR 录入全面接入后端原子 RPC `create_order_from_ocr`，自动生成正式订单号（格式 `AAyymmddxxxx`）；
+              - 废弃 `markOcrResultCreated` 与旧建客接口，状态流转与订单/客户/护照创建由后端单一事务原子保证；
+              - 严格落实“无订单不建客户”合规约束，隐藏远程单建客户入口；
+              - 支持既有客户与护照自动复用，进单成功直观呈现订单编号及新老客户状态。
+            - **批次断网防护与运行安全 (V1.2.1 Gate 0)**：
+              - 批次状态同步失败时严格拦截任务派发，防止离线/脏状态提交；
+              - Visit Pass Worker 严格执行 Fail-Closed 策略，严禁回退孤立表直查；
+              - 证据清理对齐后端 RPC `delete_case_old_visit_pass_evidence`。
+            - **移动端 UI 体验优化**：
+              - 修复批次列表在 360px 宽度窄屏设备上空状态按钮溢出 136px 的布局问题。
           files: |
             build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
         env:
