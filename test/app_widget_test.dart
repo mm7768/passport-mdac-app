@@ -12,7 +12,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('进入工作区'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('客户'));
+      await tester.tap(find.textContaining('客户总库').first);
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('TANG FUMING'));
       await tester.tap(find.text('TANG FUMING'));

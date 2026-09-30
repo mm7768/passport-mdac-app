@@ -491,6 +491,48 @@ void main() {
       expect(repo.syncActiveBatchesCalled, isTrue);
       expect(repo.activeBatches.any((b) => b.batchId == 'batch-fresh'), isTrue);
     });
+
+    // Test D (V1.2.1 Section 5): Repository sync failure guards enqueue
+    test('Test D (V1.2.1): syncActiveBatchesFromSupabase returns error -> createBatchDrivenTaskAsync refuses enqueue', () async {
+      final repo = _TestMockDemoRepository();
+      // Even if activeBatches had the batch previously cached
+      repo.activeBatches.add(
+        AppOperationalBatch(
+          batchId: 'batch-cached',
+          batchName: '旧缓存批次',
+          batchNo: 'B-CACHED',
+          status: 'OPEN',
+          createdAt: DateTime.now(),
+          totalCount: 1,
+          completedCount: 0,
+          pendingCount: 1,
+        ),
+      );
+      repo.syncActiveBatchesErrorToReturn = '网络连接超时 / Network Error';
+
+      final order = AppBatchOrder(
+        membershipId: 'mem-1',
+        batchId: 'batch-cached',
+        orderId: 'case-order-001',
+        caseId: 'case-order-001',
+        orderNo: 'ORD-001',
+        customerId: 'cust-001',
+        displayName: '测试客户',
+        passportNumber: 'E11223344',
+        businessStatus: 'CURRENT',
+        priority: 'NORMAL',
+        membershipStatus: 'ACTIVE',
+      );
+
+      final err = await repo.createBatchDrivenTaskAsync(
+        type: TaskType.gmailPin,
+        batchId: 'batch-cached',
+        orders: [order],
+        actor: 'Tester',
+      );
+
+      expect(err, equals('无法确认批次当前状态，请检查网络后刷新'));
+    });
   });
 }
 

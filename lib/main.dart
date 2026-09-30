@@ -1828,37 +1828,8 @@ class DemoRepository extends ChangeNotifier {
     String actor,
   ) async {
     if (!remoteMode) return createManualCustomer(values, actor);
-    final error = _validateCustomerValues(values);
-    if (error != null) return error;
-    try {
-      final row = await SupabaseGateway.insertCustomer(
-        fullName: values['fullName']!,
-        passportNumber: values['passportNumber']!,
-        dateOfBirth: values['dateOfBirth']!,
-        placeOfBirth: values['placeOfBirth']!,
-        nationality: values['nationality']!,
-        gender: values['gender']!,
-        passportExpiryDate: values['passportExpiryDate']!,
-        businessStatus: values['businessStatus'] ?? 'PENDING',
-      );
-      final customer = _customerFromRemote(row);
-      final pin = SupabaseGateway.normalizePin(values['pin']);
-      if (pin != null) {
-        await SupabaseGateway.insertPinRecord(
-          customerId: customer.id,
-          pin: pin,
-          matchedBy: 'MANUAL',
-        );
-        customer.pin = pin;
-        customer.lastSummary = 'PIN 已写入 Supabase；中间空格保留';
-      }
-      customers.insert(0, customer);
-      auditEvents.insert(0, '$actor 在 Supabase 创建客户 ${customer.fullName}');
-      notifyListeners();
-      return null;
-    } catch (exception) {
-      return '客户创建失败，云端未保存：$exception';
-    }
+    // V1.3 Section 10: 生产联机模式禁用无订单的客户直接录入，严格遵守“无订单不创建客户”规范
+    return '生产联机模式已启用“无订单不创建客户”规范，请通过“导入护照”上传护照并确认生成订单。';
   }
 
   Future<String?> updateCustomerWithSync(
@@ -2499,16 +2470,25 @@ class DemoRepository extends ChangeNotifier {
     return null;
   }
 
+  String? lastConfirmedOrderSummary;
+
   Future<String?> confirmOcrWithSync(
     OcrDraft draft,
     Map<String, String> values,
     String actor,
   ) async {
     if (!remoteMode) return confirmOcr(draft, values, actor);
-    final validationError = _validateCustomerValues(values);
+    final validationError =
+        _validateCustomerValues(values, checkDuplicate: false);
     if (validationError != null) return validationError;
+
+    final resultId = draft.id.startsWith('remote-ocr-')
+        ? draft.id.substring('remote-ocr-'.length)
+        : draft.id;
+
     try {
-      final row = await SupabaseGateway.insertCustomer(
+      final res = await SupabaseGateway.createOrderFromOcr(
+        ocrResultId: resultId,
         fullName: values['fullName']!,
         passportNumber: values['passportNumber']!,
         dateOfBirth: values['dateOfBirth']!,
@@ -2516,39 +2496,30 @@ class DemoRepository extends ChangeNotifier {
         nationality: values['nationality']!,
         gender: values['gender']!,
         passportExpiryDate: values['passportExpiryDate']!,
-        businessStatus: values['businessStatus'] ?? 'PENDING',
-        passportImagePath: draft.passportImagePath,
       );
-      final customer = _customerFromRemote(row);
-      final resultId = draft.id.startsWith('remote-ocr-')
-          ? draft.id.substring('remote-ocr-'.length)
-          : null;
-      if (resultId != null) {
-        await SupabaseGateway.markOcrResultCreated(
-          resultId: resultId,
-          customerId: customer.id,
-          extractedData: {
-            'full_name': values['fullName']!.trim().toUpperCase(),
-            'passport_number': values['passportNumber']!.trim().toUpperCase(),
-            'date_of_birth': values['dateOfBirth'],
-            'place_of_birth': values['placeOfBirth']!.trim().toUpperCase(),
-            'nationality': values['nationality']!.trim().toUpperCase(),
-            'gender': values['gender'],
-            'passport_expiry_date': values['passportExpiryDate'],
-            'reviewed_manually': true,
-          },
-        );
-      }
-      customers.insert(0, customer);
+
+      final orderNo = res['order_no']?.toString() ?? '';
+      final reused = res['customer_reused'] == true;
+
+      // 1. 移除已确认建单的 OCR 草稿
       ocrDrafts.removeWhere((item) => item.id == draft.id);
+
+      // 2. 刷新云端客户档案与批次列表（Website Master List 即时可见该新 Order）
+      await Future.wait([
+        syncCustomersFromSupabase(),
+        syncActiveBatchesFromSupabase(),
+      ]);
+
+      final summary = '已创建订单 $orderNo，客户：${reused ? "REUSED (复用)" : "NEW (新客户)"}';
+      lastConfirmedOrderSummary = summary;
       auditEvents.insert(
         0,
-        '$actor 确认 OCR 并在 Supabase 创建客户 ${customer.fullName}',
+        '$actor 确认 OCR 已通过云端创建订单 $orderNo (客户: ${reused ? "REUSED" : "NEW"})',
       );
       notifyListeners();
       return null;
     } catch (exception) {
-      return 'OCR 客户创建失败，云端未保存：$exception';
+      return 'OCR 订单创建失败，云端未保存：$exception';
     }
   }
 
@@ -2629,6 +2600,7 @@ class DemoRepository extends ChangeNotifier {
   String? _validateCustomerValues(
     Map<String, String> values, {
     String? excludeId,
+    bool checkDuplicate = true,
   }) {
     const requiredKeys = [
       'fullName',
@@ -2656,12 +2628,14 @@ class DemoRepository extends ChangeNotifier {
     if (!customerBusinessStatusOptions.contains(businessStatus)) {
       return '业务状态选择无效，请重新选择。';
     }
-    final passport = values['passportNumber']!.trim().toUpperCase();
-    final duplicate = activeCustomers.any(
-      (item) =>
-          item.id != excludeId && item.passportNumber.toUpperCase() == passport,
-    );
-    if (duplicate) return '护照号码 $passport 已存在，未保存重复档案。';
+    if (checkDuplicate) {
+      final passport = values['passportNumber']!.trim().toUpperCase();
+      final duplicate = activeCustomers.any(
+        (item) =>
+            item.id != excludeId && item.passportNumber.toUpperCase() == passport,
+      );
+      if (duplicate) return '护照号码 $passport 已存在，未保存重复档案。';
+    }
     return null;
   }
 
@@ -2872,7 +2846,10 @@ class DemoRepository extends ChangeNotifier {
     }
 
     // 1. 执行前严格二次确认当前批次状态及所选订单 (Section 4 双保险)
-    await syncActiveBatchesFromSupabase();
+    final syncErr = await syncActiveBatchesFromSupabase();
+    if (syncErr != null) {
+      return '无法确认批次当前状态，请检查网络后刷新';
+    }
     final isBatchActive = activeBatches.any((b) => b.batchId == batchId);
     if (!isBatchActive) {
       return '当前批次已在管理后台关闭或已归档，无法继续执行任务。';
@@ -5723,6 +5700,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> createManualCustomer() async {
+    if (widget.repository.remoteMode) {
+      showToast(
+        context,
+        '生产联机模式已启用“无订单不创建客户”规范，请通过“导入护照”上传并确认生成订单。',
+        error: true,
+      );
+      return;
+    }
     final values = await showCustomerForm(context);
     if (values == null || !mounted) return;
     final error = await widget.repository.createCustomerWithSync(
@@ -5733,7 +5718,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     if (error != null) {
       showToast(context, error, error: true);
     } else {
-      showToast(context, '客户档案已创建并同步到 Supabase。');
+      showToast(context, '客户档案已创建。');
     }
   }
 
@@ -6999,11 +6984,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
             icon: const Icon(Icons.refresh_rounded, color: AppTheme.teal),
             tooltip: '刷新客户档案、批次与 Worker 状态',
           ),
-          OutlinedButton.icon(
-            onPressed: createManualCustomer,
-            icon: const Icon(Icons.edit_note_rounded),
-            label: const Text('手动录入'),
-          ),
+          if (!widget.repository.remoteMode)
+            OutlinedButton.icon(
+              onPressed: createManualCustomer,
+              icon: const Icon(Icons.edit_note_rounded),
+              label: const Text('手动录入'),
+            ),
           FilledButton.icon(
             onPressed: importDocument,
             icon: const Icon(Icons.add_rounded),
@@ -7784,7 +7770,8 @@ Future<bool?> showOcrDraftReviewDialog(
     controller.dispose();
   }
   if (result == true && context.mounted) {
-    showToast(context, '已创建客户档案，初始状态为待处理。');
+    final msg = repository.lastConfirmedOrderSummary ?? '已创建客户档案与订单，初始状态为待处理。';
+    showToast(context, msg);
   }
   return result;
 }

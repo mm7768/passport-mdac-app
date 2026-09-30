@@ -235,8 +235,8 @@ class SupabaseAdminClient:
             raise WorkerError("claim_visit_pass_check_item 返回格式不正确")
         return dict(rows[0])
 
-    def get_runtime_input(self, item_id: str) -> dict[str, Any]:
-        # 1. 优先尝试调用 RPC (V1.2 public.get_visit_pass_check_runtime_input)
+    def get_runtime_input(self, item_id: str, case_id: str | None = None) -> dict[str, Any]:
+        # 1. 优先尝试调用 RPC (V1.2 / V1.2.1 public.get_visit_pass_check_runtime_input)
         try:
             rows = self._rpc(
                 "get_visit_pass_check_runtime_input",
@@ -257,10 +257,14 @@ class SupabaseAdminClient:
                 if row.get("case_id"):
                     res["case_id"] = str(row["case_id"]).strip()
                 return res
-        except Exception:
-            pass
+            raise WorkerError(f"RPC get_visit_pass_check_runtime_input 返回格式不正确或为空: {rows}")
+        except Exception as rpc_err:
+            if case_id:
+                LOG.error("Strict item %s (case_id=%s) RPC 获取输入失败，终止执行 (Fail-closed): %s", item_id, case_id, rpc_err)
+                raise WorkerError(f"Check Visit Pass 运行时输入获取失败 (Fail-closed): {rpc_err}") from rpc_err
+            LOG.warning("Item %s (case_id is None) RPC 调用失败，尝试 Legacy 回退: %s", item_id, rpc_err)
 
-        # 2. 若 RPC 不存在，直接通过服务角色权限查询对应表
+        # 2. 若 RPC 失败且为 Legacy item (case_id is None)，才允许通过服务角色权限直接查询对应表
         item_resp = self.session.get(
             f"{self.rest_url}/automation_items",
             params={"id": f"eq.{item_id}", "select": "id, batch_id, customer_id, case_id, customer_snapshot"},
@@ -269,9 +273,13 @@ class SupabaseAdminClient:
         if not item_resp.ok or not item_resp.json():
             raise WorkerError(f"无法读取任务项 {item_id}")
         item = item_resp.json()[0]
+        fetched_case_id = item.get("case_id")
+        if fetched_case_id:
+            # 即使外部未传入 case_id，若任务项本身绑定了 Case，也严禁使用 Legacy 回退
+            raise WorkerError(f"Check Visit Pass 任务项 {item_id} 属于 Strict Case ({fetched_case_id})，RPC 失败后严禁使用 Legacy 回退 (Fail-closed)")
         batch_id = item.get("batch_id")
         customer_id = item.get("customer_id")
-        case_id = item.get("case_id")
+        case_id = None
         snapshot = item.get("customer_snapshot") or {}
 
         passport = snapshot.get("passport_number") or ""
@@ -568,57 +576,46 @@ class SupabaseAdminClient:
     def delete_case_old_visit_pass_evidence(
         self, case_id: str, current_screenshot_path: str | None = None
     ) -> list[str]:
-        """V1.2 Section 8: 找到新记录后，只清理该 Case (Order) 以往的旧 Visit Pass 截图及数据库引用，严禁影响同客户其他 Case"""
+        """V1.2.1 / V1.2 Section 8: 找到新记录后，通过后端 RPC 清理该 Case (Order) 以往旧证据并删除 Storage 文件。严禁 Worker 直接删除 DB 表行。"""
         if not case_id:
             return []
         deleted_paths: list[str] = []
         try:
-            resp = self.session.get(
-                f"{self.rest_url}/visit_pass_checks",
-                params={
-                    "case_id": f"eq.{case_id}",
-                    "select": "id, screenshot_path",
+            rows = self._rpc(
+                "delete_case_old_visit_pass_evidence",
+                {
+                    "p_case_id": case_id,
+                    "p_current_screenshot_path": current_screenshot_path or "",
                 },
-                timeout=self.config.request_timeout_seconds,
             )
-            if not resp.ok:
-                return []
-            rows = resp.json()
+            paths_to_delete: list[str] = []
+            if isinstance(rows, list):
+                for r in rows:
+                    if isinstance(r, str) and r.strip():
+                        paths_to_delete.append(r.strip())
+                    elif isinstance(r, dict):
+                        p = r.get("screenshot_path") or r.get("path") or r.get("delete_case_old_visit_pass_evidence")
+                        if p and isinstance(p, str) and p.strip():
+                            paths_to_delete.append(p.strip())
+            elif isinstance(rows, str) and rows.strip():
+                paths_to_delete.append(rows.strip())
+
             bucket = quote(self.config.screenshot_bucket, safe="")
-            for row in rows:
-                old_path = row.get("screenshot_path")
-                check_id = row.get("id")
-                if not check_id:
+            for old_path in paths_to_delete:
+                if current_screenshot_path and old_path == current_screenshot_path:
                     continue
-                # 当前刚保存的新截图严禁删除
-                if old_path and old_path == current_screenshot_path:
-                    continue
-
-                # 1. 从 Storage 中删除旧截图文件
-                if old_path:
-                    try:
-                        del_resp = self.session.delete(
-                            f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
-                            timeout=self.config.request_timeout_seconds,
-                        )
-                        if del_resp.ok or del_resp.status_code == 404:
-                            deleted_paths.append(old_path)
-                            LOG.info("已删除 Case %s 旧 Visit Pass 截图文件: %s", case_id, old_path)
-                    except Exception as e:
-                        LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
-
-                # 2. 从 visit_pass_checks 中物理删除该旧记录行（避免当前 Case 呈现两条凭证）
                 try:
-                    self.session.delete(
-                        f"{self.rest_url}/visit_pass_checks",
-                        params={"id": f"eq.{check_id}"},
+                    del_resp = self.session.delete(
+                        f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
                         timeout=self.config.request_timeout_seconds,
                     )
-                    LOG.info("已物理删除 Case %s 旧 Visit Pass 检查记录: %s", case_id, check_id)
+                    if del_resp.ok or del_resp.status_code == 404:
+                        deleted_paths.append(old_path)
+                        LOG.info("已从 Storage 删除 Case %s 旧 Visit Pass 截图: %s", case_id, old_path)
                 except Exception as e:
-                    LOG.warning("删除 Case %s 旧记录 %s 失败: %s", check_id, e)
+                    LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
         except Exception as exc:
-            LOG.warning("清理 Case %s 旧 Visit Pass 证据异常: %s", case_id, exc)
+            LOG.warning("调用 delete_case_old_visit_pass_evidence RPC 异常 (case_id=%s): %s", case_id, exc)
         return deleted_paths
 
     def delete_customer_old_visit_pass_screenshots(
@@ -1146,7 +1143,7 @@ class VisitPassCheckWorker:
                 case_id=case_id,
             )
             try:
-                runtime_input = self.supabase.get_runtime_input(item_id)
+                runtime_input = self.supabase.get_runtime_input(item_id, case_id=case_id)
                 if not case_id and runtime_input.get("case_id"):
                     case_id = runtime_input["case_id"]
 

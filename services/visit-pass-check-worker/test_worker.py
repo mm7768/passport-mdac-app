@@ -255,29 +255,115 @@ class VisitPassWorkerTests(unittest.TestCase):
             _, kwargs = mock_get.call_args
             self.assertEqual(kwargs["params"]["case_id"], "eq.case-uuid-123")
 
-    def test_delete_case_old_visit_pass_evidence_scoped_to_case_id(self) -> None:
+    def test_v121_test_a_runtime_input_fail_closed_on_rpc_failure_for_strict_item(self) -> None:
+        """Test A: strict item case_id != null; runtime RPC throws/rejects -> fail closed, no direct table fallback."""
         client = MODULE.SupabaseAdminClient.__new__(MODULE.SupabaseAdminClient)
+        client.config = SimpleNamespace(worker_id="worker-test", request_timeout_seconds=5)
         client.rest_url = "https://example.supabase.co/rest/v1"
-        client.storage_url = "https://example.supabase.co/storage/v1/object"
-        client.config = SimpleNamespace(screenshot_bucket="test-bucket", request_timeout_seconds=5)
+        client.session = requests.Session()
 
-        query_resp = SimpleNamespace(
+        with patch.object(client, "_rpc", side_effect=MODULE.WorkerError("Lease expired or item ownership changed")), \
+             patch.object(requests.Session, "get") as mock_get:
+            with self.assertRaises(MODULE.WorkerError) as ctx:
+                client.get_runtime_input("item-uuid-1", case_id="case-uuid-100")
+            self.assertIn("Fail-closed", str(ctx.exception))
+            # 严格禁止 direct table fallback 查询
+            mock_get.assert_not_called()
+
+    def test_v121_test_b_runtime_input_allows_legacy_fallback_when_case_id_is_none(self) -> None:
+        """Test B: legacy item case_id is None; runtime RPC unavailable -> legacy fallback may be used."""
+        client = MODULE.SupabaseAdminClient.__new__(MODULE.SupabaseAdminClient)
+        client.config = SimpleNamespace(worker_id="worker-test", request_timeout_seconds=5)
+        client.rest_url = "https://example.supabase.co/rest/v1"
+        client.session = requests.Session()
+
+        item_resp = SimpleNamespace(
             ok=True,
-            json=lambda: [
-                {"id": "rec-1", "screenshot_path": "old_path.png"},
-                {"id": "rec-2", "screenshot_path": "current_path.png"},
-            ],
+            json=lambda: [{
+                "id": "item-legacy",
+                "batch_id": "batch-1",
+                "customer_id": "cust-1",
+                "case_id": None,
+                "customer_snapshot": {
+                    "passport_number": "E12345678",
+                    "nationality": "CHN",
+                },
+            }],
+        )
+        batch_resp = SimpleNamespace(
+            ok=True,
+            json=lambda: [{
+                "visit_pass_settings_snapshot": {
+                    "email": "test@example.com",
+                    "region_code": "60",
+                    "mobile": "123456789",
+                },
+            }],
+        )
+        pin_resp = SimpleNamespace(
+            ok=True,
+            json=lambda: [{"pin_value": "1234"}],
+        )
+
+        def mock_get(url: str, **kwargs):
+            if "automation_items" in url:
+                return item_resp
+            if "automation_batches" in url:
+                return batch_resp
+            if "email_pin_records" in url:
+                return pin_resp
+            return SimpleNamespace(ok=False, json=lambda: [])
+
+        with patch.object(client, "_rpc", side_effect=Exception("RPC not available")), \
+             patch.object(client.session, "get", side_effect=mock_get), \
+             patch.object(client, "get_customer_entry_date", return_value="2026-09-30"):
+            res = client.get_runtime_input("item-legacy", case_id=None)
+            self.assertEqual(res["passport_number"], "E12345678")
+            self.assertEqual(res["nationality"], "CHN")
+            self.assertEqual(res["email"], "test@example.com")
+            self.assertEqual(res["pin_value"], "1234")
+            self.assertIsNone(res["case_id"])
+
+    def test_v121_test_c_delete_case_old_visit_pass_evidence_uses_backend_rpc(self) -> None:
+        """Test C: FOUND Case X -> delete_case_old_visit_pass_evidence RPC called with Case X; only returned Storage paths removed; no direct DELETE visit_pass_checks."""
+        client = MODULE.SupabaseAdminClient.__new__(MODULE.SupabaseAdminClient)
+        client.config = SimpleNamespace(
+            screenshot_bucket="passport-documents",
+            request_timeout_seconds=5,
+        )
+        client.storage_url = "https://example.supabase.co/storage/v1/object"
+        client.session = requests.Session()
+
+        # Backend RPC returns list of storage paths to delete
+        rpc_mock = patch.object(
+            client,
+            "_rpc",
+            return_value=["visit-pass-check-previews/old1.png", "visit-pass-check-previews/old2.png"],
         )
         del_resp = SimpleNamespace(ok=True, status_code=200)
 
-        with patch.object(requests.Session, "get", return_value=query_resp) as mock_get, \
-             patch.object(requests.Session, "delete", return_value=del_resp) as mock_delete:
-            client.session = requests.Session()
+        with rpc_mock as mock_rpc, \
+             patch.object(client.session, "delete", return_value=del_resp) as mock_delete:
             deleted = client.delete_case_old_visit_pass_evidence(
-                "case-uuid-123", current_screenshot_path="current_path.png"
+                "case-uuid-xyz",
+                current_screenshot_path="visit-pass-check-previews/current.png",
             )
-            self.assertEqual(deleted, ["old_path.png"])
-            self.assertEqual(mock_get.call_args.kwargs["params"]["case_id"], "eq.case-uuid-123")
+            # 1. 验证调用了后端 RPC
+            mock_rpc.assert_called_once_with(
+                "delete_case_old_visit_pass_evidence",
+                {
+                    "p_case_id": "case-uuid-xyz",
+                    "p_current_screenshot_path": "visit-pass-check-previews/current.png",
+                },
+            )
+            # 2. 验证仅 Storage 文件被删除
+            self.assertEqual(deleted, ["visit-pass-check-previews/old1.png", "visit-pass-check-previews/old2.png"])
+            self.assertEqual(mock_delete.call_count, 2)
+            # 3. 验证删除的 URL 都是 storage URL，绝对没有向 /rest/v1/visit_pass_checks 发起 DELETE
+            for call in mock_delete.call_args_list:
+                url = call[0][0]
+                self.assertIn("/storage/v1/object/passport-documents/", url)
+                self.assertNotIn("/rest/v1/visit_pass_checks", url)
 
 
 class _FakeSupabase:
@@ -308,7 +394,7 @@ class _FakeSupabase:
     def delete_customer_old_visit_pass_screenshots(self, customer_id: str, current_screenshot_path: str | None = None) -> list[str]:
         return []
 
-    def get_runtime_input(self, item_id: str) -> dict[str, str]:
+    def get_runtime_input(self, item_id: str, case_id: str | None = None) -> dict[str, str]:
         return {
             "passport_number": "AB123",
             "nationality": "CHN",

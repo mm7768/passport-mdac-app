@@ -1,11 +1,55 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SupabaseGateway {
   SupabaseGateway._();
 
   static SupabaseClient? _client;
+
+  @visibleForTesting
+  static Future<Map<String, dynamic>> Function({
+    required String ocrResultId,
+    required String fullName,
+    required String passportNumber,
+    required String dateOfBirth,
+    required String placeOfBirth,
+    required String nationality,
+    required String gender,
+    required String passportExpiryDate,
+    String? arrivalDate,
+    String? departureDate,
+    String priority,
+    num? price,
+    num? cost,
+    String? remark,
+  })? createOrderFromOcrHandler;
+
+  @visibleForTesting
+  static Future<void> Function({
+    required String resultId,
+    required String customerId,
+    required Map<String, dynamic> extractedData,
+  })? markOcrResultCreatedHandler;
+
+  @visibleForTesting
+  static Future<Map<String, dynamic>> Function({
+    required String fullName,
+    required String passportNumber,
+    required String dateOfBirth,
+    required String placeOfBirth,
+    required String nationality,
+    required String gender,
+    required String passportExpiryDate,
+    String businessStatus,
+    String? passportImagePath,
+  })? insertCustomerHandler;
+
+  @visibleForTesting
+  static void resetTestingHandlers() {
+    createOrderFromOcrHandler = null;
+    markOcrResultCreatedHandler = null;
+    insertCustomerHandler = null;
+  }
 
   static const projectUrl = String.fromEnvironment('SUPABASE_URL');
   static const publishableKey = String.fromEnvironment(
@@ -128,11 +172,101 @@ class SupabaseGateway {
         .toList(growable: false);
   }
 
+  static Future<Map<String, dynamic>> createOrderFromOcr({
+    required String ocrResultId,
+    required String fullName,
+    required String passportNumber,
+    required String dateOfBirth,
+    required String placeOfBirth,
+    required String nationality,
+    required String gender,
+    required String passportExpiryDate,
+    String? arrivalDate,
+    String? departureDate,
+    String priority = 'NORMAL',
+    num? price,
+    num? cost,
+    String? remark,
+  }) async {
+    if (createOrderFromOcrHandler != null) {
+      final res = await createOrderFromOcrHandler!(
+        ocrResultId: ocrResultId,
+        fullName: fullName,
+        passportNumber: passportNumber,
+        dateOfBirth: dateOfBirth,
+        placeOfBirth: placeOfBirth,
+        nationality: nationality,
+        gender: gender,
+        passportExpiryDate: passportExpiryDate,
+        arrivalDate: arrivalDate,
+        departureDate: departureDate,
+        priority: priority,
+        price: price,
+        cost: cost,
+        remark: remark,
+      );
+      if (res['order_id'] == null ||
+          res['order_no'] == null ||
+          res['customer_id'] == null ||
+          res['passport_id'] == null) {
+        throw const FormatException('订单创建结果不完整，缺少必须的订单或客户凭证。');
+      }
+      return res;
+    }
+
+    final dob = _toIsoDate(dateOfBirth);
+    final expiry = _toIsoDate(passportExpiryDate);
+
+    final params = <String, dynamic>{
+      'p_ocr_result_id': ocrResultId,
+      'p_full_name': fullName.trim().toUpperCase(),
+      'p_passport_number': passportNumber.trim().toUpperCase(),
+      'p_date_of_birth': dob,
+      'p_place_of_birth': placeOfBirth.trim().toUpperCase(),
+      'p_nationality': nationality.trim().toUpperCase(),
+      'p_gender': gender.trim(),
+      'p_passport_expiry_date': expiry,
+      'p_priority': priority,
+      if (arrivalDate != null && arrivalDate.trim().isNotEmpty)
+        'p_arrival_date': _toIsoDate(arrivalDate),
+      if (departureDate != null && departureDate.trim().isNotEmpty)
+        'p_departure_date': _toIsoDate(departureDate),
+      if (price != null) 'p_price': price,
+      if (cost != null) 'p_cost': cost,
+      if (remark != null && remark.trim().isNotEmpty) 'p_remark': remark.trim(),
+    };
+
+    final result = await _requiredClient.rpc(
+      'create_order_from_ocr',
+      params: params,
+    );
+
+    if (result is! Map) {
+      throw const FormatException('Supabase 未返回订单创建结果。');
+    }
+    final map = Map<String, dynamic>.from(result);
+    // V1.3 Section 11: Invariant check - Atomic success result must include order_id, order_no, customer_id, passport_id
+    if (map['order_id'] == null ||
+        map['order_no'] == null ||
+        map['customer_id'] == null ||
+        map['passport_id'] == null) {
+      throw const FormatException('订单创建结果不完整，缺少必须的订单或客户凭证。');
+    }
+    return map;
+  }
+
   static Future<void> markOcrResultCreated({
     required String resultId,
     required String customerId,
     required Map<String, dynamic> extractedData,
   }) async {
+    if (markOcrResultCreatedHandler != null) {
+      return markOcrResultCreatedHandler!(
+        resultId: resultId,
+        customerId: customerId,
+        extractedData: extractedData,
+      );
+    }
     final row = await _requiredClient
         .from('ocr_results')
         .update({
@@ -1131,6 +1265,19 @@ class SupabaseGateway {
     String businessStatus = 'PENDING',
     String? passportImagePath,
   }) async {
+    if (insertCustomerHandler != null) {
+      return insertCustomerHandler!(
+        fullName: fullName,
+        passportNumber: passportNumber,
+        dateOfBirth: dateOfBirth,
+        placeOfBirth: placeOfBirth,
+        nationality: nationality,
+        gender: gender,
+        passportExpiryDate: passportExpiryDate,
+        businessStatus: businessStatus,
+        passportImagePath: passportImagePath,
+      );
+    }
     final response = await _requiredClient.rpc(
       'create_customer_with_case',
       params: {
@@ -1637,7 +1784,11 @@ class SupabaseGateway {
   }
 
   static String _toIsoDate(String value) {
-    final parts = value.trim().split('/');
+    final trimmed = value.trim();
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(trimmed)) {
+      return trimmed;
+    }
+    final parts = trimmed.split(RegExp(r'[/.-]'));
     if (parts.length != 3) throw const FormatException('日期必须是 DD/MM/YYYY。');
     final day = int.parse(parts[0]);
     final month = int.parse(parts[1]);

@@ -234,8 +234,10 @@ class _ActiveBatchesScreenState extends State<ActiveBatchesScreen>
               ),
             ),
             const SizedBox(height: 26),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 14,
+              runSpacing: 10,
               children: [
                 FilledButton.icon(
                   icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -250,7 +252,6 @@ class _ActiveBatchesScreenState extends State<ActiveBatchesScreen>
                   onPressed: () =>
                       widget.repository.syncActiveBatchesFromSupabase(),
                 ),
-                const SizedBox(width: 14),
                 OutlinedButton.icon(
                   icon: const Icon(Icons.history_rounded, size: 18),
                   label: const Text('客户总库 / 历史查询'),
