@@ -5,7 +5,7 @@ create or replace function public.cancel_automation_batch(p_batch_id uuid)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public, private, pg_temp
+set search_path = ''
 as $$
 declare
   v_batch public.automation_batches;
@@ -14,8 +14,15 @@ declare
   v_item_count integer := 0;
   v_deleted_batch_count integer := 0;
 begin
-  if auth.uid() is null or not private.is_active_user() then
-    raise exception 'active user required';
+  -- This is an irreversible cross-customer delete, including task evidence.
+  -- The screenshot cleanup in Storage also requires OWNER privileges.
+  if auth.uid() is null or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.role = 'OWNER'
+      and p.is_active and p.deleted_at is null
+  ) then
+    raise exception 'active Owner required for permanent batch deletion'
+      using errcode = '42501';
   end if;
 
   select *

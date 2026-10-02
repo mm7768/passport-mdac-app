@@ -3413,6 +3413,7 @@ class _MdacShellState extends State<MdacShell> {
       case AppSection.tasks:
         return TasksScreen(
           repository: widget.repository,
+          role: widget.role,
           onOpenCustomersWithSelection: openCustomersWithSelection,
         );
       case AppSection.settings:
@@ -7905,11 +7906,13 @@ class OcrDraftSection extends StatelessWidget {
 class TasksScreen extends StatefulWidget {
   const TasksScreen({
     required this.repository,
+    required this.role,
     this.onOpenCustomersWithSelection,
     super.key,
   });
 
   final DemoRepository repository;
+  final UserRole role;
   final void Function(List<String> customerIds)? onOpenCustomersWithSelection;
 
   @override
@@ -8112,6 +8115,7 @@ class _TasksScreenState extends State<TasksScreen> {
                             (task) => TaskRow(
                               task: task,
                               repository: repository,
+                              role: widget.role,
                               onOpenCustomersWithSelection:
                                   widget.onOpenCustomersWithSelection,
                             ),
@@ -9812,12 +9816,14 @@ class TaskRow extends StatelessWidget {
   const TaskRow({
     required this.task,
     required this.repository,
+    required this.role,
     this.onOpenCustomersWithSelection,
     super.key,
   });
 
   final AutomationTask task;
   final DemoRepository repository;
+  final UserRole role;
   final void Function(List<String> customerIds)? onOpenCustomersWithSelection;
 
   @override
@@ -9913,7 +9919,7 @@ class TaskRow extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (canCancelAutomationTask(task))
+                    if (role == UserRole.owner && canCancelAutomationTask(task))
                       IconButton(
                         tooltip: task.status == TaskStatus.cancelled
                             ? '永久删除任务'
@@ -10177,7 +10183,7 @@ class TaskRow extends StatelessWidget {
           ),
           const SizedBox(width: 6),
         ],
-        if (canCancelAutomationTask(task))
+        if (role == UserRole.owner && canCancelAutomationTask(task))
           IconButton(
             tooltip: task.status == TaskStatus.cancelled ? '永久删除任务' : '取消并删除任务',
             onPressed: () =>
