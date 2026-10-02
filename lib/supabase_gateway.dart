@@ -1785,13 +1785,13 @@ class SupabaseGateway {
             // Registration checks (strictly bound by case_id)
             client
                 .from('registration_checks')
-                .select('case_id, result_status, created_at')
+                .select('case_id, result_status, normalized_status, created_at')
                 .inFilter('case_id', caseIds)
                 .order('created_at', ascending: false),
             // Visit pass checks (strictly bound by case_id)
             client
                 .from('visit_pass_checks')
-                .select('case_id, result_status, created_at')
+                .select('case_id, result_status, normalized_status, created_at')
                 .inFilter('case_id', caseIds)
                 .order('created_at', ascending: false),
           ]);
@@ -1817,19 +1817,23 @@ class SupabaseGateway {
             }
           }
 
-          final regMap = <String, String>{};
+          final regResultMap = <String, String>{};
+          final regNormMap = <String, String>{};
           for (final r in regRows) {
             final cid = r['case_id']?.toString();
-            if (cid != null && !regMap.containsKey(cid)) {
-              regMap[cid] = (r['result_status'] ?? '').toString();
+            if (cid != null && !regResultMap.containsKey(cid)) {
+              regResultMap[cid] = (r['result_status'] ?? '').toString();
+              regNormMap[cid] = (r['normalized_status'] ?? '').toString();
             }
           }
 
-          final vpMap = <String, String>{};
+          final vpResultMap = <String, String>{};
+          final vpNormMap = <String, String>{};
           for (final r in vpRows) {
             final cid = r['case_id']?.toString();
-            if (cid != null && !vpMap.containsKey(cid)) {
-              vpMap[cid] = (r['result_status'] ?? '').toString();
+            if (cid != null && !vpResultMap.containsKey(cid)) {
+              vpResultMap[cid] = (r['result_status'] ?? '').toString();
+              vpNormMap[cid] = (r['normalized_status'] ?? '').toString();
             }
           }
 
@@ -1837,8 +1841,16 @@ class SupabaseGateway {
             final cid = (row['case_id'] ?? row['order_id'] ?? '').toString().trim();
             row['latest_mdac_status'] = mdacMap[cid];
             row['latest_pin_status'] = pinMap[cid];
-            row['latest_registration_status'] = regMap[cid];
-            row['latest_visit_pass_status'] = vpMap[cid];
+            row['latest_registration_result_status'] = regResultMap[cid];
+            row['latest_registration_normalized_status'] = regNormMap[cid];
+            row['latest_registration_status'] = regNormMap[cid]?.isNotEmpty == true
+                ? regNormMap[cid]
+                : regResultMap[cid];
+            row['latest_visit_pass_result_status'] = vpResultMap[cid];
+            row['latest_visit_pass_normalized_status'] = vpNormMap[cid];
+            row['latest_visit_pass_status'] = vpNormMap[cid]?.isNotEmpty == true
+                ? vpNormMap[cid]
+                : vpResultMap[cid];
           }
         } catch (_) {
           // If direct query fails (e.g. offline/mock), keep existing row attributes
@@ -1866,18 +1878,64 @@ class SupabaseGateway {
     }
     if (data == null) return null;
 
-    if (!data.containsKey('latest_mdac_status')) {
+    if (!data.containsKey('latest_mdac_status') ||
+        !data.containsKey('latest_registration_normalized_status')) {
       try {
-        final mdacRows = await client
-            .from('mdac_registrations')
-            .select('id, registration_status')
-            .eq('case_id', orderId)
-            .order('created_at', ascending: false)
-            .limit(1);
+        final futures = await Future.wait([
+          client
+              .from('mdac_registrations')
+              .select('id, registration_status')
+              .eq('case_id', orderId)
+              .order('created_at', ascending: false)
+              .limit(1),
+          client
+              .from('email_pin_records')
+              .select('id, status')
+              .eq('case_id', orderId)
+              .order('created_at', ascending: false)
+              .limit(1),
+          client
+              .from('registration_checks')
+              .select('id, result_status, normalized_status')
+              .eq('case_id', orderId)
+              .order('created_at', ascending: false)
+              .limit(1),
+          client
+              .from('visit_pass_checks')
+              .select('id, result_status, normalized_status')
+              .eq('case_id', orderId)
+              .order('created_at', ascending: false)
+              .limit(1),
+        ]);
+        final mdacRows = (futures[0] as List).whereType<Map>();
         if (mdacRows.isNotEmpty) {
           final first = mdacRows.first;
           data['latest_mdac_registration_id'] = first['id']?.toString();
           data['latest_mdac_status'] = first['registration_status']?.toString();
+        }
+        final pinRows = (futures[1] as List).whereType<Map>();
+        if (pinRows.isNotEmpty) {
+          final first = pinRows.first;
+          data['latest_pin_record_id'] ??= first['id']?.toString();
+          data['latest_pin_status'] ??= first['status']?.toString();
+        }
+        final regRows = (futures[2] as List).whereType<Map>();
+        if (regRows.isNotEmpty) {
+          final first = regRows.first;
+          data['latest_registration_check_id'] ??= first['id']?.toString();
+          data['latest_registration_result_status'] = first['result_status']?.toString();
+          data['latest_registration_normalized_status'] = first['normalized_status']?.toString();
+          data['latest_registration_status'] = first['normalized_status']?.toString() ??
+              first['result_status']?.toString();
+        }
+        final vpRows = (futures[3] as List).whereType<Map>();
+        if (vpRows.isNotEmpty) {
+          final first = vpRows.first;
+          data['latest_visit_pass_check_id'] ??= first['id']?.toString();
+          data['latest_visit_pass_result_status'] = first['result_status']?.toString();
+          data['latest_visit_pass_normalized_status'] = first['normalized_status']?.toString();
+          data['latest_visit_pass_status'] = first['normalized_status']?.toString() ??
+              first['result_status']?.toString();
         }
       } catch (_) {}
     }

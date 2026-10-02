@@ -66,8 +66,10 @@ void main() {
         'departure_date': '2026-10-08',
         'latest_mdac_status': 'SUCCEEDED',
         'latest_pin_status': 'RECEIVED',
-        'latest_registration_status': 'CONFIRMED',
-        'latest_visit_pass_status': 'CONFIRMED',
+        'latest_registration_result_status': 'PARSED',
+        'latest_registration_normalized_status': 'FOUND',
+        'latest_visit_pass_result_status': 'PARSED',
+        'latest_visit_pass_normalized_status': 'FOUND',
       };
 
       final order = AppBatchOrder.fromMap(map);
@@ -86,8 +88,14 @@ void main() {
       expect(order.departureDate, '2026-10-08');
       expect(order.latestMdacStatus, 'SUCCEEDED');
       expect(order.latestPinStatus, 'RECEIVED');
-      expect(order.latestRegistrationStatus, 'CONFIRMED');
-      expect(order.latestVisitPassStatus, 'CONFIRMED');
+      expect(order.latestRegistrationResultStatus, 'PARSED');
+      expect(order.latestRegistrationNormalizedStatus, 'FOUND');
+      expect(order.latestVisitPassResultStatus, 'PARSED');
+      expect(order.latestVisitPassNormalizedStatus, 'FOUND');
+      expect(order.mdacBadge.text, 'MDAC Done');
+      expect(order.pinBadge.text, 'PIN Done');
+      expect(order.registrationBadge.text, 'REG Done');
+      expect(order.visitPassBadge.text, 'VP Done');
     });
 
     test('AppOrderExecutionContext.fromMap parses complete execution details and worker records', () {
@@ -113,11 +121,13 @@ void main() {
         'latest_mdac_registration_id': 'mdac-uuid-001',
         'latest_mdac_status': 'SUCCEEDED',
         'latest_pin_record_id': 'pin-uuid-001',
-        'latest_pin_status': 'VERIFIED',
+        'latest_pin_status': 'RECEIVED',
         'latest_registration_check_id': 'reg-uuid-001',
-        'latest_registration_status': 'CONFIRMED',
+        'latest_registration_result_status': 'PARSED',
+        'latest_registration_normalized_status': 'FOUND',
         'latest_visit_pass_check_id': 'vp-uuid-001',
-        'latest_visit_pass_status': 'CONFIRMED',
+        'latest_visit_pass_result_status': 'PARSED',
+        'latest_visit_pass_normalized_status': 'FOUND',
       };
 
       final ctx = AppOrderExecutionContext.fromMap(map);
@@ -128,9 +138,15 @@ void main() {
       expect(ctx.nationality, 'CHN');
       expect(ctx.latestMdacRegistrationId, 'mdac-uuid-001');
       expect(ctx.latestMdacStatus, 'SUCCEEDED');
-      expect(ctx.latestPinStatus, 'VERIFIED');
-      expect(ctx.latestRegistrationStatus, 'CONFIRMED');
-      expect(ctx.latestVisitPassStatus, 'CONFIRMED');
+      expect(ctx.latestPinStatus, 'RECEIVED');
+      expect(ctx.latestRegistrationResultStatus, 'PARSED');
+      expect(ctx.latestRegistrationNormalizedStatus, 'FOUND');
+      expect(ctx.latestVisitPassResultStatus, 'PARSED');
+      expect(ctx.latestVisitPassNormalizedStatus, 'FOUND');
+      expect(ctx.mdacBadge.text, 'MDAC Done');
+      expect(ctx.pinBadge.text, 'PIN Done');
+      expect(ctx.registrationBadge.text, 'REG Done');
+      expect(ctx.visitPassBadge.text, 'VP Done');
     });
   });
 
@@ -869,8 +885,10 @@ void main() {
         departureDate: '2026-10-08',
         latestMdacStatus: 'SUCCEEDED',
         latestPinStatus: 'RECEIVED',
-        latestRegistrationStatus: 'CONFIRMED',
-        latestVisitPassStatus: 'CONFIRMED',
+        latestRegistrationResultStatus: 'PARSED',
+        latestRegistrationNormalizedStatus: 'FOUND',
+        latestVisitPassResultStatus: 'PARSED',
+        latestVisitPassNormalizedStatus: 'FOUND',
       );
       repo.mockOrders = [order];
       repo.mockActiveBatches = [batch];
@@ -977,6 +995,329 @@ void main() {
       expect(find.text('MDAC 注册记录 ID'), findsOneWidget);
       expect(find.text('7c3dc2e9-3b07-4f14-a8e0-26471437fa80'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    // Test 7: Visit Pass Check with NO_RECORD renders 'VP Not Found' and NOT 'VP Done' or 'VP PARSED'
+    testWidgets('Test 7: Visit Pass Check NO_RECORD renders VP Not Found and never VP Done or VP PARSED', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-002',
+        batchId: 'b-001',
+        orderId: 'case-vp-norecord-001',
+        orderNo: 'AA0181',
+        customerId: 'cust-002',
+        caseId: 'case-vp-norecord-001',
+        displayName: 'WANG WU',
+        passportNumber: 'EA1234567',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: 'SUCCEEDED',
+        latestPinStatus: 'RECEIVED',
+        latestRegistrationResultStatus: 'PARSED',
+        latestRegistrationNormalizedStatus: 'FOUND',
+        latestVisitPassResultStatus: 'PARSED',
+        latestVisitPassNormalizedStatus: 'NO_RECORD',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('VP Not Found'), findsOneWidget);
+      expect(find.text('VP Done'), findsNothing);
+      expect(find.text('VP PARSED'), findsNothing);
+      expect(find.text('REG Done'), findsOneWidget);
+    });
+
+    // Test 8: Visit Pass Check with QUERY_TIMEOUT renders 'VP Review'
+    testWidgets('Test 8: Visit Pass Check QUERY_TIMEOUT renders VP Review', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-003',
+        batchId: 'b-001',
+        orderId: 'case-vp-timeout-001',
+        orderNo: 'AA0182',
+        customerId: 'cust-003',
+        caseId: 'case-vp-timeout-001',
+        displayName: 'ZHAO LIU',
+        passportNumber: 'EB7654321',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestVisitPassResultStatus: 'NEEDS_REVIEW',
+        latestVisitPassNormalizedStatus: 'QUERY_TIMEOUT',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('VP Review'), findsOneWidget);
+      expect(find.text('VP Done'), findsNothing);
+    });
+
+    // Test 9: Strict Case Isolation: Customer has two Orders (Order A has VP Done, Order B has VP —)
+    testWidgets('Test 9: Strict Case Isolation isolates status between two orders of same customer', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 2,
+        completedCount: 0,
+        pendingCount: 2,
+      );
+      final orderA = AppBatchOrder(
+        membershipId: 'mem-same-cust-A',
+        batchId: 'b-001',
+        orderId: 'case-same-cust-A',
+        orderNo: 'AA0201',
+        customerId: 'cust-shared-uuid',
+        caseId: 'case-same-cust-A',
+        displayName: 'SHARED CUSTOMER (ORDER A)',
+        passportNumber: 'EC1111111',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestVisitPassResultStatus: 'PARSED',
+        latestVisitPassNormalizedStatus: 'FOUND',
+      );
+      final orderB = AppBatchOrder(
+        membershipId: 'mem-same-cust-B',
+        batchId: 'b-001',
+        orderId: 'case-same-cust-B',
+        orderNo: 'AA0202',
+        customerId: 'cust-shared-uuid',
+        caseId: 'case-same-cust-B',
+        displayName: 'SHARED CUSTOMER (ORDER B)',
+        passportNumber: 'EC1111111',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        // No VP record at all for Order B
+      );
+      repo.mockOrders = [orderA, orderB];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      // Order A has VP Done, Order B has VP —
+      expect(find.text('VP Done'), findsOneWidget);
+      expect(find.text('VP —'), findsOneWidget);
+    });
+  });
+
+  group('Integration Fix V1.3 - Real Production Enums & Status Mapper Contract', () {
+    test('Registration Check: PARSED + FOUND -> REG Done', () {
+      final badge = AutomationStatusMapper.mapRegistration(
+        resultStatus: 'PARSED',
+        normalizedStatus: 'FOUND',
+      );
+      expect(badge.text, equals('REG Done'));
+      expect(badge.state, equals(AutomationDisplayState.done));
+    });
+
+    test('Registration Check: PARSED without normalized_status -> REG Review (never REG PARSED)', () {
+      final badge = AutomationStatusMapper.mapRegistration(
+        resultStatus: 'PARSED',
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('REG Review'));
+      expect(badge.text, isNot(contains('PARSED')));
+      expect(badge.state, equals(AutomationDisplayState.review));
+    });
+
+    test('Registration Check: NEEDS_REVIEW / QUERY_TIMEOUT -> REG Review', () {
+      final badge = AutomationStatusMapper.mapRegistration(
+        resultStatus: 'NEEDS_REVIEW',
+        normalizedStatus: 'QUERY_TIMEOUT',
+      );
+      expect(badge.text, equals('REG Review'));
+      expect(badge.state, equals(AutomationDisplayState.review));
+    });
+
+    test('Registration Check: FAILED -> REG Failed', () {
+      final badge = AutomationStatusMapper.mapRegistration(
+        resultStatus: 'FAILED',
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('REG Failed'));
+      expect(badge.state, equals(AutomationDisplayState.failed));
+    });
+
+    test('Registration Check: null -> REG —', () {
+      final badge = AutomationStatusMapper.mapRegistration(
+        resultStatus: null,
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('REG —'));
+      expect(badge.state, equals(AutomationDisplayState.none));
+    });
+
+    test('Visit Pass Check: PARSED + FOUND -> VP Done', () {
+      final badge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'PARSED',
+        normalizedStatus: 'FOUND',
+      );
+      expect(badge.text, equals('VP Done'));
+      expect(badge.state, equals(AutomationDisplayState.done));
+    });
+
+    test('Visit Pass Check: PARSED + NO_RECORD -> VP Not Found (distinct from VP Done)', () {
+      final doneBadge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'PARSED',
+        normalizedStatus: 'FOUND',
+      );
+      final notFoundBadge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'PARSED',
+        normalizedStatus: 'NO_RECORD',
+      );
+      expect(notFoundBadge.text, equals('VP Not Found'));
+      expect(notFoundBadge.state, equals(AutomationDisplayState.notFound));
+      expect(notFoundBadge.text, isNot(equals(doneBadge.text)));
+      expect(notFoundBadge.state, isNot(equals(doneBadge.state)));
+    });
+
+    test('Visit Pass Check: NEEDS_REVIEW + QUERY_TIMEOUT -> VP Review', () {
+      final badge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'NEEDS_REVIEW',
+        normalizedStatus: 'QUERY_TIMEOUT',
+      );
+      expect(badge.text, equals('VP Review'));
+      expect(badge.state, equals(AutomationDisplayState.review));
+    });
+
+    test('Visit Pass Check: PARSED without normalized_status -> VP Review (never VP PARSED)', () {
+      final badge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'PARSED',
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('VP Review'));
+      expect(badge.text, isNot(contains('PARSED')));
+      expect(badge.state, equals(AutomationDisplayState.review));
+    });
+
+    test('Visit Pass Check: FAILED -> VP Failed', () {
+      final badge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: 'FAILED',
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('VP Failed'));
+      expect(badge.state, equals(AutomationDisplayState.failed));
+    });
+
+    test('Visit Pass Check: null -> VP —', () {
+      final badge = AutomationStatusMapper.mapVisitPass(
+        resultStatus: null,
+        normalizedStatus: null,
+      );
+      expect(badge.text, equals('VP —'));
+      expect(badge.state, equals(AutomationDisplayState.none));
+    });
+
+    test('MDAC: SUCCEEDED -> MDAC Done, FAILED -> MDAC Failed, null -> MDAC —', () {
+      final done = AutomationStatusMapper.mapMdac('SUCCEEDED');
+      expect(done.text, equals('MDAC Done'));
+      expect(done.state, equals(AutomationDisplayState.done));
+
+      final failed = AutomationStatusMapper.mapMdac('FAILED');
+      expect(failed.text, equals('MDAC Failed'));
+      expect(failed.state, equals(AutomationDisplayState.failed));
+
+      final review = AutomationStatusMapper.mapMdac('NEEDS_REVIEW');
+      expect(review.text, equals('MDAC Review'));
+      expect(review.state, equals(AutomationDisplayState.review));
+
+      final running = AutomationStatusMapper.mapMdac('RUNNING');
+      expect(running.text, equals('MDAC Running'));
+      expect(running.state, equals(AutomationDisplayState.running));
+
+      final empty = AutomationStatusMapper.mapMdac(null);
+      expect(empty.text, equals('MDAC —'));
+      expect(empty.state, equals(AutomationDisplayState.none));
+    });
+
+    test('PIN: RECEIVED -> PIN Done, FAILED -> PIN Failed, null -> PIN —', () {
+      final done = AutomationStatusMapper.mapPin('RECEIVED');
+      expect(done.text, equals('PIN Done'));
+      expect(done.state, equals(AutomationDisplayState.done));
+
+      final failed = AutomationStatusMapper.mapPin('FAILED');
+      expect(failed.text, equals('PIN Failed'));
+      expect(failed.state, equals(AutomationDisplayState.failed));
+
+      final running = AutomationStatusMapper.mapPin('RUNNING');
+      expect(running.text, equals('PIN Running'));
+      expect(running.state, equals(AutomationDisplayState.running));
+
+      final empty = AutomationStatusMapper.mapPin(null);
+      expect(empty.text, equals('PIN —'));
+      expect(empty.state, equals(AutomationDisplayState.none));
     });
   });
 }

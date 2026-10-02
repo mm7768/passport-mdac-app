@@ -44,6 +44,257 @@ class AppOperationalBatch {
   }
 }
 
+/// 自动化四阶段通用显示状态
+enum AutomationDisplayState {
+  none, // 未开始 / 暂无记录 (—)
+  running, // 处理中 / 已入队 (Running)
+  done, // 成功完成 (Done)
+  notFound, // 未查到记录 (Not Found, 专用于 Visit Pass)
+  review, // 需要关注 / 人工审核 (Review)
+  failed, // 失败 (Failed)
+}
+
+/// 单个阶段的结构化展示结果
+@immutable
+class AutomationStageBadge {
+  const AutomationStageBadge({
+    required this.stage,
+    required this.state,
+    required this.text,
+  });
+
+  final String stage; // 'MDAC', 'PIN', 'REG', 'VP'
+  final AutomationDisplayState state;
+  final String text; // e.g. 'MDAC Done', 'VP Not Found', 'REG Review'
+}
+
+/// 业务归一化状态映射器 (解耦底层 enum，避免将原始 technical enum 直接暴露给业务用户)
+class AutomationStatusMapper {
+  static AutomationStageBadge mapMdac(String? status) {
+    final s = status?.trim().toUpperCase();
+    if (s == null || s.isEmpty) {
+      return const AutomationStageBadge(
+        stage: 'MDAC',
+        state: AutomationDisplayState.none,
+        text: 'MDAC —',
+      );
+    }
+    if (s == 'SUCCEEDED') {
+      return const AutomationStageBadge(
+        stage: 'MDAC',
+        state: AutomationDisplayState.done,
+        text: 'MDAC Done',
+      );
+    }
+    if (s == 'FAILED') {
+      return const AutomationStageBadge(
+        stage: 'MDAC',
+        state: AutomationDisplayState.failed,
+        text: 'MDAC Failed',
+      );
+    }
+    if (s == 'NEEDS_REVIEW') {
+      return const AutomationStageBadge(
+        stage: 'MDAC',
+        state: AutomationDisplayState.review,
+        text: 'MDAC Review',
+      );
+    }
+    if (s == 'QUEUED' || s == 'CLAIMED' || s == 'RUNNING' || s == 'SUBMITTED') {
+      return const AutomationStageBadge(
+        stage: 'MDAC',
+        state: AutomationDisplayState.running,
+        text: 'MDAC Running',
+      );
+    }
+    return AutomationStageBadge(
+      stage: 'MDAC',
+      state: AutomationDisplayState.none,
+      text: 'MDAC $status',
+    );
+  }
+
+  static AutomationStageBadge mapPin(String? status) {
+    final s = status?.trim().toUpperCase();
+    if (s == null || s.isEmpty) {
+      return const AutomationStageBadge(
+        stage: 'PIN',
+        state: AutomationDisplayState.none,
+        text: 'PIN —',
+      );
+    }
+    if (s == 'RECEIVED') {
+      return const AutomationStageBadge(
+        stage: 'PIN',
+        state: AutomationDisplayState.done,
+        text: 'PIN Done',
+      );
+    }
+    if (s == 'FAILED') {
+      return const AutomationStageBadge(
+        stage: 'PIN',
+        state: AutomationDisplayState.failed,
+        text: 'PIN Failed',
+      );
+    }
+    if (s == 'QUEUED' || s == 'CLAIMED' || s == 'RUNNING') {
+      return const AutomationStageBadge(
+        stage: 'PIN',
+        state: AutomationDisplayState.running,
+        text: 'PIN Running',
+      );
+    }
+    return AutomationStageBadge(
+      stage: 'PIN',
+      state: AutomationDisplayState.none,
+      text: 'PIN $status',
+    );
+  }
+
+  static AutomationStageBadge mapRegistration({
+    String? resultStatus,
+    String? normalizedStatus,
+  }) {
+    final norm = normalizedStatus?.trim().toUpperCase();
+    final res = resultStatus?.trim().toUpperCase();
+
+    if ((norm == null || norm.isEmpty) && (res == null || res.isEmpty)) {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.none,
+        text: 'REG —',
+      );
+    }
+    // 优先依据业务归一化状态判断
+    if (norm == 'FOUND') {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.done,
+        text: 'REG Done',
+      );
+    }
+    if (res == 'NEEDS_REVIEW' || norm == 'QUERY_TIMEOUT' || norm == 'REVIEW') {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.review,
+        text: 'REG Review',
+      );
+    }
+    if (res == 'FAILED' || res == 'PARSE_FAILED' || norm == 'FAILED') {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.failed,
+        text: 'REG Failed',
+      );
+    }
+    if (res == 'QUEUED' || res == 'CLAIMED' || res == 'RUNNING') {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.running,
+        text: 'REG Running',
+      );
+    }
+    // 兼容历史或 mock (若无 normalized_status 但有 CONFIRMED / VERIFIED)
+    if (norm == null || norm.isEmpty) {
+      if (res == 'CONFIRMED' || res == 'VERIFIED' || res == 'SUCCEEDED') {
+        return const AutomationStageBadge(
+          stage: 'REG',
+          state: AutomationDisplayState.done,
+          text: 'REG Done',
+        );
+      }
+    }
+    // 若 result_status 为 PARSED 但没有明确 FOUND，绝不向用户展示 'REG PARSED'
+    if (res == 'PARSED') {
+      return const AutomationStageBadge(
+        stage: 'REG',
+        state: AutomationDisplayState.review,
+        text: 'REG Review',
+      );
+    }
+    return AutomationStageBadge(
+      stage: 'REG',
+      state: AutomationDisplayState.none,
+      text: 'REG ${norm ?? res}',
+    );
+  }
+
+  static AutomationStageBadge mapVisitPass({
+    String? resultStatus,
+    String? normalizedStatus,
+  }) {
+    final norm = normalizedStatus?.trim().toUpperCase();
+    final res = resultStatus?.trim().toUpperCase();
+
+    if ((norm == null || norm.isEmpty) && (res == null || res.isEmpty)) {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.none,
+        text: 'VP —',
+      );
+    }
+    // 优先依据业务归一化状态判断
+    if (norm == 'FOUND') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.done,
+        text: 'VP Done',
+      );
+    }
+    if (norm == 'NO_RECORD') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.notFound,
+        text: 'VP Not Found',
+      );
+    }
+    if (res == 'NEEDS_REVIEW' || norm == 'QUERY_TIMEOUT' || norm == 'REVIEW') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.review,
+        text: 'VP Review',
+      );
+    }
+    if (res == 'FAILED' || res == 'PARSE_FAILED' || norm == 'FAILED') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.failed,
+        text: 'VP Failed',
+      );
+    }
+    if (res == 'QUEUED' || res == 'CLAIMED' || res == 'RUNNING') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.running,
+        text: 'VP Running',
+      );
+    }
+    // 兼容历史或 mock (若无 normalized_status 但有 CONFIRMED / VERIFIED)
+    if (norm == null || norm.isEmpty) {
+      if (res == 'CONFIRMED' || res == 'VERIFIED' || res == 'SUCCEEDED') {
+        return const AutomationStageBadge(
+          stage: 'VP',
+          state: AutomationDisplayState.done,
+          text: 'VP Done',
+        );
+      }
+    }
+    // 若 result_status 为 PARSED 但没有明确 FOUND 或 NO_RECORD，绝不向用户展示 'VP PARSED'
+    if (res == 'PARSED') {
+      return const AutomationStageBadge(
+        stage: 'VP',
+        state: AutomationDisplayState.review,
+        text: 'VP Review',
+      );
+    }
+    return AutomationStageBadge(
+      stage: 'VP',
+      state: AutomationDisplayState.none,
+      text: 'VP ${norm ?? res}',
+    );
+  }
+}
+
 /// 批次内订单记录模型 (对应 public.get_app_batch_orders)
 @immutable
 class AppBatchOrder {
@@ -67,6 +318,10 @@ class AppBatchOrder {
     this.latestPinStatus,
     this.latestRegistrationStatus,
     this.latestVisitPassStatus,
+    this.latestRegistrationResultStatus,
+    this.latestRegistrationNormalizedStatus,
+    this.latestVisitPassResultStatus,
+    this.latestVisitPassNormalizedStatus,
   });
 
   final String membershipId;
@@ -94,8 +349,25 @@ class AppBatchOrder {
   final String? latestRegistrationStatus;
   final String? latestVisitPassStatus;
 
+  /// 归一化与底层结果状态 (V1.3 规范)
+  final String? latestRegistrationResultStatus;
+  final String? latestRegistrationNormalizedStatus;
+  final String? latestVisitPassResultStatus;
+  final String? latestVisitPassNormalizedStatus;
+
   bool get isCompleted => membershipStatus.toUpperCase() == 'COMPLETED';
   bool get isActive => membershipStatus.toUpperCase() == 'ACTIVE';
+
+  AutomationStageBadge get mdacBadge => AutomationStatusMapper.mapMdac(latestMdacStatus);
+  AutomationStageBadge get pinBadge => AutomationStatusMapper.mapPin(latestPinStatus);
+  AutomationStageBadge get registrationBadge => AutomationStatusMapper.mapRegistration(
+        resultStatus: latestRegistrationResultStatus ?? latestRegistrationStatus,
+        normalizedStatus: latestRegistrationNormalizedStatus,
+      );
+  AutomationStageBadge get visitPassBadge => AutomationStatusMapper.mapVisitPass(
+        resultStatus: latestVisitPassResultStatus ?? latestVisitPassStatus,
+        normalizedStatus: latestVisitPassNormalizedStatus,
+      );
 
   AppBatchOrder copyWith({
     String? membershipId,
@@ -117,6 +389,10 @@ class AppBatchOrder {
     String? latestPinStatus,
     String? latestRegistrationStatus,
     String? latestVisitPassStatus,
+    String? latestRegistrationResultStatus,
+    String? latestRegistrationNormalizedStatus,
+    String? latestVisitPassResultStatus,
+    String? latestVisitPassNormalizedStatus,
   }) {
     return AppBatchOrder(
       membershipId: membershipId ?? this.membershipId,
@@ -138,12 +414,25 @@ class AppBatchOrder {
       latestPinStatus: latestPinStatus ?? this.latestPinStatus,
       latestRegistrationStatus: latestRegistrationStatus ?? this.latestRegistrationStatus,
       latestVisitPassStatus: latestVisitPassStatus ?? this.latestVisitPassStatus,
+      latestRegistrationResultStatus:
+          latestRegistrationResultStatus ?? this.latestRegistrationResultStatus,
+      latestRegistrationNormalizedStatus:
+          latestRegistrationNormalizedStatus ?? this.latestRegistrationNormalizedStatus,
+      latestVisitPassResultStatus:
+          latestVisitPassResultStatus ?? this.latestVisitPassResultStatus,
+      latestVisitPassNormalizedStatus:
+          latestVisitPassNormalizedStatus ?? this.latestVisitPassNormalizedStatus,
     );
   }
 
   factory AppBatchOrder.fromMap(Map<String, dynamic> map) {
     final rawArrival = map['arrival_date']?.toString();
     final rawDeparture = map['departure_date']?.toString();
+    final regResult = map['latest_registration_result_status']?.toString();
+    final regNorm = map['latest_registration_normalized_status']?.toString() ??
+        map['normalized_status']?.toString();
+    final vpResult = map['latest_visit_pass_result_status']?.toString();
+    final vpNorm = map['latest_visit_pass_normalized_status']?.toString();
 
     return AppBatchOrder(
       membershipId: (map['membership_id'] ?? '').toString(),
@@ -163,8 +452,12 @@ class AppBatchOrder {
       departureDate: rawDeparture,
       latestMdacStatus: map['latest_mdac_status']?.toString(),
       latestPinStatus: map['latest_pin_status']?.toString(),
-      latestRegistrationStatus: map['latest_registration_status']?.toString(),
-      latestVisitPassStatus: map['latest_visit_pass_status']?.toString(),
+      latestRegistrationStatus: regNorm ?? map['latest_registration_status']?.toString() ?? regResult,
+      latestVisitPassStatus: vpNorm ?? map['latest_visit_pass_status']?.toString() ?? vpResult,
+      latestRegistrationResultStatus: regResult ?? map['latest_registration_status']?.toString(),
+      latestRegistrationNormalizedStatus: regNorm,
+      latestVisitPassResultStatus: vpResult ?? map['latest_visit_pass_status']?.toString(),
+      latestVisitPassNormalizedStatus: vpNorm,
     );
   }
 }
@@ -199,6 +492,10 @@ class AppOrderExecutionContext {
     this.latestRegistrationStatus,
     this.latestVisitPassCheckId,
     this.latestVisitPassStatus,
+    this.latestRegistrationResultStatus,
+    this.latestRegistrationNormalizedStatus,
+    this.latestVisitPassResultStatus,
+    this.latestVisitPassNormalizedStatus,
   });
 
   final String? batchId;
@@ -228,7 +525,30 @@ class AppOrderExecutionContext {
   final String? latestVisitPassCheckId;
   final String? latestVisitPassStatus;
 
+  /// 归一化与底层结果状态 (V1.3 规范)
+  final String? latestRegistrationResultStatus;
+  final String? latestRegistrationNormalizedStatus;
+  final String? latestVisitPassResultStatus;
+  final String? latestVisitPassNormalizedStatus;
+
+  AutomationStageBadge get mdacBadge => AutomationStatusMapper.mapMdac(latestMdacStatus);
+  AutomationStageBadge get pinBadge => AutomationStatusMapper.mapPin(latestPinStatus);
+  AutomationStageBadge get registrationBadge => AutomationStatusMapper.mapRegistration(
+        resultStatus: latestRegistrationResultStatus ?? latestRegistrationStatus,
+        normalizedStatus: latestRegistrationNormalizedStatus,
+      );
+  AutomationStageBadge get visitPassBadge => AutomationStatusMapper.mapVisitPass(
+        resultStatus: latestVisitPassResultStatus ?? latestVisitPassStatus,
+        normalizedStatus: latestVisitPassNormalizedStatus,
+      );
+
   factory AppOrderExecutionContext.fromMap(Map<String, dynamic> map) {
+    final regResult = map['latest_registration_result_status']?.toString();
+    final regNorm = map['latest_registration_normalized_status']?.toString() ??
+        map['normalized_status']?.toString();
+    final vpResult = map['latest_visit_pass_result_status']?.toString();
+    final vpNorm = map['latest_visit_pass_normalized_status']?.toString();
+
     return AppOrderExecutionContext(
       batchId: map['batch_id']?.toString(),
       membershipId: map['membership_id']?.toString(),
@@ -253,9 +573,13 @@ class AppOrderExecutionContext {
       latestPinRecordId: map['latest_pin_record_id']?.toString(),
       latestPinStatus: map['latest_pin_status']?.toString(),
       latestRegistrationCheckId: map['latest_registration_check_id']?.toString(),
-      latestRegistrationStatus: map['latest_registration_status']?.toString(),
+      latestRegistrationStatus: regNorm ?? map['latest_registration_status']?.toString() ?? regResult,
       latestVisitPassCheckId: map['latest_visit_pass_check_id']?.toString(),
-      latestVisitPassStatus: map['latest_visit_pass_status']?.toString(),
+      latestVisitPassStatus: vpNorm ?? map['latest_visit_pass_status']?.toString() ?? vpResult,
+      latestRegistrationResultStatus: regResult ?? map['latest_registration_status']?.toString(),
+      latestRegistrationNormalizedStatus: regNorm,
+      latestVisitPassResultStatus: vpResult ?? map['latest_visit_pass_status']?.toString(),
+      latestVisitPassNormalizedStatus: vpNorm,
     );
   }
 }

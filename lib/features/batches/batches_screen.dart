@@ -1787,44 +1787,43 @@ class _BatchOrderRow extends StatelessWidget {
       spacing: 5,
       runSpacing: 4,
       children: [
-        _buildAutomationBadge('MDAC', order.latestMdacStatus),
-        _buildAutomationBadge('PIN', order.latestPinStatus),
-        _buildAutomationBadge('REG', order.latestRegistrationStatus),
-        _buildAutomationBadge('VP', order.latestVisitPassStatus),
+        _buildStageBadge(order.mdacBadge),
+        _buildStageBadge(order.pinBadge),
+        _buildStageBadge(order.registrationBadge),
+        _buildStageBadge(order.visitPassBadge),
       ],
     );
   }
 
-  Widget _buildAutomationBadge(String label, String? status) {
-    String text;
+  Widget _buildStageBadge(AutomationStageBadge badge) {
     Color bg;
     Color fg;
 
-    final s = status?.trim().toUpperCase();
-    if (s == null || s.isEmpty) {
-      text = '$label —';
-      bg = const Color(0xFFF2F4F7);
-      fg = const Color(0xFF98A2B3);
-    } else if (s == 'SUCCEEDED' || s == 'CONFIRMED' || s == 'VERIFIED' || s == 'RECEIVED') {
-      text = '$label Done';
-      bg = const Color(0xFFE8F6EF);
-      fg = const Color(0xFF1E7E4E);
-    } else if (s == 'FAILED' || s == 'PARSE_FAILED' || s == 'INVALID') {
-      text = '$label Failed';
-      bg = const Color(0xFFFFECEB);
-      fg = const Color(0xFFC7362E);
-    } else if (s == 'SUBMITTED' || s == 'RUNNING' || s == 'QUEUED') {
-      text = '$label Running';
-      bg = const Color(0xFFEBF3FB);
-      fg = const Color(0xFF155EEF);
-    } else if (s == 'NEEDS_REVIEW' || s == 'RESULT_UNKNOWN' || s == 'NOT_FOUND') {
-      text = '$label Review';
-      bg = const Color(0xFFFEF6EE);
-      fg = const Color(0xFFB36712);
-    } else {
-      text = '$label $status';
-      bg = const Color(0xFFF2F4F7);
-      fg = const Color(0xFF475467);
+    switch (badge.state) {
+      case AutomationDisplayState.done:
+        bg = const Color(0xFFE8F6EF);
+        fg = const Color(0xFF1E7E4E);
+        break;
+      case AutomationDisplayState.notFound:
+        bg = const Color(0xFFFEF6EE);
+        fg = const Color(0xFFB36712);
+        break;
+      case AutomationDisplayState.review:
+        bg = const Color(0xFFFEF6EE);
+        fg = const Color(0xFFB36712);
+        break;
+      case AutomationDisplayState.running:
+        bg = const Color(0xFFEBF3FB);
+        fg = const Color(0xFF155EEF);
+        break;
+      case AutomationDisplayState.failed:
+        bg = const Color(0xFFFFECEB);
+        fg = const Color(0xFFC7362E);
+        break;
+      case AutomationDisplayState.none:
+        bg = const Color(0xFFF2F4F7);
+        fg = const Color(0xFF98A2B3);
+        break;
     }
 
     return Container(
@@ -1834,7 +1833,7 @@ class _BatchOrderRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
-        text,
+        badge.text,
         style: TextStyle(
           color: fg,
           fontSize: 10.5,
@@ -2030,9 +2029,9 @@ class _ExecutionContextDialogState extends State<_ExecutionContextDialog> {
           _buildInfoRow(
             'MDAC 注册状态',
             ctx.latestMdacStatus ?? '未注册 / 无记录',
-            badgeColor: ctx.latestMdacStatus == 'SUCCEEDED'
+            badgeColor: ctx.mdacBadge.state == AutomationDisplayState.done
                 ? const Color(0xFFE8F6EF)
-                : ctx.latestMdacStatus == 'FAILED'
+                : ctx.mdacBadge.state == AutomationDisplayState.failed
                     ? const Color(0xFFFFECEB)
                     : null,
           ),
@@ -2041,21 +2040,33 @@ class _ExecutionContextDialogState extends State<_ExecutionContextDialog> {
           _buildInfoRow(
             '最新 PIN 状态',
             ctx.latestPinStatus ?? '无 PIN 记录',
-            badgeColor: ctx.latestPinStatus != null ? const Color(0xFFE8F6EF) : null,
+            badgeColor: ctx.pinBadge.state == AutomationDisplayState.done ? const Color(0xFFE8F6EF) : null,
           ),
           _buildInfoRow(
             'Registration Check 结果',
-            ctx.latestRegistrationStatus ?? '尚未核对',
-            badgeColor: ctx.latestRegistrationStatus == 'CONFIRMED'
+            ctx.registrationBadge.text != 'REG —'
+                ? '${ctx.registrationBadge.text}${ctx.latestRegistrationNormalizedStatus != null ? ' (${ctx.latestRegistrationNormalizedStatus})' : ''}'
+                : (ctx.latestRegistrationStatus ?? '尚未核对'),
+            badgeColor: ctx.registrationBadge.state == AutomationDisplayState.done
                 ? const Color(0xFFE8F6EF)
-                : null,
+                : ctx.registrationBadge.state == AutomationDisplayState.review
+                    ? const Color(0xFFFEF6EE)
+                    : ctx.registrationBadge.state == AutomationDisplayState.failed
+                        ? const Color(0xFFFFECEB)
+                        : null,
           ),
           _buildInfoRow(
             'Visit Pass Check 结果',
-            ctx.latestVisitPassStatus ?? '尚未核对',
-            badgeColor: ctx.latestVisitPassStatus == 'CONFIRMED'
+            ctx.visitPassBadge.text != 'VP —'
+                ? '${ctx.visitPassBadge.text}${ctx.latestVisitPassNormalizedStatus != null ? ' (${ctx.latestVisitPassNormalizedStatus})' : ''}'
+                : (ctx.latestVisitPassStatus ?? '尚未核对'),
+            badgeColor: ctx.visitPassBadge.state == AutomationDisplayState.done
                 ? const Color(0xFFE8F6EF)
-                : null,
+                : (ctx.visitPassBadge.state == AutomationDisplayState.notFound || ctx.visitPassBadge.state == AutomationDisplayState.review)
+                    ? const Color(0xFFFEF6EE)
+                    : ctx.visitPassBadge.state == AutomationDisplayState.failed
+                        ? const Color(0xFFFFECEB)
+                        : null,
           ),
         ],
       ),

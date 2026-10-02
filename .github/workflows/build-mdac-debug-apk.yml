@@ -42,11 +42,10 @@ jobs:
         run: flutter pub get
 
       - name: Analyze
-        run: |
-          flutter analyze --no-fatal-infos --no-fatal-warnings || true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Test
-        run: flutter test || true
+        run: flutter test
 
       - name: Extract Version
         id: get_version
