@@ -68,7 +68,7 @@ begin
 
   return jsonb_build_object('batch_id',v_batch.id,'item_id',v_item.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.finish_human_query_task(p_item_id uuid, p_outcome text, p_screenshot_path text DEFAULT NULL::text)
  RETURNS jsonb
@@ -185,7 +185,7 @@ begin
   return jsonb_build_object('batch_id',v_batch.id,'item_id',v_item.id,'outcome',v_outcome,
     'screenshot_path',v_path,'status',v_item_status);
 end;
-$function$
+$function$;
 
 revoke execute on function public.create_human_query_task(uuid,public.automation_task_type,jsonb) from public, anon;
 grant execute on function public.create_human_query_task(uuid,public.automation_task_type,jsonb) to authenticated;
