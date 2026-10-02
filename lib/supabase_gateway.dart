@@ -1218,6 +1218,7 @@ class SupabaseGateway {
             'business_status, created_by, created_at, deleted_at',
           )
           .isFilter('deleted_at', null)
+          .isFilter('website_archived_at', null)
           .order('created_at', ascending: false)
           .limit(200);
       final pins = await client
