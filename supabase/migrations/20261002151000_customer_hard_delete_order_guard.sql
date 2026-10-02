@@ -1,5 +1,23 @@
 -- App is the single source of truth for hard-delete functions. A Customer with
 -- any Order must never reach Storage cleanup, including archived/CANCEL Orders.
+-- This common assertion is called by every private lifecycle implementation,
+-- including the renamed pre-guard implementations below. Never trust p_actor.
+create or replace function private.assert_customer_delete_actor(p_actor uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  if p_actor is null or p_actor is distinct from auth.uid() or not exists (
+    select 1 from public.profiles p
+    where p.id = p_actor and p.role = 'OWNER' and p.access_mode = 'FULL'
+      and p.is_active and p.deleted_at is null
+      and (p.access_expires_at is null or p.access_expires_at > now())
+  ) then
+    raise exception 'active full-access Owner required for permanent deletion'
+      using errcode = '42501';
+  end if;
+end $$;
+revoke all on function private.assert_customer_delete_actor(uuid)
+  from public,anon,authenticated,service_role;
+
 alter function private.preview_customer_hard_delete_internal(uuid[],uuid)
   rename to preview_customer_hard_delete_internal_before_order_guard;
 
@@ -9,6 +27,7 @@ create function private.preview_customer_hard_delete_internal(
 declare v_preview jsonb; v_rows jsonb := '[]'::jsonb; v_row jsonb;
   v_reasons jsonb; v_id uuid;
 begin
+  perform private.assert_customer_delete_actor(p_actor);
   v_preview := private.preview_customer_hard_delete_internal_before_order_guard(
     p_customer_ids,p_actor);
   for v_row in select value from jsonb_array_elements(v_preview -> 'rows') loop
@@ -40,6 +59,7 @@ create function private.assert_hard_delete_job_eligible() returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare v_actor uuid := auth.uid(); v_preview jsonb;
 begin
+  perform private.assert_customer_delete_actor(v_actor);
   if v_actor is distinct from new.created_by then
     raise exception 'delete job actor mismatch' using errcode = '42501';
   end if;
@@ -129,6 +149,7 @@ create function private.complete_customer_hard_delete_internal(
 ) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_ids uuid[]; v_preview jsonb;
 begin
+  perform private.assert_customer_delete_actor(p_actor);
   select customer_ids into v_ids from private.customer_hard_delete_jobs
     where id = p_job_id and created_by = p_actor for update;
   if v_ids is null then raise exception 'delete job not found' using errcode = 'P0002'; end if;
@@ -147,19 +168,49 @@ create or replace function public.preview_customer_hard_delete(p_customer_ids uu
 returns jsonb language sql security invoker set search_path = '' as $$
   select private.preview_customer_hard_delete_internal(p_customer_ids,auth.uid());
 $$;
+create or replace function public.create_customer_hard_delete_job(p_customer_ids uuid[])
+returns jsonb language sql security invoker set search_path = '' as $$
+  select private.create_customer_hard_delete_job_internal(p_customer_ids,auth.uid());
+$$;
+create or replace function public.mark_customer_hard_delete_storage_cleaned(p_job_id uuid)
+returns jsonb language sql security invoker set search_path = '' as $$
+  select private.mark_customer_hard_delete_storage_cleaned_internal(p_job_id,auth.uid());
+$$;
+create or replace function public.fail_customer_hard_delete(p_job_id uuid,p_error_message text)
+returns jsonb language sql security invoker set search_path = '' as $$
+  select private.fail_customer_hard_delete_internal(p_job_id,p_error_message,auth.uid());
+$$;
 create or replace function public.complete_customer_hard_delete(p_job_id uuid)
 returns jsonb language sql security invoker set search_path = '' as $$
   select private.complete_customer_hard_delete_internal(p_job_id,auth.uid());
 $$;
 
 revoke all on function private.preview_customer_hard_delete_internal(uuid[],uuid),
+  private.create_customer_hard_delete_job_internal(uuid[],uuid),
+  private.mark_customer_hard_delete_storage_cleaned_internal(uuid,uuid),
+  private.fail_customer_hard_delete_internal(uuid,text,uuid),
   private.complete_customer_hard_delete_internal(uuid,uuid),
   private.assert_hard_delete_job_eligible(),
   private.guard_pending_hard_delete_reference(),
   private.guard_pending_hard_delete_work() from public,anon,authenticated,service_role;
 grant execute on function private.preview_customer_hard_delete_internal(uuid[],uuid),
+  private.create_customer_hard_delete_job_internal(uuid[],uuid),
+  private.mark_customer_hard_delete_storage_cleaned_internal(uuid,uuid),
+  private.fail_customer_hard_delete_internal(uuid,text,uuid),
   private.complete_customer_hard_delete_internal(uuid,uuid) to authenticated;
 -- Renamed implementations are private plumbing, callable only by the wrappers.
 revoke all on function private.preview_customer_hard_delete_internal_before_order_guard(uuid[],uuid),
   private.complete_customer_hard_delete_internal_before_order_guard(uuid,uuid)
   from public,anon,authenticated,service_role;
+
+revoke all on function public.preview_customer_hard_delete(uuid[]),
+  public.create_customer_hard_delete_job(uuid[]),
+  public.mark_customer_hard_delete_storage_cleaned(uuid),
+  public.fail_customer_hard_delete(uuid,text),
+  public.complete_customer_hard_delete(uuid)
+  from public,anon,authenticated,service_role;
+grant execute on function public.preview_customer_hard_delete(uuid[]),
+  public.create_customer_hard_delete_job(uuid[]),
+  public.mark_customer_hard_delete_storage_cleaned(uuid),
+  public.fail_customer_hard_delete(uuid,text),
+  public.complete_customer_hard_delete(uuid) to authenticated;
