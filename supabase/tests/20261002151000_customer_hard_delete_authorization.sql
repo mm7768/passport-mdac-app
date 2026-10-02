@@ -1,6 +1,115 @@
 -- Isolated staging only. Run as postgres after the App guard migration.
 -- No real Customer IDs are read or deleted. The transaction rolls back.
 begin;
+-- Test-only helpers disappear with the transaction ROLLBACK. Their explicit
+-- failure SQLSTATE lets the negative-control self-test prove they reject {}.
+create function private.trash_test_assert_preview(
+  p_payload jsonb, p_customer_id uuid, p_row_count integer,
+  p_can_delete boolean, p_has_order boolean
+) returns void language plpgsql security invoker set search_path = '' as $$
+declare v_row jsonb; v_matches integer; v_orders_text text;
+begin
+  if jsonb_typeof(p_payload) is distinct from 'object'
+     or jsonb_typeof(p_payload -> 'rows') is distinct from 'array'
+     or jsonb_array_length(p_payload -> 'rows') is distinct from p_row_count then
+    raise exception 'preview rows contract changed' using errcode='ZX001';
+  end if;
+  select count(*) into v_matches from jsonb_array_elements(p_payload -> 'rows') value
+    where value ->> 'customer_id' = p_customer_id::text;
+  select value into v_row from jsonb_array_elements(p_payload -> 'rows') value
+    where value ->> 'customer_id' = p_customer_id::text limit 1;
+  if v_matches is distinct from 1
+     or jsonb_typeof(v_row -> 'customer_id') is distinct from 'string'
+     or jsonb_typeof(v_row -> 'exists') is distinct from 'boolean'
+     or (v_row ->> 'exists')::boolean is distinct from true
+     or jsonb_typeof(v_row -> 'can_delete') is distinct from 'boolean'
+     or (v_row ->> 'can_delete')::boolean is distinct from p_can_delete
+     or jsonb_typeof(v_row -> 'blocked_reasons') is distinct from 'array'
+     or jsonb_typeof(v_row -> 'record_counts') is distinct from 'object'
+     or jsonb_typeof(v_row #> '{record_counts,orders}') is distinct from 'number' then
+    raise exception 'preview row contract changed for %',p_customer_id
+      using errcode='ZX001';
+  end if;
+  v_orders_text := v_row #>> '{record_counts,orders}';
+  if v_orders_text is null or v_orders_text !~ '^[0-9]+$' then
+    raise exception 'preview orders count is not an integer' using errcode='ZX001';
+  end if;
+  if p_has_order then
+    if v_orders_text::bigint <= 0
+       or coalesce((v_row -> 'blocked_reasons') ? 'HAS_ORDER',false)
+          is distinct from true then
+      raise exception 'HAS_ORDER blocker/count missing' using errcode='ZX001';
+    end if;
+  elsif v_orders_text::bigint is distinct from 0
+        or jsonb_array_length(v_row -> 'blocked_reasons') is distinct from 0 then
+    raise exception 'No-Order preview has blocker/count' using errcode='ZX001';
+  end if;
+end $$;
+
+create function private.trash_test_assert_job(
+  p_payload jsonb, p_customer_id uuid, p_created boolean
+) returns uuid language plpgsql security invoker set search_path = '' as $$
+declare v_job_id uuid; v_matches integer;
+begin
+  if jsonb_typeof(p_payload) is distinct from 'object'
+     or jsonb_typeof(p_payload -> 'created') is distinct from 'boolean'
+     or (p_payload ->> 'created')::boolean is distinct from p_created
+     or jsonb_typeof(p_payload -> 'blocked') is distinct from 'array' then
+    raise exception 'job response contract changed' using errcode='ZX001';
+  end if;
+  if p_created then
+    if nullif(p_payload ->> 'job_id','') is null
+       or jsonb_array_length(p_payload -> 'blocked') is distinct from 0 then
+      raise exception 'created job ID/blocked contract changed' using errcode='ZX001';
+    end if;
+    v_job_id := (p_payload ->> 'job_id')::uuid;
+    return v_job_id;
+  end if;
+  select count(*) into v_matches from jsonb_array_elements(p_payload -> 'blocked') value
+    where value ->> 'customer_id' = p_customer_id::text
+      and jsonb_typeof(value -> 'reasons') = 'array'
+      and coalesce((value -> 'reasons') ? 'HAS_ORDER',false);
+  if v_matches is distinct from 1 then
+    raise exception 'blocked job missing Customer/HAS_ORDER' using errcode='ZX001';
+  end if;
+  return null;
+end $$;
+
+create function private.trash_test_assert_job_status(
+  p_payload jsonb, p_job_id uuid, p_status text
+) returns void language plpgsql security invoker set search_path = '' as $$
+begin
+  if jsonb_typeof(p_payload) is distinct from 'object'
+     or jsonb_typeof(p_payload -> 'status') is distinct from 'string'
+     or (p_payload ->> 'status') is distinct from p_status
+     or jsonb_typeof(p_payload -> 'job_id') is distinct from 'string'
+     or (p_payload ->> 'job_id') is distinct from p_job_id::text then
+    raise exception 'job status/ID response contract changed' using errcode='ZX001';
+  end if;
+end $$;
+grant execute on function private.trash_test_assert_preview(jsonb,uuid,integer,boolean,boolean),
+  private.trash_test_assert_job(jsonb,uuid,boolean),
+  private.trash_test_assert_job_status(jsonb,uuid,text) to authenticated;
+
+do $negative_control$
+declare v_customer uuid := gen_random_uuid(); v_rejected boolean := false;
+begin
+  begin
+    perform private.trash_test_assert_preview('{}'::jsonb,v_customer,1,false,true);
+  exception when sqlstate 'ZX001' then v_rejected := true; end;
+  if v_rejected is distinct from true then
+    raise exception 'negative control: missing rows was accepted';
+  end if;
+  v_rejected := false;
+  begin
+    perform private.trash_test_assert_job('{"created":null,"blocked":[]}'::jsonb,
+      v_customer,true);
+  exception when sqlstate 'ZX001' then v_rejected := true; end;
+  if v_rejected is distinct from true then
+    raise exception 'negative control: created:null was accepted';
+  end if;
+end $negative_control$;
+
 do $fixtures$
 declare v_owner uuid := gen_random_uuid(); v_operator uuid := gen_random_uuid();
   v_review uuid := gen_random_uuid(); v_empty uuid; v_with_order uuid; v_passport uuid;
@@ -39,33 +148,25 @@ select set_config('request.jwt.claim.sub',current_setting('trash_test.owner'),tr
 do $owner$
 declare v_empty uuid := current_setting('trash_test.empty')::uuid;
   v_with_order uuid := current_setting('trash_test.with_order')::uuid;
-  v_preview jsonb; v_job jsonb;
+  v_preview jsonb; v_job jsonb; v_job_id uuid;
 begin
   v_preview := public.preview_customer_hard_delete(array[v_with_order]);
-  if (v_preview #>> '{rows,0,can_delete}')::boolean
-     or not ((v_preview #> '{rows,0,blocked_reasons}') ? 'HAS_ORDER') then
-    raise exception 'Owner preview did not block historical Order';
-  end if;
+  perform private.trash_test_assert_preview(v_preview,v_with_order,1,false,true);
   v_job := public.create_customer_hard_delete_job(array[v_with_order]);
-  if (v_job ->> 'created')::boolean then
-    raise exception 'Owner created purge job for Customer with Order';
-  end if;
+  perform private.trash_test_assert_job(v_job,v_with_order,false);
   v_preview := public.preview_customer_hard_delete(array[v_empty]);
-  if not (v_preview #>> '{rows,0,can_delete}')::boolean then
-    raise exception 'No-Order Customer should be eligible';
-  end if;
+  perform private.trash_test_assert_preview(v_preview,v_empty,1,true,false);
+  v_preview := public.preview_customer_hard_delete(array[v_empty,v_with_order]);
+  perform private.trash_test_assert_preview(v_preview,v_empty,2,true,false);
+  perform private.trash_test_assert_preview(v_preview,v_with_order,2,false,true);
   v_job := public.create_customer_hard_delete_job(array[v_empty]);
-  if not (v_job ->> 'created')::boolean then
-    raise exception 'Owner could not create eligible job';
-  end if;
-  perform set_config('trash_test.job',(v_job ->> 'job_id'),true);
+  v_job_id := private.trash_test_assert_job(v_job,v_empty,true);
+  perform set_config('trash_test.job',v_job_id::text,true);
   -- A failed Storage attempt may be recorded by Owner; the subtransaction
   -- restores the awaiting job so the remaining lifecycle can be tested.
   begin
-    if (public.fail_customer_hard_delete((v_job ->> 'job_id')::uuid,'simulated')
-        ->> 'status') <> 'FAILED' then
-      raise exception 'Owner could not record failed cleanup';
-    end if;
+    perform private.trash_test_assert_job_status(
+      public.fail_customer_hard_delete(v_job_id,'simulated'),v_job_id,'FAILED');
     raise exception 'restore test job state' using errcode='ZZ001';
   exception when sqlstate 'ZZ001' then null; end;
 end $owner$;
@@ -163,13 +264,15 @@ set local role authenticated;
 select set_config('request.jwt.claim.sub',current_setting('trash_test.owner'),true);
 do $complete$
 declare v_job uuid := current_setting('trash_test.job')::uuid;
-  v_customer uuid := current_setting('trash_test.empty')::uuid;
+  v_customer uuid := current_setting('trash_test.empty')::uuid; v_result jsonb;
 begin
-  if (public.mark_customer_hard_delete_storage_cleaned(v_job) ->> 'status') <> 'STORAGE_CLEANED' then
-    raise exception 'Owner could not confirm zero-object Storage cleanup';
-  end if;
-  if (public.complete_customer_hard_delete(v_job) ->> 'status') <> 'COMPLETED' then
-    raise exception 'Owner could not complete eligible purge';
+  v_result := public.mark_customer_hard_delete_storage_cleaned(v_job);
+  perform private.trash_test_assert_job_status(v_result,v_job,'STORAGE_CLEANED');
+  v_result := public.complete_customer_hard_delete(v_job);
+  perform private.trash_test_assert_job_status(v_result,v_job,'COMPLETED');
+  if jsonb_typeof(v_result -> 'customer_count') is distinct from 'number'
+     or (v_result ->> 'customer_count')::integer is distinct from 1 then
+    raise exception 'complete response customer_count changed';
   end if;
   if exists(select 1 from public.customers where id=v_customer) then
     raise exception 'Synthetic no-Order Customer survived completed purge';
