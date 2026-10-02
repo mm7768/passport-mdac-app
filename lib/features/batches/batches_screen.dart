@@ -1260,8 +1260,9 @@ class _BatchDetailScreenState extends State<BatchDetailScreen>
   Widget _buildBottomActionBar(BuildContext context, {required bool isCompact}) {
     final count = _selectedOrderIds.length;
     final isBlocked = _isBatchClosed || _error != null;
+    final isNarrow = isCompact || MediaQuery.of(context).size.width < 1050;
 
-    if (isCompact) {
+    if (isNarrow) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: const BoxDecoration(
@@ -1391,73 +1392,76 @@ class _BatchDetailScreenState extends State<BatchDetailScreen>
       ),
       child: SafeArea(
         top: false,
-        child: Row(
-          children: [
-            Checkbox(
-              value: _selectedOrderIds.isNotEmpty &&
-                  _selectedOrderIds.length == _filteredOrders.length,
-              tristate: _selectedOrderIds.isNotEmpty &&
-                  _selectedOrderIds.length < _filteredOrders.length,
-              onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
-            ),
-            Text(
-              count > 0 ? '已选 $count 单' : '全选待办',
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            if (count > 0) ...[
-              const SizedBox(width: 8),
-              TextButton(
-                onPressed: isBlocked ? null : _selectOnlyActive,
-                child: const Text('仅选中未完成项'),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              Checkbox(
+                value: _selectedOrderIds.isNotEmpty &&
+                    _selectedOrderIds.length == _filteredOrders.length,
+                tristate: _selectedOrderIds.isNotEmpty &&
+                    _selectedOrderIds.length < _filteredOrders.length,
+                onChanged: isBlocked ? null : (val) => _toggleSelectAll(),
               ),
-              TextButton(
-                onPressed: () => setState(() => _selectedOrderIds.clear()),
-                child: const Text('取消全选'),
+              Text(
+                count > 0 ? '已选 $count 单' : '全选待办',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              if (count > 0) ...[
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: isBlocked ? null : _selectOnlyActive,
+                  child: const Text('仅选中未完成项'),
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _selectedOrderIds.clear()),
+                  child: const Text('取消全选'),
+                ),
+              ],
+              const SizedBox(width: 24),
+              FilledButton.icon(
+                icon: const Icon(Icons.flight_takeoff_rounded, size: 18),
+                label: const Text('启动 MDAC 注册'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                ),
+                onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.pin_rounded, size: 18),
+                label: const Text('获取 PIN'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                onPressed:
+                    (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.assignment_turned_in_rounded, size: 18),
+                label: const Text('核对 Registration'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                onPressed: (count == 0 || isBlocked)
+                    ? null
+                    : () => _startQueryTask(TaskType.registrationCheck),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.fact_check_rounded, size: 18),
+                label: const Text('核对 Visit Pass'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                onPressed: (count == 0 || isBlocked)
+                    ? null
+                    : () => _startQueryTask(TaskType.visitPassCheck),
               ),
             ],
-            const Spacer(),
-            FilledButton.icon(
-              icon: const Icon(Icons.flight_takeoff_rounded, size: 18),
-              label: const Text('启动 MDAC 注册'),
-              style: FilledButton.styleFrom(
-                backgroundColor: AppTheme.teal,
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              ),
-              onPressed: (count == 0 || isBlocked) ? null : _startMdacRegistration,
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.pin_rounded, size: 18),
-              label: const Text('获取 PIN'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              onPressed:
-                  (count == 0 || isBlocked) ? null : () => _startQueryTask(TaskType.gmailPin),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.assignment_turned_in_rounded, size: 18),
-              label: const Text('核对 Registration'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              onPressed: (count == 0 || isBlocked)
-                  ? null
-                  : () => _startQueryTask(TaskType.registrationCheck),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.fact_check_rounded, size: 18),
-              label: const Text('核对 Visit Pass'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              onPressed: (count == 0 || isBlocked)
-                  ? null
-                  : () => _startQueryTask(TaskType.visitPassCheck),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -1606,8 +1610,11 @@ class _BatchOrderRow extends StatelessWidget {
                     ),
                   ],
                 ),
+                const SizedBox(height: 7),
+                // Fourth row: Automation Progress (MDAC / PIN / REG / VP)
+                _buildAutomationStepsRow(order),
                 const SizedBox(height: 6),
-                // Fourth row: Order ID
+                // Fifth row: Order ID
                 Tooltip(
                   message: '稳定 Order / Case ID: ${order.orderId}',
                   child: Text(
@@ -1743,15 +1750,22 @@ class _BatchOrderRow extends StatelessWidget {
                   ],
                 ),
               ),
-              // 状态标签
+              // 状态标签与自动化进度
               Expanded(
-                flex: 2,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
+                flex: 3,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildStatusChip(order.businessStatus),
-                    _buildMembershipChip(order.membershipStatus),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        _buildStatusChip(order.businessStatus),
+                        _buildMembershipChip(order.membershipStatus),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    _buildAutomationStepsRow(order),
                   ],
                 ),
               ),
@@ -1764,6 +1778,68 @@ class _BatchOrderRow extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildAutomationStepsRow(AppBatchOrder order) {
+    return Wrap(
+      spacing: 5,
+      runSpacing: 4,
+      children: [
+        _buildAutomationBadge('MDAC', order.latestMdacStatus),
+        _buildAutomationBadge('PIN', order.latestPinStatus),
+        _buildAutomationBadge('REG', order.latestRegistrationStatus),
+        _buildAutomationBadge('VP', order.latestVisitPassStatus),
+      ],
+    );
+  }
+
+  Widget _buildAutomationBadge(String label, String? status) {
+    String text;
+    Color bg;
+    Color fg;
+
+    final s = status?.trim().toUpperCase();
+    if (s == null || s.isEmpty) {
+      text = '$label —';
+      bg = const Color(0xFFF2F4F7);
+      fg = const Color(0xFF98A2B3);
+    } else if (s == 'SUCCEEDED' || s == 'CONFIRMED' || s == 'VERIFIED' || s == 'RECEIVED') {
+      text = '$label Done';
+      bg = const Color(0xFFE8F6EF);
+      fg = const Color(0xFF1E7E4E);
+    } else if (s == 'FAILED' || s == 'PARSE_FAILED' || s == 'INVALID') {
+      text = '$label Failed';
+      bg = const Color(0xFFFFECEB);
+      fg = const Color(0xFFC7362E);
+    } else if (s == 'SUBMITTED' || s == 'RUNNING' || s == 'QUEUED') {
+      text = '$label Running';
+      bg = const Color(0xFFEBF3FB);
+      fg = const Color(0xFF155EEF);
+    } else if (s == 'NEEDS_REVIEW' || s == 'RESULT_UNKNOWN' || s == 'NOT_FOUND') {
+      text = '$label Review';
+      bg = const Color(0xFFFEF6EE);
+      fg = const Color(0xFFB36712);
+    } else {
+      text = '$label $status';
+      bg = const Color(0xFFF2F4F7);
+      fg = const Color(0xFF475467);
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: fg,
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -1951,6 +2027,17 @@ class _ExecutionContextDialogState extends State<_ExecutionContextDialog> {
             style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
           ),
           const SizedBox(height: 8),
+          _buildInfoRow(
+            'MDAC 注册状态',
+            ctx.latestMdacStatus ?? '未注册 / 无记录',
+            badgeColor: ctx.latestMdacStatus == 'SUCCEEDED'
+                ? const Color(0xFFE8F6EF)
+                : ctx.latestMdacStatus == 'FAILED'
+                    ? const Color(0xFFFFECEB)
+                    : null,
+          ),
+          if (ctx.latestMdacRegistrationId != null)
+            _buildInfoRow('MDAC 注册记录 ID', ctx.latestMdacRegistrationId!, isMono: true, copyable: true),
           _buildInfoRow(
             '最新 PIN 状态',
             ctx.latestPinStatus ?? '无 PIN 记录',

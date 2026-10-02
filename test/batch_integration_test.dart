@@ -64,6 +64,10 @@ void main() {
         'membership_status': 'ACTIVE',
         'arrival_date': '2026-10-01',
         'departure_date': '2026-10-08',
+        'latest_mdac_status': 'SUCCEEDED',
+        'latest_pin_status': 'RECEIVED',
+        'latest_registration_status': 'CONFIRMED',
+        'latest_visit_pass_status': 'CONFIRMED',
       };
 
       final order = AppBatchOrder.fromMap(map);
@@ -80,6 +84,10 @@ void main() {
       expect(order.isCompleted, isFalse);
       expect(order.arrivalDate, '2026-10-01');
       expect(order.departureDate, '2026-10-08');
+      expect(order.latestMdacStatus, 'SUCCEEDED');
+      expect(order.latestPinStatus, 'RECEIVED');
+      expect(order.latestRegistrationStatus, 'CONFIRMED');
+      expect(order.latestVisitPassStatus, 'CONFIRMED');
     });
 
     test('AppOrderExecutionContext.fromMap parses complete execution details and worker records', () {
@@ -102,6 +110,8 @@ void main() {
         'business_status': 'CURRENT',
         'workflow_status': 'submitted',
         'priority': 'NORMAL',
+        'latest_mdac_registration_id': 'mdac-uuid-001',
+        'latest_mdac_status': 'SUCCEEDED',
         'latest_pin_record_id': 'pin-uuid-001',
         'latest_pin_status': 'VERIFIED',
         'latest_registration_check_id': 'reg-uuid-001',
@@ -116,6 +126,8 @@ void main() {
       expect(ctx.fullName, '张三 (ZHANG SAN)');
       expect(ctx.passportNumber, 'E12345678');
       expect(ctx.nationality, 'CHN');
+      expect(ctx.latestMdacRegistrationId, 'mdac-uuid-001');
+      expect(ctx.latestMdacStatus, 'SUCCEEDED');
       expect(ctx.latestPinStatus, 'VERIFIED');
       expect(ctx.latestRegistrationStatus, 'CONFIRMED');
       expect(ctx.latestVisitPassStatus, 'CONFIRMED');
@@ -598,6 +610,372 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('已选 1 单'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Batch MDAC & Automation Status Specification Tests (ANTIGRAVITY_BATCH_MDAC_STATUS_FIX)', () {
+    // Test 1: MDAC SUCCEEDED shows Done
+    testWidgets('Test 1: MDAC SUCCEEDED displays Done in Batch Detail and keeps disposition ACTIVE', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-001',
+        batchId: 'b-001',
+        orderId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        orderNo: 'AA0180',
+        customerId: 'cust-001',
+        caseId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        displayName: 'ZHANG YIXIN',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: 'SUCCEEDED',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('MDAC Done'), findsWidgets);
+      // Invariant: disposition remains ACTIVE, order is not over-completed
+      expect(order.membershipStatus, equals('ACTIVE'));
+      expect(order.isActive, isTrue);
+      expect(order.isCompleted, isFalse);
+    });
+
+    // Test 2: null MDAC record shows MDAC —
+    testWidgets('Test 2: null MDAC record displays MDAC —', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-002',
+        batchId: 'b-001',
+        orderId: 'case-002',
+        orderNo: 'AA0181',
+        customerId: 'cust-002',
+        caseId: 'case-002',
+        displayName: 'WANG WU',
+        passportNumber: 'E99887766',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: null,
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('MDAC —'), findsWidgets);
+    });
+
+    // Test 3: MDAC FAILED shows Failed state without affecting other statuses
+    testWidgets('Test 3: MDAC Failed displays Failed state and does not affect other statuses', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-003',
+        batchId: 'b-001',
+        orderId: 'case-003',
+        orderNo: 'AA0182',
+        customerId: 'cust-003',
+        caseId: 'case-003',
+        displayName: 'LI SI',
+        passportNumber: 'E55443322',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: 'FAILED',
+        latestPinStatus: 'RECEIVED',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('MDAC Failed'), findsWidgets);
+      expect(find.text('PIN Done'), findsWidgets);
+      expect(find.text('REG —'), findsWidgets);
+      expect(find.text('VP —'), findsWidgets);
+    });
+
+    // Test 4: Strict Case Isolation (Same customer, two Orders)
+    testWidgets('Test 4: Same Customer with two Orders strictly isolates MDAC status by case_id', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 2,
+        completedCount: 0,
+        pendingCount: 2,
+      );
+      const sharedCustomerId = 'same-customer-uuid-888';
+      final order1 = AppBatchOrder(
+        membershipId: 'mem-101',
+        batchId: 'b-001',
+        orderId: 'case-order-1-uuid',
+        orderNo: 'AA0180',
+        customerId: sharedCustomerId,
+        caseId: 'case-order-1-uuid',
+        displayName: 'ZHANG YIXIN',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: 'SUCCEEDED',
+      );
+      final order2 = AppBatchOrder(
+        membershipId: 'mem-102',
+        batchId: 'b-001',
+        orderId: 'case-order-2-uuid',
+        orderNo: 'AA0181',
+        customerId: sharedCustomerId,
+        caseId: 'case-order-2-uuid',
+        displayName: 'ZHANG YIXIN',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: null, // Order 2 has no MDAC
+      );
+      repo.mockOrders = [order1, order2];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Order 1 must display Done, Order 2 must display —
+      expect(find.text('MDAC Done'), findsOneWidget);
+      expect(find.text('MDAC —'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    // Test 5: 360px mobile responsive test with full automation badges
+    testWidgets('Test 5: Batch Detail renders without overflow on 360px screen with automation badges and operable buttons', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-001',
+        batchId: 'b-001',
+        orderId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        orderNo: 'AA0180',
+        customerId: 'cust-001',
+        caseId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        displayName: 'ZHANG YIXIN (VERY LONG CUSTOMER NAME)',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'URGENT',
+        arrivalDate: '2026-10-01',
+        departureDate: '2026-10-08',
+        latestMdacStatus: 'SUCCEEDED',
+        latestPinStatus: 'RECEIVED',
+        latestRegistrationStatus: 'CONFIRMED',
+        latestVisitPassStatus: 'CONFIRMED',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // No overflow
+      expect(tester.takeException(), isNull);
+
+      // Automation badges visible
+      expect(find.text('MDAC Done'), findsOneWidget);
+      expect(find.text('PIN Done'), findsOneWidget);
+      expect(find.text('REG Done'), findsOneWidget);
+      expect(find.text('VP Done'), findsOneWidget);
+
+      // Select order and test bottom bar buttons
+      await tester.tap(find.byType(Checkbox).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('已选 1 单'), findsOneWidget);
+      expect(find.text('启动 MDAC 注册'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    // Test 6: Order Execution Context dialog shows latest MDAC status and ID
+    testWidgets('Test 6: Execution Context dialog displays latest MDAC registration status and ID', (tester) async {
+      final repo = _TestMockDemoRepository();
+      final batch = AppOperationalBatch(
+        batchId: 'b-001',
+        batchName: 'OB0004',
+        batchNo: 'OB0004',
+        status: 'OPEN',
+        createdAt: DateTime.parse('2026-09-30T10:00:00Z'),
+        totalCount: 1,
+        completedCount: 0,
+        pendingCount: 1,
+      );
+      final order = AppBatchOrder(
+        membershipId: 'mem-001',
+        batchId: 'b-001',
+        orderId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        orderNo: 'AA0180',
+        customerId: 'cust-001',
+        caseId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        displayName: 'ZHANG YIXIN',
+        passportNumber: 'ES3458078',
+        businessStatus: 'CURRENT',
+        membershipStatus: 'ACTIVE',
+        priority: 'NORMAL',
+        latestMdacStatus: 'SUCCEEDED',
+      );
+      repo.mockOrders = [order];
+      repo.mockActiveBatches = [batch];
+      repo.mockContext = const AppOrderExecutionContext(
+        orderId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        caseId: 'fe0b0c53-430e-4dbb-b6a9-97bb513b309d',
+        orderNo: 'AA0180',
+        customerId: 'cust-001',
+        fullName: 'ZHANG YIXIN',
+        passportNumber: 'ES3458078',
+        nationality: 'CHN',
+        businessStatus: 'CURRENT',
+        workflowStatus: 'MDAC_COMPLETED',
+        priority: 'NORMAL',
+        latestMdacRegistrationId: '7c3dc2e9-3b07-4f14-a8e0-26471437fa80',
+        latestMdacStatus: 'SUCCEEDED',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BatchDetailScreen(
+              batch: batch,
+              repository: repo,
+              actor: 'Tester',
+              role: UserRole.owner,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Tap info button to open context dialog
+      await tester.tap(find.byIcon(Icons.info_outline_rounded).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('ZHANG YIXIN 执行上下文'), findsOneWidget);
+      expect(find.text('MDAC 注册状态'), findsOneWidget);
+      expect(find.text('SUCCEEDED'), findsOneWidget);
+      expect(find.text('MDAC 注册记录 ID'), findsOneWidget);
+      expect(find.text('7c3dc2e9-3b07-4f14-a8e0-26471437fa80'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

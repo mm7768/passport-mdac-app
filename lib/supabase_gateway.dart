@@ -1738,6 +1738,7 @@ class SupabaseGateway {
   }
 
   /// 获取指定 OPEN 批次内当前有效的订单列表 (排除已 released 项)
+  /// 支持 Plan A (RPC 直接返回四段状态) 与 Plan B (单次批量查询归并，无 N+1)
   static Future<List<Map<String, dynamic>>> fetchAppBatchOrders(
     String batchId,
   ) async {
@@ -1749,10 +1750,103 @@ class SupabaseGateway {
     if (result is! List) {
       return const <Map<String, dynamic>>[];
     }
-    return result
+    final rows = result
         .whereType<Map>()
         .map((row) => Map<String, dynamic>.from(row))
-        .toList(growable: false);
+        .toList(growable: true);
+
+    if (rows.isEmpty) return rows;
+
+    // Check if backend RPC already returned latest_mdac_status (Plan A)
+    final hasMdacInRpc = rows.first.containsKey('latest_mdac_status');
+    if (!hasMdacInRpc) {
+      // Automatic single-batch enrichment fallback (Plan B):
+      final caseIds = rows
+          .map((r) => (r['case_id'] ?? r['order_id'] ?? '').toString().trim())
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+
+      if (caseIds.isNotEmpty) {
+        try {
+          final futures = await Future.wait([
+            // MDAC registrations (strictly bound by case_id)
+            client
+                .from('mdac_registrations')
+                .select('case_id, registration_status, created_at')
+                .inFilter('case_id', caseIds)
+                .order('created_at', ascending: false),
+            // PIN records (strictly bound by case_id)
+            client
+                .from('email_pin_records')
+                .select('case_id, status, created_at')
+                .inFilter('case_id', caseIds)
+                .order('created_at', ascending: false),
+            // Registration checks (strictly bound by case_id)
+            client
+                .from('registration_checks')
+                .select('case_id, result_status, created_at')
+                .inFilter('case_id', caseIds)
+                .order('created_at', ascending: false),
+            // Visit pass checks (strictly bound by case_id)
+            client
+                .from('visit_pass_checks')
+                .select('case_id, result_status, created_at')
+                .inFilter('case_id', caseIds)
+                .order('created_at', ascending: false),
+          ]);
+
+          final mdacRows = (futures[0] as List).whereType<Map>();
+          final pinRows = (futures[1] as List).whereType<Map>();
+          final regRows = (futures[2] as List).whereType<Map>();
+          final vpRows = (futures[3] as List).whereType<Map>();
+
+          final mdacMap = <String, String>{};
+          for (final r in mdacRows) {
+            final cid = r['case_id']?.toString();
+            if (cid != null && !mdacMap.containsKey(cid)) {
+              mdacMap[cid] = (r['registration_status'] ?? '').toString();
+            }
+          }
+
+          final pinMap = <String, String>{};
+          for (final r in pinRows) {
+            final cid = r['case_id']?.toString();
+            if (cid != null && !pinMap.containsKey(cid)) {
+              pinMap[cid] = (r['status'] ?? '').toString();
+            }
+          }
+
+          final regMap = <String, String>{};
+          for (final r in regRows) {
+            final cid = r['case_id']?.toString();
+            if (cid != null && !regMap.containsKey(cid)) {
+              regMap[cid] = (r['result_status'] ?? '').toString();
+            }
+          }
+
+          final vpMap = <String, String>{};
+          for (final r in vpRows) {
+            final cid = r['case_id']?.toString();
+            if (cid != null && !vpMap.containsKey(cid)) {
+              vpMap[cid] = (r['result_status'] ?? '').toString();
+            }
+          }
+
+          for (final row in rows) {
+            final cid = (row['case_id'] ?? row['order_id'] ?? '').toString().trim();
+            row['latest_mdac_status'] = mdacMap[cid];
+            row['latest_pin_status'] = pinMap[cid];
+            row['latest_registration_status'] = regMap[cid];
+            row['latest_visit_pass_status'] = vpMap[cid];
+          }
+        } catch (_) {
+          // If direct query fails (e.g. offline/mock), keep existing row attributes
+        }
+      }
+    }
+
+    return rows;
   }
 
   /// 获取指定订单的执行上下文 (包含客户身份快照及最新自动化执行记录状态)
@@ -1764,13 +1858,30 @@ class SupabaseGateway {
       'get_app_order_execution_context',
       params: {'p_order_id': orderId},
     );
+    Map<String, dynamic>? data;
     if (result is List && result.isNotEmpty && result.first is Map) {
-      return Map<String, dynamic>.from(result.first as Map);
+      data = Map<String, dynamic>.from(result.first as Map);
+    } else if (result is Map) {
+      data = Map<String, dynamic>.from(result);
     }
-    if (result is Map) {
-      return Map<String, dynamic>.from(result);
+    if (data == null) return null;
+
+    if (!data.containsKey('latest_mdac_status')) {
+      try {
+        final mdacRows = await client
+            .from('mdac_registrations')
+            .select('id, registration_status')
+            .eq('case_id', orderId)
+            .order('created_at', ascending: false)
+            .limit(1);
+        if (mdacRows.isNotEmpty) {
+          final first = mdacRows.first;
+          data['latest_mdac_registration_id'] = first['id']?.toString();
+          data['latest_mdac_status'] = first['registration_status']?.toString();
+        }
+      } catch (_) {}
     }
-    return null;
+    return data;
   }
 
 

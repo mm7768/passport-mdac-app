@@ -63,6 +63,10 @@ class AppBatchOrder {
     required this.membershipStatus,
     this.arrivalDate,
     this.departureDate,
+    this.latestMdacStatus,
+    this.latestPinStatus,
+    this.latestRegistrationStatus,
+    this.latestVisitPassStatus,
   });
 
   final String membershipId;
@@ -84,8 +88,58 @@ class AppBatchOrder {
   final String? arrivalDate;
   final String? departureDate;
 
+  /// 四段式流程状态 (MDAC / PIN / Registration Check / Visit Pass Check)
+  final String? latestMdacStatus;
+  final String? latestPinStatus;
+  final String? latestRegistrationStatus;
+  final String? latestVisitPassStatus;
+
   bool get isCompleted => membershipStatus.toUpperCase() == 'COMPLETED';
   bool get isActive => membershipStatus.toUpperCase() == 'ACTIVE';
+
+  AppBatchOrder copyWith({
+    String? membershipId,
+    String? batchId,
+    String? orderId,
+    String? caseId,
+    String? orderNo,
+    String? customerId,
+    String? passportId,
+    String? displayName,
+    String? passportNumber,
+    String? businessStatus,
+    String? workflowStatus,
+    String? priority,
+    String? membershipStatus,
+    String? arrivalDate,
+    String? departureDate,
+    String? latestMdacStatus,
+    String? latestPinStatus,
+    String? latestRegistrationStatus,
+    String? latestVisitPassStatus,
+  }) {
+    return AppBatchOrder(
+      membershipId: membershipId ?? this.membershipId,
+      batchId: batchId ?? this.batchId,
+      orderId: orderId ?? this.orderId,
+      caseId: caseId ?? this.caseId,
+      orderNo: orderNo ?? this.orderNo,
+      customerId: customerId ?? this.customerId,
+      passportId: passportId ?? this.passportId,
+      displayName: displayName ?? this.displayName,
+      passportNumber: passportNumber ?? this.passportNumber,
+      businessStatus: businessStatus ?? this.businessStatus,
+      workflowStatus: workflowStatus ?? this.workflowStatus,
+      priority: priority ?? this.priority,
+      membershipStatus: membershipStatus ?? this.membershipStatus,
+      arrivalDate: arrivalDate ?? this.arrivalDate,
+      departureDate: departureDate ?? this.departureDate,
+      latestMdacStatus: latestMdacStatus ?? this.latestMdacStatus,
+      latestPinStatus: latestPinStatus ?? this.latestPinStatus,
+      latestRegistrationStatus: latestRegistrationStatus ?? this.latestRegistrationStatus,
+      latestVisitPassStatus: latestVisitPassStatus ?? this.latestVisitPassStatus,
+    );
+  }
 
   factory AppBatchOrder.fromMap(Map<String, dynamic> map) {
     final rawArrival = map['arrival_date']?.toString();
@@ -107,6 +161,10 @@ class AppBatchOrder {
       membershipStatus: (map['membership_status'] ?? 'ACTIVE').toString(),
       arrivalDate: rawArrival,
       departureDate: rawDeparture,
+      latestMdacStatus: map['latest_mdac_status']?.toString(),
+      latestPinStatus: map['latest_pin_status']?.toString(),
+      latestRegistrationStatus: map['latest_registration_status']?.toString(),
+      latestVisitPassStatus: map['latest_visit_pass_status']?.toString(),
     );
   }
 }
@@ -133,6 +191,8 @@ class AppOrderExecutionContext {
     required this.businessStatus,
     required this.workflowStatus,
     required this.priority,
+    this.latestMdacRegistrationId,
+    this.latestMdacStatus,
     this.latestPinRecordId,
     this.latestPinStatus,
     this.latestRegistrationCheckId,
@@ -159,6 +219,8 @@ class AppOrderExecutionContext {
   final String businessStatus;
   final String workflowStatus;
   final String priority;
+  final String? latestMdacRegistrationId;
+  final String? latestMdacStatus;
   final String? latestPinRecordId;
   final String? latestPinStatus;
   final String? latestRegistrationCheckId;
@@ -186,6 +248,8 @@ class AppOrderExecutionContext {
       businessStatus: (map['business_status'] ?? '').toString(),
       workflowStatus: (map['workflow_status'] ?? '').toString(),
       priority: (map['priority'] ?? 'NORMAL').toString(),
+      latestMdacRegistrationId: map['latest_mdac_registration_id']?.toString(),
+      latestMdacStatus: map['latest_mdac_status']?.toString(),
       latestPinRecordId: map['latest_pin_record_id']?.toString(),
       latestPinStatus: map['latest_pin_status']?.toString(),
       latestRegistrationCheckId: map['latest_registration_check_id']?.toString(),
