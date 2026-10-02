@@ -16,15 +16,32 @@ declare
   v_cleared_reg int := 0;
   v_cleared_vp int := 0;
 begin
-  if auth.role() is distinct from 'service_role' and not private.is_active_user() then
-    raise exception 'active user required';
+  if auth.role() is distinct from 'service_role'
+     and (auth.uid() is null or not private.is_active_user()) then
+    raise exception 'active user required' using errcode = '42501';
+  end if;
+
+  -- Evidence and Storage deletion is irreversible. Operators may still call
+  -- the non-destructive statuses used by the App's status-update flow.
+  if v_status in (
+    'PENDING', 'MDAC_REGISTERING', 'MDAC_REGISTERED', 'PIN_PENDING',
+    'PIN_RECEIVED', 'VISIT_PASS_NOT_FOUND', 'ACTION_REQUIRED',
+    'REGISTRATION_CHECKED'
+  ) and auth.role() is distinct from 'service_role'
+    and not exists (
+      select 1 from public.profiles p
+      where p.id = auth.uid() and p.role = 'OWNER'
+        and p.is_active and p.deleted_at is null
+    ) then
+    raise exception 'active Owner required for evidence rollback'
+      using errcode = '42501';
   end if;
 
   if p_customer_ids is null or array_length(p_customer_ids, 1) = 0 then
     return jsonb_build_object('success', true, 'cleared_reg', 0, 'cleared_vp', 0);
   end if;
 
-  if v_status in ('PENDING', 'MDAC_REGISTERING', 'MDAC_REGISTERED', 'PIN_PENDING', 'PIN_RECEIVED', 'ACTION_REQUIRED') then
+  if v_status in ('PENDING', 'MDAC_REGISTERING', 'MDAC_REGISTERED', 'PIN_PENDING', 'PIN_RECEIVED', 'VISIT_PASS_NOT_FOUND', 'ACTION_REQUIRED') then
     select coalesce(array_agg(screenshot_path) filter (where screenshot_path is not null and length(trim(screenshot_path)) > 0), array[]::text[])
       into v_reg_paths
       from public.registration_checks
@@ -100,6 +117,8 @@ begin
 end;
 $$;
 
-revoke execute on function public.rollback_customer_evidence(uuid[], text) from public, anon;
+revoke execute on function public.rollback_customer_evidence(uuid[], text)
+  from public, anon, authenticated, service_role;
 grant execute on function public.rollback_customer_evidence(uuid[], text) to authenticated;
+grant execute on function public.rollback_customer_evidence(uuid[], text) to service_role;
 grant execute on function public.rollback_customer_evidence(uuid[], text) to service_role;

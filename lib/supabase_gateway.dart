@@ -1357,22 +1357,21 @@ class SupabaseGateway {
   }) async {
     if (customerIds.isEmpty) return {'success': true};
     final client = _requiredClient;
-    try {
-      final res = await client.rpc(
-        'rollback_customer_evidence',
-        params: {
-          'p_customer_ids': customerIds,
-          'p_target_status': targetStatus,
-        },
-      );
-      if (res is Map) {
-        return Map<String, dynamic>.from(res);
-      }
-      return {'success': true};
-    } catch (_) {
-      // 容错处理：若 RPC 异常，不影响主状态流转
-      return {'success': false};
+    final res = await client.rpc(
+      'rollback_customer_evidence',
+      params: {
+        'p_customer_ids': customerIds,
+        'p_target_status': targetStatus,
+      },
+    );
+    if (res is! Map) {
+      throw const FormatException('Supabase 未返回证据回退结果。');
     }
+    final result = Map<String, dynamic>.from(res);
+    if (result['success'] != true) {
+      throw const FormatException('证据回退未完成，客户业务状态未更新。');
+    }
+    return result;
   }
 
   static Future<List<Map<String, dynamic>>> bulkUpdateCustomerCreatedAt({
