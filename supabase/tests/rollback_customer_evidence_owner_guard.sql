@@ -76,8 +76,10 @@ begin
     if not v_denied then
       raise exception 'review-only OWNER was not denied';
     end if;
+    perform set_config('request.jwt.claim.sub','',true);
     execute 'update public.profiles set access_mode=''FULL'',
       access_expires_at=null where id=$1' using v_owner;
+    perform set_config('request.jwt.claim.sub',v_owner::text,true);
   end if;
 
   update public.profiles set is_active=false where id=v_owner;

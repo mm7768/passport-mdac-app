@@ -120,7 +120,8 @@ begin
     (v_review,'purge-review-'||v_review::text||'@example.invalid','{"name":"Purge Test Reviewer"}'::jsonb);
   update public.profiles set role='OWNER',access_mode='FULL' where id=v_owner;
   update public.profiles set role='OPERATOR',access_mode='FULL' where id=v_operator;
-  update public.profiles set role='OPERATOR',access_mode='REVIEW_ONLY' where id=v_review;
+  update public.profiles set role='OPERATOR',access_mode='REVIEW_ONLY',
+    access_expires_at=now()+interval '3 days' where id=v_review;
   insert into public.customers(full_name,passport_number,date_of_birth,place_of_birth,
     nationality,gender,passport_expiry_date,created_by)
   values('PURGE EMPTY TEST','P'||substr(replace(gen_random_uuid()::text,'-',''),1,12),
