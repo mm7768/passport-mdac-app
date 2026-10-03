@@ -109,6 +109,22 @@ begin
     select 1 from public.automation_items where batch_id=v_mdac_other
   ) then raise exception 'cross-user customer merge was not denied'; end if;
 
+  -- The deployed target-first overload must not bypass the canonical guard.
+  if to_regprocedure('public.merge_customers_into_batch(uuid,uuid[],text)') is not null then
+    if has_function_privilege('anon',
+      'public.merge_customers_into_batch(uuid,uuid[],text)','EXECUTE')
+      or has_function_privilege('authenticated',
+      'private.merge_customers_target_first_before_owner_guard(uuid,uuid[],text)','EXECUTE') then
+      raise exception 'target-first overload or legacy body has unsafe ACL';
+    end if;
+    v_denied := false;
+    begin
+      perform public.merge_customers_into_batch(v_mdac_target,array[v_bob_customer],'owner');
+    exception when sqlstate '42501' then v_denied := true;
+    end;
+    if not v_denied then raise exception 'target-first cross-user merge accepted'; end if;
+  end if;
+
   -- Own-batch paths remain usable for Operators.
   v_result := public.merge_automation_batches(v_alice_batch,v_alice_target);
   if (v_result->>'success')::boolean is distinct from true or not exists (
@@ -127,6 +143,12 @@ begin
   if (v_result->>'moved_count')::int is distinct from 1 then
     raise exception 'own-customer merge failed';
   end if;
+  if to_regprocedure('public.merge_customers_into_batch(uuid,uuid[],text)') is not null then
+    v_result := public.merge_customers_into_batch(v_mdac_target,array[v_alice_customer]);
+    if (v_result->>'success')::boolean is distinct from true then
+      raise exception 'target-first own-customer merge failed';
+    end if;
+  end if;
 
   -- Website's later profile migration introduces review-only access.
   if exists (
@@ -143,6 +165,14 @@ begin
     exception when sqlstate '42501' then v_denied := true;
     end;
     if not v_denied then raise exception 'review-only Owner was not denied'; end if;
+    if to_regprocedure('public.merge_customers_into_batch(uuid,uuid[],text)') is not null then
+      v_denied := false;
+      begin
+        perform public.merge_customers_into_batch(v_mdac_target,array[v_alice_customer]);
+      exception when sqlstate '42501' then v_denied := true;
+      end;
+      if not v_denied then raise exception 'target-first review-only Owner accepted'; end if;
+    end if;
   end if;
 end;
 $test$;
