@@ -6,7 +6,9 @@ begin
     where tablename = 'registration_checks' and policyname = 'registration_checks_delete_active'
   ) then
     create policy registration_checks_delete_active on public.registration_checks 
-    for delete to authenticated using (private.is_active_user());
+    for delete to authenticated using (
+      private.is_active_user() and private.is_owner()
+    );
   end if;
 
   if not exists (
@@ -14,7 +16,9 @@ begin
     where tablename = 'visit_pass_checks' and policyname = 'visit_pass_checks_delete_active'
   ) then
     create policy visit_pass_checks_delete_active on public.visit_pass_checks 
-    for delete to authenticated using (private.is_active_user());
+    for delete to authenticated using (
+      private.is_active_user() and private.is_owner()
+    );
   end if;
 end $$;
 
@@ -32,8 +36,10 @@ declare
   v_path text;
   v_type text := upper(trim(coalesce(p_type, '')));
 begin
-  if not private.is_active_user() then
-    raise exception 'active user required';
+  if auth.role() is distinct from 'service_role'
+     and (not private.is_active_user() or not private.is_owner()) then
+    raise exception 'active Owner required for evidence deletion'
+      using errcode = '42501';
   end if;
 
   if v_type in ('REGISTRATION_CHECK', 'CHECK_REGISTRATION') then

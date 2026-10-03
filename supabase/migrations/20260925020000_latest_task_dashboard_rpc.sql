@@ -4,7 +4,8 @@ RETURNS jsonb
 LANGUAGE sql
 SECURITY DEFINER
 STABLE
-AS 
+SET search_path = ''
+AS $$
 WITH latest_batches AS (
     SELECT DISTINCT ON (b.task_type)
         b.id,
@@ -138,7 +139,9 @@ SELECT COALESCE(
     ),
     '[]'::jsonb
 )
-FROM latest_batches lb;
-;
+FROM latest_batches lb
+WHERE private.is_active_user();
+$$;
 
-GRANT EXECUTE ON FUNCTION public.get_latest_task_dashboard() TO authenticated, anon, service_role;
+REVOKE ALL ON FUNCTION public.get_latest_task_dashboard() FROM public, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.get_latest_task_dashboard() TO authenticated, service_role;

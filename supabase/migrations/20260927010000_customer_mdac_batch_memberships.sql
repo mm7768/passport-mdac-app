@@ -23,6 +23,7 @@ AS $$
     JOIN public.automation_items i
       ON i.batch_id = b.id
     WHERE b.task_type = 'MDAC_REGISTRATION'
+      AND private.is_active_user()
     GROUP BY
         b.id,
         b.note,
@@ -31,6 +32,8 @@ AS $$
         b.created_at DESC;
 $$;
 
+REVOKE ALL ON FUNCTION public.get_mdac_batch_memberships()
+FROM public, anon, authenticated, service_role;
 GRANT EXECUTE
 ON FUNCTION public.get_mdac_batch_memberships()
-TO authenticated, anon, service_role;
+TO authenticated, service_role;

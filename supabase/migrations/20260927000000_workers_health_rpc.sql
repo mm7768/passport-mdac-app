@@ -3,6 +3,7 @@ CREATE OR REPLACE FUNCTION public.get_workers_health()
 RETURNS jsonb
 LANGUAGE sql
 SECURITY DEFINER
+SET search_path = ''
 AS $$
   SELECT jsonb_build_object(
     'mdac', COALESCE((
@@ -79,7 +80,8 @@ AS $$
       ORDER BY last_seen_at DESC
       LIMIT 1
     ), jsonb_build_object('name', 'Gmail PIN 抓取', 'is_online', false))
-  );
+  ) WHERE private.is_active_user();
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_workers_health() TO authenticated, anon, service_role;
+REVOKE ALL ON FUNCTION public.get_workers_health() FROM public, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.get_workers_health() TO authenticated, service_role;

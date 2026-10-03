@@ -82,9 +82,12 @@ create function private.guard_pending_hard_delete_reference() returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare v_customer_id uuid;
 begin
+  -- A reused passport/order can reference two Customers. Lock both in UUID
+  -- order, including when two concurrent writes swap source and target.
+  perform 1 from public.customers c
+    where c.id in (new.customer_id,new.source_customer_id) order by c.id for update;
   v_customer_id := new.customer_id;
   if v_customer_id is not null then
-    perform 1 from public.customers where id = v_customer_id for update;
     if exists (select 1 from private.customer_hard_delete_jobs j
       where v_customer_id = any(j.customer_ids)
         and j.status in ('AWAITING_STORAGE','STORAGE_CLEANED')) then
@@ -94,7 +97,6 @@ begin
   end if;
   if new.source_customer_id is not null
      and new.source_customer_id is distinct from v_customer_id then
-    perform 1 from public.customers where id = new.source_customer_id for update;
     if exists (select 1 from private.customer_hard_delete_jobs j
       where new.source_customer_id = any(j.customer_ids)
         and j.status in ('AWAITING_STORAGE','STORAGE_CLEANED')) then
