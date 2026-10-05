@@ -1,0 +1,98 @@
+{
+  "passed": true,
+  "scope": "Synthetic adapters and durable DPAPI roundtrip; not production pause",
+  "checked_utc": "2026-10-05T17:05:34.5005526Z",
+  "scenarios": [
+    {
+      "passed": true,
+      "reason": "",
+      "phase": "RESUMED",
+      "name": "session_lost_reload_durable_state",
+      "resume_calls": 1
+    },
+    {
+      "passed": true,
+      "reason": "SITE_NOT_APPROVED_OR_FAILED",
+      "phase": "MANUAL",
+      "name": "db_ready_site_failed_manual_policy",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "DB_NOT_APPROVED_OR_INCOMPLETE",
+      "phase": "MANUAL",
+      "name": "migration_not_complete",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "DB_NOT_APPROVED_OR_INCOMPLETE",
+      "phase": "MANUAL",
+      "name": "partial_commit",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "DB_NOT_APPROVED_OR_INCOMPLETE",
+      "phase": "MANUAL",
+      "name": "unknown_database_state",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "",
+      "phase": "RESUMED",
+      "name": "repeat_resume_no_duplicate",
+      "resume_calls": 1
+    },
+    {
+      "passed": true,
+      "reason": "PROCESS_MISSING_OR_IDENTITY_CHANGED_MANUAL_START_REQUIRED",
+      "phase": "MANUAL",
+      "name": "original_process_missing",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "PROCESS_MISSING_OR_IDENTITY_CHANGED_MANUAL_START_REQUIRED",
+      "phase": "MANUAL",
+      "name": "pid_reused_creation_mismatch",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "",
+      "phase": "RESUMED",
+      "name": "busy_fresh_is_healthy",
+      "resume_calls": 1
+    },
+    {
+      "passed": true,
+      "reason": "",
+      "phase": "RESUMING",
+      "name": "stale_online_not_success",
+      "resume_calls": 1
+    },
+    {
+      "passed": true,
+      "reason": "INTERRUPTED_RESUME_INTENT_MANUAL_RECONCILIATION_REQUIRED",
+      "phase": "MANUAL",
+      "name": "crash_between_resume_intent_and_confirmation",
+      "resume_calls": 0
+    },
+    {
+      "passed": true,
+      "reason": "",
+      "phase": "RESUMED",
+      "name": "session_lost_mid_pause_preparing_state",
+      "resume_calls": 1
+    },
+    {
+      "passed": true,
+      "reason": "MIGRATION_IN_PROGRESS_OR_COMPLETION_UNPROVEN",
+      "phase": "MANUAL",
+      "name": "open_migration_baseline_not_completion",
+      "resume_calls": 0
+    }
+  ]
+}

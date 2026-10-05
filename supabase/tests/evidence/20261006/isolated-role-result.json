@@ -1,0 +1,6 @@
+{
+  "test_sha256": "20EDAA386E0DC11D97F201D7CE7BAF2E0F562F8A923E6E02DEB4CDADC4BE8F9D",
+  "command": "psql -X -qAt -v ON_ERROR_STOP=1; legacy_read_rpcs_access_guard.sql",
+  "passed": true,
+  "checked_utc": "2026-10-05T16:36:02.7226621Z"
+}

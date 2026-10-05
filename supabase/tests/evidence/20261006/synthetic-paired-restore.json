@@ -1,0 +1,23 @@
+{
+  "project": "rvgslhjmiaunylwhcamz",
+  "run": "0886f11e-6281-4e69-b365-18b64f1dc2fb",
+  "checked_utc": "2026-10-05T17:00:03.842Z",
+  "passed": true,
+  "scope": "Two synthetic text files and dedicated non-API fixture schema only; NOT full production or cross-machine disaster recovery",
+  "results": [
+    {
+      "name": "encrypted_snapshot_roundtrip",
+      "passed": true
+    },
+    {
+      "name": "database_storage_restored_to_same_snapshot_hash",
+      "passed": true
+    },
+    {
+      "name": "post_snapshot_write_requires_preserved_explicit_delta_replay",
+      "passed": true
+    }
+  ],
+  "cleanup_run_owned_schema_bucket": true,
+  "error": null
+}

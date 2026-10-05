@@ -1,0 +1,50 @@
+{
+  "events": [
+    {
+      "phase": "DB_VERIFIED",
+      "at": "2026-10-05T17:08:00.3152874Z",
+      "reason": ""
+    },
+    {
+      "phase": "SITE_VERIFIED",
+      "at": "2026-10-05T17:08:00.3625293Z",
+      "reason": ""
+    },
+    {
+      "phase": "RESUMING",
+      "at": "2026-10-05T17:08:01.3152517Z",
+      "reason": ""
+    },
+    {
+      "at": "2026-10-05T17:09:00.2620611Z",
+      "phase": "DB_VERIFIED",
+      "reason": ""
+    },
+    {
+      "at": "2026-10-05T17:09:00.3074305Z",
+      "phase": "SITE_VERIFIED",
+      "reason": ""
+    },
+    {
+      "at": "2026-10-05T17:09:01.2289304Z",
+      "phase": "RESUMING",
+      "reason": ""
+    },
+    {
+      "at": "2026-10-05T17:09:01.2630127Z",
+      "phase": "RESUMED",
+      "reason": ""
+    }
+  ],
+  "fault_task_last_result": 0,
+  "production_supervisor_last_result": 0,
+  "passed": true,
+  "production_supervisor_liveness_utc": "2026-10-05T17:10:51.2258137Z",
+  "checked_utc": "2026-10-05T17:10:57.1479325Z",
+  "cleanup": "Exact two rehearsal tasks and verified dummy process removed; encrypted rehearsal records retained. Production supervisor retained, no active production maintenance run.",
+  "scope": "Actual Task Scheduler + one synthetic local process; no production worker pause",
+  "process_resumed_once": true,
+  "phase": "RESUMED",
+  "new_dummy_heartbeat_utc": "2026-10-05T17:10:56.0796179+00:00",
+  "setup_creator_pid_still_exists": false
+}

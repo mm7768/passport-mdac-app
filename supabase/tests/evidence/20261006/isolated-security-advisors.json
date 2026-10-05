@@ -1,0 +1,393 @@
+{
+  "result": {
+    "lints": [
+      {
+        "name": "rls_enabled_no_policy",
+        "title": "RLS Enabled No Policy",
+        "level": "INFO",
+        "facing": "EXTERNAL",
+        "categories": [
+          "SECURITY"
+        ],
+        "description": "Detects cases where row level security (RLS) has been enabled on a table but no RLS policies have been created.",
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy",
+        "count": 7,
+        "findings": [
+          {
+            "detail": "Table \\`private.app_order_intake_v13_repair_manifest\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "app_order_intake_v13_repair_manifest",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`private.customer_hard_delete_jobs\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "customer_hard_delete_jobs",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`private.customer_mdac_profiles\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "customer_mdac_profiles",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`private.legacy_order_backfill_manifest\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "legacy_order_backfill_manifest",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`private.order_case_status_sync_v1_manifest\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "order_case_status_sync_v1_manifest",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`private.phase2a_order_foundation_manifest\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "phase2a_order_foundation_manifest",
+              "type": "table",
+              "schema": "private"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Table \\`public.customer_hard_delete_jobs\\` has RLS enabled, but no policies exist",
+            "metadata": {
+              "name": "customer_hard_delete_jobs",
+              "type": "table",
+              "schema": "public"
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          }
+        ]
+      },
+      {
+        "name": "authenticated_security_definer_function_executable",
+        "title": "Signed-In Users Can Execute SECURITY DEFINER Function",
+        "level": "WARN",
+        "facing": "EXTERNAL",
+        "categories": [
+          "SECURITY"
+        ],
+        "description": "Detects `SECURITY DEFINER` functions that are callable by signed-in users. Revoke `EXECUTE`, switch the function to `SECURITY INVOKER`, or move it out of your exposed API schema if signed-in users should not call it.",
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable",
+        "count": 25,
+        "findings": [
+          {
+            "detail": "Function `public.archive_customer(p_customer_id uuid, p_reason text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/archive_customer`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "archive_customer",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_id uuid, p_reason text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.archive_order(p_order_id uuid, p_reason text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/archive_order`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "archive_order",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_order_id uuid, p_reason text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.bulk_update_customer_created_at(p_customer_ids uuid[], p_created_at timestamp with time zone)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/bulk_update_customer_created_at`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "bulk_update_customer_created_at",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_ids uuid[], p_created_at timestamp with time zone",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.cancel_automation_batch(p_batch_id uuid)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/cancel_automation_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "cancel_automation_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_batch_id uuid",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.close_operational_batch(p_batch_id uuid, p_unfinished_action text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/close_operational_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "close_operational_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_batch_id uuid, p_unfinished_action text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.create_human_query_task(p_customer_id uuid, p_task_type public.automation_task_type, p_settings_snapshot jsonb)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/create_human_query_task`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "create_human_query_task",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_id uuid, p_task_type public.automation_task_type, p_settings_snapshot jsonb",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.create_operational_batch(p_order_ids uuid[], p_batch_name text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/create_operational_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "create_operational_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_order_ids uuid[], p_batch_name text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.create_order_from_ocr(p_ocr_result_id uuid, p_full_name text, p_passport_number text, p_date_of_birth date, p_place_of_birth text, p_nationality text, p_gender text, p_passport_expiry_date date, p_arrival_date date, p_departure_date date, p_priority text, p_price numeric, p_cost numeric, p_remark text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/create_order_from_ocr`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "create_order_from_ocr",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_ocr_result_id uuid, p_full_name text, p_passport_number text, p_date_of_birth date, p_place_of_birth text, p_nationality text, p_gender text, p_passport_expiry_date date, p_arrival_date date, p_departure_date date, p_priority text, p_price numeric, p_cost numeric, p_remark text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.delete_customer_human_evidence(p_check_id uuid, p_type text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/delete_customer_human_evidence`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "delete_customer_human_evidence",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_check_id uuid, p_type text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.finish_human_query_task(p_item_id uuid, p_outcome text, p_screenshot_path text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/finish_human_query_task`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "finish_human_query_task",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_item_id uuid, p_outcome text, p_screenshot_path text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.get_latest_task_dashboard()` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/get_latest_task_dashboard`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "get_latest_task_dashboard",
+              "schema": "public",
+              "language": "sql",
+              "arguments": "",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.get_mdac_batch_memberships()` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/get_mdac_batch_memberships`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "get_mdac_batch_memberships",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.get_workers_health()` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/get_workers_health`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "get_workers_health",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.merge_automation_batches(p_source_batch_id uuid, p_target_batch_id uuid, p_actor text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/merge_automation_batches`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "merge_automation_batches",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_source_batch_id uuid, p_target_batch_id uuid, p_actor text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.merge_customers_into_batch(p_customer_ids uuid[], p_target_batch_id uuid, p_actor text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/merge_customers_into_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "merge_customers_into_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_ids uuid[], p_target_batch_id uuid, p_actor text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.requeue_automation_batch(p_batch_id uuid)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/requeue_automation_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "requeue_automation_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_batch_id uuid",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.restore_customer(p_customer_id uuid, p_reason text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/restore_customer`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "restore_customer",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_id uuid, p_reason text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.restore_order(p_order_id uuid, p_reason text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/restore_order`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "restore_order",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_order_id uuid, p_reason text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.rollback_customer_evidence(p_customer_ids uuid[], p_target_status text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/rollback_customer_evidence`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "rollback_customer_evidence",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_customer_ids uuid[], p_target_status text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.save_gmail_credentials(p_gmail_address text, p_app_password text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/save_gmail_credentials`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "save_gmail_credentials",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_gmail_address text, p_app_password text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.split_customers_from_batch(p_source_batch_id uuid, p_customer_ids uuid[], p_new_batch_name text, p_actor text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/split_customers_from_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "split_customers_from_batch",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_source_batch_id uuid, p_customer_ids uuid[], p_new_batch_name text, p_actor text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.update_automation_batch_note(p_batch_id uuid, p_note text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/update_automation_batch_note`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "update_automation_batch_note",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_batch_id uuid, p_note text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.update_gmail_settings(p_gmail_address text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/update_gmail_settings`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "update_gmail_settings",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_gmail_address text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.update_mdac_settings(p_mdac_email text, p_mdac_phone text, p_region_code text, p_travel_mode text, p_embark_country text, p_vessel text, p_accommodation_stay text, p_address1 text, p_address2 text, p_state_code text, p_city_code text, p_postcode text, p_pob_mode text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/update_mdac_settings`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "update_mdac_settings",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_mdac_email text, p_mdac_phone text, p_region_code text, p_travel_mode text, p_embark_country text, p_vessel text, p_accommodation_stay text, p_address1 text, p_address2 text, p_state_code text, p_city_code text, p_postcode text, p_pob_mode text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          },
+          {
+            "detail": "Function `public.update_operational_batch_item(p_batch_id uuid, p_item_id uuid, p_action text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/update_operational_batch_item`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+            "metadata": {
+              "name": "update_operational_batch_item",
+              "schema": "public",
+              "language": "plpgsql",
+              "arguments": "p_batch_id uuid, p_item_id uuid, p_action text",
+              "security_definer": true
+            },
+            "observed_at": "2026-10-05T16:38:32.096Z"
+          }
+        ]
+      },
+      {
+        "name": "auth_leaked_password_protection",
+        "title": "Leaked Password Protection Disabled",
+        "level": "WARN",
+        "facing": "EXTERNAL",
+        "categories": [
+          "SECURITY"
+        ],
+        "description": "Leaked password protection is currently disabled.",
+        "remediation": "https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection",
+        "count": 1,
+        "findings": [
+          {
+            "detail": "Supabase Auth prevents the use of compromised passwords by checking against HaveIBeenPwned.org. Enable this feature to enhance security.",
+            "metadata": {
+              "type": "auth",
+              "entity": "Auth"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

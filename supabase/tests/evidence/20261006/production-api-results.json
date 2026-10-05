@@ -1,0 +1,26 @@
+{
+  "project": "xdmcxhvdqsbcqedfprcy",
+  "run": "75b6138c-c407-4f8c-ae22-63c27dfc413b",
+  "checked_utc": "2026-10-05T16:43:02.835Z",
+  "passed": true,
+  "scope": "Production anonymous HTTP only; no business writes",
+  "public_schema_exposed": true,
+  "results": [
+    {
+      "name": "anonymous_publishable_no_access_token_get_mdac_batch_memberships",
+      "status": 401,
+      "code": "42501",
+      "business_data_returned": false,
+      "passed": true
+    },
+    {
+      "name": "anonymous_publishable_no_access_token_get_workers_health",
+      "status": 401,
+      "code": "42501",
+      "business_data_returned": false,
+      "passed": true
+    }
+  ],
+  "cleanup_run_owned_accounts": null,
+  "error": null
+}
