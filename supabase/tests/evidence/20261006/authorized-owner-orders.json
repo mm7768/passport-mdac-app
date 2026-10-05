@@ -1,0 +1,32 @@
+{
+  "scope": "Production SQL functions and reporting in one committed transaction; NOT user Auth/API or browser UI",
+  "passed": true,
+  "checked_utc": "2026-10-06T01:43:13.307965+08:00",
+  "audit_entries": 6,
+  "order_numbers": [
+    "AA0178",
+    "AA0179"
+  ],
+  "workers_paused": false,
+  "customer_archived": true,
+  "two_orders_archived": true,
+  "idempotency_verified": true,
+  "final_archived_orders": 0,
+  "final_archived_customer": false,
+  "permanent_delete_tested": false,
+  "customer_then_orders_restored": true,
+  "app_soft_delete_state_modified": false,
+  "master_search_pagination_verified": true,
+  "customer_blocked_with_active_orders": true,
+  "app_customer_view_visibility_verified": true,
+  "restore_orders_before_customer_rejected": true,
+  "business_snapshots_finance_ids_unchanged": true,
+  "master_dashboard_finance_deltas_verified": true,
+  "intermediate_states_visible_to_other_sessions": false,
+  "passport_history_tasks_pin_associations_unchanged": true,
+  "run": "9c94fd5f18b6456e9603cdb2f2532c18",
+  "project": "xdmcxhvdqsbcqedfprcy",
+  "post_commit_business_fingerprint_matches": true,
+  "private_before_after_dpapi_verified": true,
+  "sql_sha256": "46139786CD10DF4FDAAC0BDE8139B74D6574C5972071AC4038E976E693C3BCC3"
+}

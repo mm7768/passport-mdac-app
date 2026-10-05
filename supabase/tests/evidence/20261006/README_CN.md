@@ -46,3 +46,13 @@
 `isolated-error.log` 仅保留最后一条合成测试调试记录，不是最终失败结论。首轮原生进程演练被句柄创建时间检查拒绝，原因是 CIM 精度截断；改为封存精确内核时间后独立演练重跑成功。首轮失败任务已精确移除。所有测试边界保留在对应 JSON 的 scope 中。
 
 当前浏览器初始化再次失败：`failed to write kernel assets ... path ... (os error 3)`；本轮没有人工生产登录、生产 Operator 页面、正式归档／恢复写入截图。生产 HTTP／数据库角色读取不能替代这些验收。
+
+## 01:43 MYT 用户本人订单授权补验
+
+用户明确授权本人两张订单 AA0178、AA0179 一起安全测试，允许范围内执行一次生产归档／恢复函数验收。命令：`& work/production-release/Test-AuthorizedOwnerOrders.ps1`。版本化 SQL：`supabase/tests/authorized-production-trash-roundtrip.sql`；生产项目硬性核对，真实目标映射及完整前后 DPAPI 快照仅在本机 Git 外保存。
+
+`authorized-owner-orders.json`：以现有 Owner 数据库角色在单一 repeatable-read 短事务中调用正式 public RPC，验证未归档订单阻止客户归档、两订单归档、客户归档、错误恢复顺序拒绝、先客户后订单恢复、幂等性、Master 搜索／分页／统计与 Dashboard、App 活动客户视图、原快照／编号／关联和历史一致，成功后已全部恢复才提交；失败会整笔回滚。外部会话不看到中间归档状态，不是页面／真实 Auth API 操作。
+
+`authorized-owner-orders-postcommit.json`：独立只读复核两订单和客户均未归档、App 未软删除、客户在 App 活动视图、六条审计已提交；价格／成本均原为 null，所以只验证空值保留和零金额汇总差，不宣称生产非零金额变化已补验。`production-owner-orders-followup.json`：测试后五类生产 worker 新心跳正常。
+
+实际时间 2026-10-06 01:43:12–01:44:12 MYT；SQL 校验在约一秒内完成。净结果保留两订单／客户业务状态，`updated_at` 正常更新，增加六条审计；没有删除／上传 Storage、永久删除、改 App 软删除、暂停 worker 或修改权限／迁移。正式账号人工页面及生产 Operator 验收仍未完成。

@@ -1,0 +1,15 @@
+{
+  "project": "xdmcxhvdqsbcqedfprcy",
+  "run": "9c94fd5f18b6456e9603cdb2f2532c18",
+  "checked_utc": "2026-10-05T17:44:11.970495Z",
+  "scope": "Independent production read-only check after committed function test, NOT browser UI",
+  "orders": [
+    {"order_no":"AA0178","order_archived":false,"customer_archived":false,"app_deleted":false,"price_is_null":true,"cost_is_null":true,"customer_visible_in_app_view":true},
+    {"order_no":"AA0179","order_archived":false,"customer_archived":false,"app_deleted":false,"price_is_null":true,"cost_is_null":true,"customer_visible_in_app_view":true}
+  ],
+  "audit_commit_verified": true,
+  "audit_entries": {"customer_archive":1,"order_archive":2,"customer_restore":1,"order_restore":2},
+  "audit_created_utc":"2026-10-05T17:43:12.541156Z",
+  "finance_boundary":"Both selected orders have null price and cost. Null preservation and zero aggregate deltas verified; this does NOT independently prove nonzero production financial deltas.",
+  "passed":true
+}
