@@ -1,0 +1,24 @@
+{
+  "recorded_utc": "2026-10-06 15:04:19 UTC",
+  "project": "rvgslhjmiaunylwhcamz",
+  "authorization_regression": {
+    "passed": true,
+    "test": "supabase/tests/20261002151000_customer_hard_delete_authorization.sql",
+    "command": "psql -X -qAt -v ON_ERROR_STOP=1 -c 'set role postgres;' -f <test>",
+    "exit_code": 0,
+    "transaction_rolled_back": true
+  },
+  "emergency_containment": {
+    "passed": true,
+    "test": "supabase/rollbacks/20261006144819_storage_guard_emergency_disable.sql",
+    "mode": "strip outer begin/commit; execute inside isolated transaction; assert 5 public RPCs deny authenticated and anon; rollback",
+    "exit_code": 0,
+    "production_executed": false
+  },
+  "notes": [
+    "Earlier connection invocation did not source variables; no SQL ran and its printed PASS is excluded.",
+    "First expired-profile fixture violated FULL/null-expiry constraint; corrected to REVIEW_ONLY expiry and retained failed evidence.",
+    "Initial bulk fixture exceeded existing 100-customer limit; retained failed evidence and tested supported maximum 100 without changing business limit.",
+    "First synthetic account cleanup required explicit profile removal; exact run-owned residual account removed, existing preview users preserved."
+  ]
+}

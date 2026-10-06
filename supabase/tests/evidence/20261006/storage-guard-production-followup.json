@@ -1,0 +1,41 @@
+{
+  "scope": "Production database-role read, NOT human login or browser UI",
+  "heartbeats": [
+    {
+      "fresh": true,
+      "status": "ONLINE",
+      "service": "mdac",
+      "age_seconds": 28.736204
+    },
+    {
+      "fresh": true,
+      "status": "ONLINE",
+      "service": "reg_check",
+      "age_seconds": 9.51056
+    },
+    {
+      "fresh": true,
+      "status": "ONLINE",
+      "service": "visit_pass",
+      "age_seconds": 30.238058
+    },
+    {
+      "fresh": true,
+      "status": "ONLINE",
+      "service": "ocr",
+      "age_seconds": 34.927875
+    },
+    {
+      "fresh": true,
+      "status": "ONLINE",
+      "service": "gmail_pin",
+      "age_seconds": 29.593653
+    }
+  ],
+  "checked_utc": "2026-10-06T23:00:14.75083+08:00",
+  "orders_read": 259,
+  "customers_read": 251,
+  "anonymous_role_denied": true,
+  "owner_health_services": 5,
+  "owner_membership_rows": 46
+}
