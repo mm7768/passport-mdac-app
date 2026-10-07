@@ -2703,118 +2703,9 @@ class DemoRepository extends ChangeNotifier {
         exitDate: exitDate,
       );
     }
-    if (type != TaskType.mdacRegistration &&
-        type != TaskType.gmailPin &&
-        type != TaskType.registrationCheck &&
-        type != TaskType.visitPassCheck) {
-      return '当前只有 MDAC、Gmail PIN、Check Registration 和 Check Visit Pass Worker 已接入。';
-    }
-    if (customerIds.isEmpty) return '请先选择客户。';
-    if (type == TaskType.mdacRegistration &&
-        (entryDate == null || exitDate == null)) {
-      return 'MDAC 注册必须提供入境和出境日期。';
-    }
-    if (type == TaskType.mdacRegistration && exitDate!.isBefore(entryDate!)) {
-      return '出境日期不能早于入境日期。';
-    }
 
-    final selected = <Customer>[];
-    for (final id in customerIds) {
-      final customer = findCustomer(id);
-      if (customer == null || customer.isDeleted) {
-        return '选中的客户已不存在或已被删除，请刷新后重试。';
-      }
-      if (type == TaskType.mdacRegistration && !customer.hasMdacFields) {
-        return '${customer.fullName} 缺少 MDAC 必填资料，不能启动任务。';
-      }
-      if (type != TaskType.mdacRegistration && !customer.hasQueryFields) {
-        return '${customer.fullName} 缺少护照号或国籍，不能启动查询任务。';
-      }
-      if (activeTaskForCustomer(id) != null) {
-        return '${customer.fullName} 已有运行中的任务，系统阻止重复创建。';
-      }
-      selected.add(customer);
-    }
-
-    final customerPayloads = [
-      for (final customer in selected)
-        {
-          'id': customer.id,
-          'full_name': customer.fullName,
-          'passport_number': customer.passportNumber,
-          'date_of_birth': customer.dateOfBirth,
-          'place_of_birth': customer.placeOfBirth,
-          'nationality': customer.nationality,
-          'gender': customer.gender,
-          'passport_expiry_date': customer.passportExpiryDate,
-        },
-    ];
-
-    try {
-      if (type == TaskType.gmailPin) {
-        await SupabaseGateway.createGmailPinBatch(
-          customers: customerPayloads,
-          note: '$actor 创建 Gmail PIN 获取批次；PIN 不写入日志',
-        );
-        auditEvents.insert(
-          0,
-          '$actor 创建 Gmail PIN 获取批次，共 ${selected.length} 位客户',
-        );
-        currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
-      } else if (type == TaskType.registrationCheck) {
-        await SupabaseGateway.createRegistrationCheckBatch(
-          customers: customerPayloads,
-          note: '$actor 创建 Check Registration 批次；只填写不提交',
-        );
-        auditEvents.insert(
-          0,
-          '$actor 创建 Check Registration 批次，共 ${selected.length} 位客户；未提交',
-        );
-        currentWorkerActivity = '已排队，等待 Railway Check Registration Worker';
-      } else if (type == TaskType.visitPassCheck) {
-        final settings = mdacSettings;
-        if (settings == null ||
-            settings.mdacEmail.trim().isEmpty ||
-            settings.mdacPhone.trim().isEmpty ||
-            settings.regionCode.trim().isEmpty) {
-          return '请先在 MDAC 默认业务配置中填写邮箱、手机号和国家/地区代码。';
-        }
-        await SupabaseGateway.createVisitPassCheckBatch(
-          customers: customerPayloads,
-          email: settings.mdacEmail,
-          regionCode: settings.regionCode,
-          mobile: settings.mdacPhone,
-          note: '$actor 创建 Check Visit Pass 批次；只填写不提交',
-        );
-        auditEvents.insert(
-          0,
-          '$actor 创建 Check Visit Pass 批次，共 ${selected.length} 位客户；未提交',
-        );
-        currentWorkerActivity = '已排队，等待 Railway Check Visit Pass Worker';
-      } else {
-        await SupabaseGateway.createMdacRegistrationBatch(
-          entryDate: entryDate!,
-          exitDate: exitDate!,
-          customers: customerPayloads,
-          note: '$actor 创建 MDAC fill-preview 批次；真实页面只填写不提交',
-        );
-        auditEvents.insert(
-          0,
-          '$actor 创建 MDAC fill-preview 批次，共 ${selected.length} 位客户；未提交',
-        );
-        currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
-      }
-      await Future.wait([
-        syncAutomationTasksFromSupabase(),
-        syncCustomersFromSupabase(),
-        syncMdacBatchMembershipsFromSupabase(),
-        syncActiveBatchesFromSupabase(),
-      ]);
-      notifyListeners();
-      return null;
-    } catch (exception) {
-      return '${taskTypeLabel(type)} 批次创建失败：$exception';
-    }
+    return '远程模式必须先把 Order 加入 Operational Batch，再从批次页面启动 Worker。'
+        '客户总库不再允许直接排队，避免创建缺少 case_id 的 Automation Item。';
   }
 
   /// Batch-driven strict task execution (V1.1 Contract)
@@ -7238,11 +7129,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
             if (selected.isNotEmpty)
               SelectionBar(
                 count: selected.length,
-                onMdac: startMdac,
-                onPin: () => startSimpleTask(TaskType.gmailPin),
-                onRegistration: () =>
-                    startSimpleTask(TaskType.registrationCheck),
-                onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                onMdac: widget.repository.remoteMode ? null : startMdac,
+                onPin: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.gmailPin),
+                onRegistration: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.registrationCheck),
+                onVisitPass: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.visitPassCheck),
                 onBundlePdf: bundleSelectedPdf,
                 onStatus: updateSelectedBusinessStatus,
                 onCreatedAt: widget.role == UserRole.owner
@@ -9611,10 +9507,10 @@ class SelectionBar extends StatelessWidget {
   });
 
   final int count;
-  final VoidCallback onMdac;
-  final VoidCallback onPin;
-  final VoidCallback onRegistration;
-  final VoidCallback onVisitPass;
+  final VoidCallback? onMdac;
+  final VoidCallback? onPin;
+  final VoidCallback? onRegistration;
+  final VoidCallback? onVisitPass;
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback? onMergeBatch;
@@ -9652,26 +9548,30 @@ class SelectionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          ActionChip(
-            avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
-            label: const Text('MDAC 注册'),
-            onPressed: onMdac,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.mail_outline_rounded, size: 16),
-            label: const Text('获取 PIN'),
-            onPressed: onPin,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.manage_search_rounded, size: 16),
-            label: const Text('查 Registration'),
-            onPressed: onRegistration,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.badge_outlined, size: 16),
-            label: const Text('查 Visit Pass'),
-            onPressed: onVisitPass,
-          ),
+          if (onMdac != null)
+            ActionChip(
+              avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
+              label: const Text('MDAC 注册'),
+              onPressed: onMdac,
+            ),
+          if (onPin != null)
+            ActionChip(
+              avatar: const Icon(Icons.mail_outline_rounded, size: 16),
+              label: const Text('获取 PIN'),
+              onPressed: onPin,
+            ),
+          if (onRegistration != null)
+            ActionChip(
+              avatar: const Icon(Icons.manage_search_rounded, size: 16),
+              label: const Text('查 Registration'),
+              onPressed: onRegistration,
+            ),
+          if (onVisitPass != null)
+            ActionChip(
+              avatar: const Icon(Icons.badge_outlined, size: 16),
+              label: const Text('查 Visit Pass'),
+              onPressed: onVisitPass,
+            ),
           if (onBundlePdf != null)
             ActionChip(
               avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),
