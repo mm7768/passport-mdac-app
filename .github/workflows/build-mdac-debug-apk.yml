@@ -93,16 +93,20 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (批次工作区移动端排版与溢出彻底治理)"
+          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (Order/Case Worker 绑定安全修复)"
           body: |
             ### v${{ steps.get_version.outputs.VERSION }} 更新内容：
-            - **批次工作区 (Batch Detail) 移动端响应式排版与溢出治理**：
-              - **统计过滤栏防溢出**：在窄屏 (< 640px) 下将搜索框与状态筛选按钮垂直分行排布，并支持横向平滑滚动，彻底修复 39px 溢出；
-              - **订单卡片重构**：将原本针对宽屏桌面端的单行表格结构升级为移动端卡片式多行布局（订单头部、客户姓名与状态徽章、护照与行程日期、稳定 Case ID 分层展示），彻底消除 28px / 86px 文本被挤压与溢出问题；
-              - **底部操作悬浮栏重构**：第一行紧凑展示勾选统计与便捷过滤（“仅未完成”、“取消全选”），第二行横向平滑滚动展示“启动 MDAC 注册”、“获取 PIN”、“核对 Registration”、“核对 Visit Pass”全部操作按钮，彻底消除 425px ~ 638px 的底部按钮栏大面积溢出。
-            - **前置版本全部特性**：
-              - 包含 V1.3 Gate 2 订单原子进单与客户自动复用（RPC `create_order_from_ocr`）；
-              - 包含 V1.2.1 批次断网拦截守卫与 Worker Fail-Closed 运行时防护。
+            - **Order/Case Worker 绑定收口**：
+              - 远程模式下客户总库不再允许直接创建 MDAC / PIN / Registration / Visit Pass Worker 任务；
+              - Worker 任务必须先进入 Operational Batch，再从批次工作区执行，强制携带稳定 `case_id`、`membership_id` 与 `operational_batch_id`；
+              - 客户总库在远程模式隐藏旧 Worker 快捷按钮，避免误操作生成 Legacy / NULL `case_id` 任务。
+            - **Registration Check fallback 加固**：
+              - fallback 写回 `registration_checks` 时同步保存 `automation_items.case_id`；
+              - 保证 strict Order 流程在主写回 RPC 异常时仍保持 Order/Case 关联。
+            - **验收**：
+              - Flutter analyze、test、debug APK build 已通过；
+              - 数据库 fallback case-binding rollback rehearsal 已通过。
+
           files: |
             build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
         env:
