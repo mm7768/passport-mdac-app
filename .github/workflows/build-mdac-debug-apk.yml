@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/mdac-human-review
+      - fix/enforce-operational-batch-case-binding-20261008
     paths:
       - android/**
       - lib/**
