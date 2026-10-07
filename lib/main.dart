@@ -7129,11 +7129,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
             if (selected.isNotEmpty)
               SelectionBar(
                 count: selected.length,
-                onMdac: startMdac,
-                onPin: () => startSimpleTask(TaskType.gmailPin),
-                onRegistration: () =>
-                    startSimpleTask(TaskType.registrationCheck),
-                onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                onMdac: widget.repository.remoteMode ? null : startMdac,
+                onPin: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.gmailPin),
+                onRegistration: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.registrationCheck),
+                onVisitPass: widget.repository.remoteMode
+                    ? null
+                    : () => startSimpleTask(TaskType.visitPassCheck),
                 onBundlePdf: bundleSelectedPdf,
                 onStatus: updateSelectedBusinessStatus,
                 onCreatedAt: widget.role == UserRole.owner
@@ -9502,10 +9507,10 @@ class SelectionBar extends StatelessWidget {
   });
 
   final int count;
-  final VoidCallback onMdac;
-  final VoidCallback onPin;
-  final VoidCallback onRegistration;
-  final VoidCallback onVisitPass;
+  final VoidCallback? onMdac;
+  final VoidCallback? onPin;
+  final VoidCallback? onRegistration;
+  final VoidCallback? onVisitPass;
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback? onMergeBatch;
@@ -9543,26 +9548,30 @@ class SelectionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          ActionChip(
-            avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
-            label: const Text('MDAC 注册'),
-            onPressed: onMdac,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.mail_outline_rounded, size: 16),
-            label: const Text('获取 PIN'),
-            onPressed: onPin,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.manage_search_rounded, size: 16),
-            label: const Text('查 Registration'),
-            onPressed: onRegistration,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.badge_outlined, size: 16),
-            label: const Text('查 Visit Pass'),
-            onPressed: onVisitPass,
-          ),
+          if (onMdac != null)
+            ActionChip(
+              avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
+              label: const Text('MDAC 注册'),
+              onPressed: onMdac,
+            ),
+          if (onPin != null)
+            ActionChip(
+              avatar: const Icon(Icons.mail_outline_rounded, size: 16),
+              label: const Text('获取 PIN'),
+              onPressed: onPin,
+            ),
+          if (onRegistration != null)
+            ActionChip(
+              avatar: const Icon(Icons.manage_search_rounded, size: 16),
+              label: const Text('查 Registration'),
+              onPressed: onRegistration,
+            ),
+          if (onVisitPass != null)
+            ActionChip(
+              avatar: const Icon(Icons.badge_outlined, size: 16),
+              label: const Text('查 Visit Pass'),
+              onPressed: onVisitPass,
+            ),
           if (onBundlePdf != null)
             ActionChip(
               avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),
