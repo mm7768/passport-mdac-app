@@ -46,4 +46,4 @@ flutter test test/requeue_rpc_contract_test.dart --no-pub
 flutter analyze --no-pub
 ```
 
-没有迁移、真实 token、真实 REST/Storage、独立数据库多会话、Retention/回滚或真实 App/Preview 点击。G3/G4 为 NOT RUN。生产库、生产 Worker、真实任务及 main 未操作；未 Git commit/push。使用 Supabase 技能将 API 名称/参数核对与 ACL/RLS/实际行状态证据分开，官方 [Flutter RPC 文档](https://supabase.com/docs/reference/dart/rpc)确认命名参数方式，未据 SDK 调用成功推导业务安全。
+本客户端核对工作没有应用迁移、真实 token、真实 REST/Storage、独立数据库多会话、Retention/回滚或真实 App/Preview 点击。G3/G4 为 NOT RUN。生产库、生产 Worker、真实任务及 main 未操作。代码已提交并推送指定开发分支，客户端被测代码 SHA 为 `e22fbbba2022c325b305aa04b85d24612c889aa0`；整体 Web 阶段报告另记录隔离 SQL 回滚测试（不是真实 Auth/API），Web 被测代码 SHA 为 `28e6fc766be5de19db36e2ea52046361939e2817`。本次仅追加文档状态，不改变被测代码。使用 Supabase 技能将 API 名称/参数核对与 ACL/RLS/实际行状态证据分开，官方 [Flutter RPC 文档](https://supabase.com/docs/reference/dart/rpc)确认命名参数方式，未据 SDK 调用成功推导业务安全。
