@@ -827,7 +827,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
                 item = client.claim_item(batch_id)
                 if not item:
                     break
-                client.heartbeat_tick(status="BUSY", batch_id=batch_id)
+                client.heartbeat_tick(status="BUSY", batch_id=batch_id, item_id=str(item["id"]))
                 try:
                     await process_item(
                         page=page,

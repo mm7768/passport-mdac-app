@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -6,6 +8,8 @@ class SupabaseGateway {
 
   static SupabaseClient? _client;
   static String? _configuredUrl;
+  // Unresolved requests retain their key; there is no automatic network replay.
+  static final Map<String, String> _pendingRequeueRequests = {};
 
   @visibleForTesting
   static Future<dynamic> Function(String rpc, Map<String, dynamic> params)?
@@ -52,6 +56,7 @@ class SupabaseGateway {
   @visibleForTesting
   static void resetTestingHandlers() {
     requeueRpcHandler = null;
+    _pendingRequeueRequests.clear();
     createOrderFromOcrHandler = null;
     markOcrResultCreatedHandler = null;
     insertCustomerHandler = null;
@@ -125,6 +130,7 @@ class SupabaseGateway {
   }
 
   static Future<void> signOut() async {
+    _pendingRequeueRequests.clear();
     await _client?.auth.signOut();
   }
 
@@ -1166,27 +1172,39 @@ class SupabaseGateway {
   }
 
   static Future<Map<String, dynamic>> requeueAutomationBatch(
-    String batchId,
-  ) async {
-    final result = await _callRequeueRpc(
-      'requeue_automation_batch_guarded',
-      {'p_batch_id': batchId},
-    );
+    String batchId, {
+    String? requestId,
+  }) async {
+    const rpc = 'requeue_automation_batch_guarded';
+    final key = _retryRequestKey(rpc, batchId, requestId);
+    final result = await _callRequeueRpc(rpc, {
+      'p_batch_id': batchId,
+      'p_request_id': key,
+      'p_reason': 'USER_RETRY',
+    });
     if (result is! Map || result['id'] != batchId) {
       throw const FormatException('服务端未确认重排结果，请刷新后核对；不会自动重试。');
     }
-    return Map<String, dynamic>.from(result);
+    final row = _validatedRetryResult(result, batchId, key);
+    _forgetConfirmedRetry(rpc, batchId, key);
+    return row;
   }
 
-  static Future<void> requeueFailedItems(String batchId) async {
+  static Future<void> requeueFailedItems(
+    String batchId, {
+    String? requestId,
+  }) async {
     // The database must select, authorize and validate every target atomically.
     // An old server without this RPC must fail closed, never fall back to PATCH.
     final dynamic result;
+    const rpc = 'requeue_automation_failed_items';
+    final key = _retryRequestKey(rpc, batchId, requestId);
     try {
-      result = await _callRequeueRpc(
-        'requeue_automation_failed_items',
-        {'p_batch_id': batchId},
-      );
+      result = await _callRequeueRpc(rpc, {
+        'p_batch_id': batchId,
+        'p_request_id': key,
+        'p_reason': 'USER_RETRY',
+      });
     } on PostgrestException catch (error) {
       if (error.code == 'PGRST202' || error.code == '42883') {
         throw StateError('服务器尚未启用安全重试接口，请联系管理员；不会使用旧写入方式。');
@@ -1196,6 +1214,68 @@ class SupabaseGateway {
     if (result is! Map || result['id'] != batchId) {
       throw const FormatException('服务端未确认失败项重排结果，请刷新后核对；不会自动重试。');
     }
+    _validatedRetryResult(result, batchId, key);
+    _forgetConfirmedRetry(rpc, batchId, key);
+  }
+
+  static void _forgetConfirmedRetry(String rpc, String batchId, String key) {
+    final scope = _retryScope(rpc, batchId);
+    // A late reply for an earlier double-click must not erase a newer unknown key.
+    if (_pendingRequeueRequests[scope] == key) {
+      _pendingRequeueRequests.remove(scope);
+    }
+  }
+
+  static String _retryRequestKey(String rpc, String batchId, String? supplied) {
+    if (supplied != null && !_isCanonicalUuid(supplied)) {
+      throw const FormatException('重试 request ID 必须为规范 UUID。');
+    }
+    return supplied ??
+        _pendingRequeueRequests.putIfAbsent(_retryScope(rpc, batchId), () {
+          final random = Random.secure();
+          final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+          bytes[6] = (bytes[6] & 0x0f) | 0x40;
+          bytes[8] = (bytes[8] & 0x3f) | 0x80;
+          final hex = bytes
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join();
+          return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+              '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+        });
+  }
+
+  static bool _isCanonicalUuid(dynamic value) =>
+      value is String &&
+      RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+          .hasMatch(value);
+
+  static String _retryScope(String rpc, String batchId) =>
+      '${currentUserId ?? 'unsigned-test'}:$rpc:$batchId';
+
+  static Map<String, dynamic> _validatedRetryResult(
+    dynamic result,
+    String batchId,
+    String requestId,
+  ) {
+    if (result is! Map ||
+        result['id'] != batchId ||
+        result['request_id'] != requestId ||
+        result['replayed'] is! bool) {
+      throw const FormatException('服务端未确认重排请求，请刷新后核对，不会自动重试。');
+    }
+    final items = result['requeued_item_ids'];
+    final attempts = result['attempt_ids'];
+    if (items is! List ||
+        attempts is! List ||
+        items.isEmpty ||
+        items.length != attempts.length ||
+        !items.every(_isCanonicalUuid) ||
+        !attempts.every(_isCanonicalUuid) ||
+        items.toSet().length != items.length ||
+        attempts.toSet().length != attempts.length) {
+      throw const FormatException('服务端重排明细无效，请刷新后核对，不会自动重试。');
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   static Future<dynamic> _callRequeueRpc(
