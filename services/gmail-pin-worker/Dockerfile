@@ -5,6 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+COPY attempt_evidence.py ./attempt_evidence.py
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

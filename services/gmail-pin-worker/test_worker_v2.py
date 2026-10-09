@@ -60,7 +60,9 @@ class GMailPinBatchAndReliabilityTests(unittest.TestCase):
                     "passport_number": passport,
                     "customer_created_at": (now - timedelta(minutes=10)).isoformat(),
                 },
-                "created_at": now.isoformat(),
+                # The task must precede its registration email. Production matching
+                # deliberately rejects messages older than the task cutoff.
+                "created_at": (now - timedelta(minutes=10)).isoformat(),
             })
 
             # Emails created with slight time differences, out of order
@@ -219,6 +221,32 @@ class GMailPinBatchAndReliabilityTests(unittest.TestCase):
         self.assertEqual(decision.status, "NEEDS_REVIEW")
         self.assertEqual(decision.error_code, "PIN_MATCH_NOT_UNIQUE")
 
+    def test_empty_pin_line_never_reads_following_line(self) -> None:
+        for newline in ("\n", "\r\n", "\r"):
+            for blank in ("", " ", "\t  "):
+                with self.subTest(newline=newline, blank=blank):
+                    self.assertIsNone(extract_fields(
+                        f"PIN :{blank}{newline}NEXT123{newline}"
+                    )["pin"])
+
+    def test_pin_preserves_internal_horizontal_whitespace(self) -> None:
+        for value in ("8pcz  kJDr", "ABC\tXYZ", "PIN-123", "PIN_123"):
+            with self.subTest(value=value):
+                self.assertEqual(extract_fields(f"PIN： \t{value} \t\r\n")["pin"], value)
+
+    def test_pin_validates_full_value_and_length(self) -> None:
+        for value in ("AB", "A" * 25, "ABC@DEF", "ABC!", "-ABC", "ABC-", "   "):
+            with self.subTest(value=value):
+                self.assertIsNone(extract_fields(f"PIN : {value}\n")["pin"])
+        for value in ("ABC", "A" * 24):
+            with self.subTest(value=value):
+                self.assertEqual(extract_fields(f"PIN : {value}\n")["pin"], value)
+
+    def test_similar_label_is_not_pin(self) -> None:
+        for label in ("Pincode", "NOTPIN"):
+            with self.subTest(label=label):
+                self.assertIsNone(extract_fields(f"{label} : ABC123\n")["pin"])
+
 
 class _MockGmail:
     def __init__(self, messages: list[ParsedEmail]) -> None:
@@ -235,6 +263,9 @@ class _MockSupabase:
 
     def heartbeat(self, **kwargs) -> None:
         pass
+
+    def heartbeat_tick(self, **kwargs) -> None:
+        self.heartbeat(**kwargs)
 
     def get_gmail_runtime_credentials(self) -> dict[str, str]:
         return {

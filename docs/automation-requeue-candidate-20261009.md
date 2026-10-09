@@ -13,18 +13,21 @@
 - finish/lease/runtime传p_attempt_id；成功finish响应检查 automation_item_id、attempt_id。不默默替换inflight nonce。已知结果须已确认证据；finish网络失败不改结果再写第二次。
 - Visit FOUND不调用即时旧证据清理；旧Case/Customer删除helper改no-op。合法到期/Owner硬删除要由受控保留流程处理，尚未联调；不能据此宣布已建立永久保存或合规删除。
 
-三服务的attempt_evidence.py为相同代码的本地副本，使既有每服务Dockercontext能正常导入；services/tests/test_attempt_protocol.py检查副本一致。无需新依赖，不启动这些候选Worker。
+四服务的attempt_evidence.py为相同代码的本地副本，使既有每服务Dockercontext能正常导入；services/tests/test_attempt_protocol.py检查副本一致。无需新依赖，不启动这些候选Worker。
 
 ## 安全边界
 
-数据库新端点尚未存在；代码缺协议会失败。RPC前硬性只接受 rvgslhjmiaunylwhcamz.supabase.co，生产URL会在请求前拒绝。没有启动、暂停、替换、部署任何生产Worker，没有修改Gmail/OCR源码，没有合并main。
+数据库新端点尚未存在；代码缺协议会失败。RPC前硬性只接受 rvgslhjmiaunylwhcamz.supabase.co，生产URL会在请求前拒绝。没有启动、暂停、替换、部署任何生产Worker，没有修改OCR源码，没有合并main。
 
-GMAIL_PIN是第四种业务任务，旧Gmail Worker缺nonce；追加最小nonce透传授权待答复。在回答及完整受控服务端/旧Worker兼容测试之前，不把整个客户端称为可上线，不让旧Worker覆盖managed证据。
+GMAIL_PIN是第四种业务任务。用户追加授权最小nonce透传后，开发分支已适配claim/heartbeat/finish及Docker本地模块。Gmail不上传截图，不更改邮件匹配/过期判定/IMAP流程，不访问真实邮箱。新协议缺失或nonce错误安全拒绝，没有旧finish回退。完整受控服务端/旧Worker门控尚未实现，不能称为可上线。
+
+随后获用户追加授权，最小修复两个原基线PIN提取缺陷：保留同一行内部空格，空PIN不误取下一行；全值校验保持3–24字符与字母数字首尾，允许原有连字符/下划线及内部水平空白，拒绝无效值的截断前缀。未扩展跨行PIN格式。两个测试替身补heartbeat_tick，30项合成样本任务时间改为邮件到达之前，不改变生产邮件时间筛选。
 
 ## 本地测试（不等于G3/G4）
 
-- Python协议测试15项，使用真实客户端/processor类AST与fake HTTP，未调用Supabase/官方页面。
+- 18:42 MYT重跑Python协议测试19项，含4个Gmailnonce/旧轮次/生产host拒绝测试，使用真实客户端/processor类AST与fake HTTP，未调用Supabase/官方页面。
 - 三个旧Worker合成单元套件11+11+20=42项。旧Visit断言改为无绑定拒绝、FOUND不删历史；默认30s与基线一致；MDAC已有随机track的旧30..40断言改为实际28/36边界确定性测试，未改solver。
+- Gmail基线390e242的20项原测试独立复现2 FAIL、3 ERROR；获授权后24项全通过（原20+新增4），含30项准确映射、陈旧邮件拒绝、姓名冲突复核与日志脱敏。matching/IMAP尾段与基线逐字相同（从def decide_for_item开始、规范化LF，SHA256 b5a40275437105f412a9e4386385bbd508b5f71b8d1bed43b99a824c96dbf3a9）。本轮85项Python本地测试全通过，不是G3。
 - App requeue_rpc_contract_test.dart：7项，只用测试回调，非真实Auth/API/按钮验收。
 - Flutter analyze --no-pub：0 errors/0 warnings、6条既有deprecated info，默认exit1；不能报严格全绿。
 - 必须由Web完成隔离migration、真实token ACL/REST、原业务witness/锁、旧Worker门控、真实Storage、保留/删除补偿与G4，再申请G5。
@@ -36,6 +39,7 @@ python services/tests/test_attempt_protocol.py
 python -m unittest discover -s services/mdac-fill-preview -p test_worker.py -v
 python -m unittest discover -s services/registration-check-worker -p test_worker.py -v
 python -m unittest discover -s services/visit-pass-check-worker -p test_worker.py -v
+python -m unittest discover -s services/gmail-pin-worker -p "test_worker*.py" -v
 flutter test test/requeue_rpc_contract_test.dart --no-pub
 flutter analyze --no-pub
 ```

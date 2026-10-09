@@ -1,6 +1,6 @@
 """Isolation-only attempt protocol candidate; database endpoints are not installed yet.
 
-No government-page automation or result parsing lives here. Three local copies
+No government-page automation or result parsing lives here. Four local copies
 are identical so existing per-service Docker build contexts remain unchanged.
 """
 from __future__ import annotations
@@ -13,15 +13,16 @@ from uuid import UUID
 ISOLATED_HOST = "rvgslhjmiaunylwhcamz.supabase.co"
 CLAIMS = {
     "claim_mdac_item", "claim_registration_check_item", "claim_visit_pass_check_item",
+    "claim_gmail_pin_item",
 }
 ROUTES = {
     **{f"claim_{kind}_{part}": f"claim_{kind}_attempt_{part}"
-       for kind in ("mdac", "registration_check", "visit_pass_check")
+       for kind in ("mdac", "registration_check", "visit_pass_check", "gmail_pin")
        for part in ("batch", "item")},
     **{f"heartbeat_{kind}": f"heartbeat_{kind}_attempt"
-       for kind in ("mdac", "registration_check", "visit_pass_check")},
+       for kind in ("mdac", "registration_check", "visit_pass_check", "gmail_pin")},
     **{name: name + "_attempt" for name in (
-        "finish_mdac_fill_preview", "finish_mdac_registration_worker",
+        "finish_mdac_fill_preview", "finish_mdac_registration_worker", "finish_gmail_pin_item",
         "finish_registration_check_worker", "finish_registration_check_item",
         "finish_visit_pass_check_worker", "finish_visit_pass_check_item",
         "get_registration_check_runtime_input", "get_visit_pass_check_runtime_input",

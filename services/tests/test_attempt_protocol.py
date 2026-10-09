@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = ("mdac-fill-preview", "registration-check-worker", "visit-pass-check-worker")
+ALL_SERVICES = SERVICES + ("gmail-pin-worker",)
 ITEM = "00000000-0000-4000-8000-000000000001"
 CASE = "00000000-0000-4000-8000-000000000002"
 CUSTOMER = "00000000-0000-4000-8000-000000000003"
@@ -142,8 +143,55 @@ def finish(client, service, path=None):
 
 
 class AttemptProtocolTests(unittest.TestCase):
+    def test_gmail_claim_lease_finish_transmit_same_server_attempt(self):
+        client, _ = load_client("gmail-pin-worker")
+        row = client.claim_item(OB)
+        client.heartbeat(status="BUSY", batch_id=OB, item_id=ITEM)
+        result = client.finish_item(
+            item_id=ITEM, pin_status="NOT_FOUND", email_message_id=None, sender=None,
+            subject=None, pin_value=None, match_confidence=None, raw_summary={},
+            received_at=None, error_code=None, error_message=None,
+        )
+        self.assertEqual(result["attempt_id"], row["current_attempt_id"])
+        calls = [(url.rsplit("/", 1)[-1], kwargs["json"]) for url, kwargs in client.session.calls]
+        self.assertEqual([name for name, _ in calls], ["claim_gmail_pin_attempt_item", "heartbeat_gmail_pin_attempt", "finish_gmail_pin_item_attempt"])
+        for _, payload in calls[1:]:
+            self.assertEqual(payload["p_attempt_id"], row["current_attempt_id"])
+        self.assertEqual(client.session.objects, {})
+
+    def test_gmail_missing_attempt_refuses_before_lease_or_finish(self):
+        client, module = load_client("gmail-pin-worker")
+        client.session.missing_nonce = True
+        with self.assertRaises(module.AttemptProtocolError):
+            client.claim_item(OB)
+        with self.assertRaises(module.AttemptProtocolError):
+            client.heartbeat(status="BUSY", batch_id=OB, item_id=ITEM)
+        self.assertEqual(len(client.session.calls), 1)
+
+    def test_gmail_old_attempt_finish_rejected_without_fallback(self):
+        client, _ = load_client("gmail-pin-worker")
+        client.claim_item(OB)
+        client.session.next_round()
+        with self.assertRaises(RuntimeError) as error:
+            client.finish_item(
+                item_id=ITEM, pin_status="NOT_FOUND", email_message_id=None, sender=None,
+                subject=None, pin_value=None, match_confidence=None, raw_summary={},
+                received_at=None, error_code=None, error_message=None,
+            )
+        self.assertNotIn("SENSITIVE_RESPONSE", str(error.exception))
+        calls = [url for url, _ in client.session.calls if "/rpc/finish_" in url]
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith("finish_gmail_pin_item_attempt"))
+
+    def test_gmail_production_host_refused_before_request(self):
+        client, module = load_client("gmail-pin-worker")
+        client.config.supabase_url = "https://xdmcxhvdqsbcqedfprcy.supabase.co"
+        with self.assertRaises(module.AttemptProtocolError):
+            client.claim_batch()
+        self.assertEqual(client.session.calls, [])
+
     def test_copies_identical(self):
-        blobs = [(ROOT / service / "attempt_evidence.py").read_bytes() for service in SERVICES]
+        blobs = [(ROOT / service / "attempt_evidence.py").read_bytes() for service in ALL_SERVICES]
         self.assertTrue(all(blob == blobs[0] for blob in blobs))
 
     def test_three_workers_two_rounds_preserve_old_bytes(self):

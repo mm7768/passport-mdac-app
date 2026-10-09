@@ -233,6 +233,9 @@ class _FakeSupabase:
     def heartbeat(self, **kwargs) -> None:
         return None
 
+    def heartbeat_tick(self, **kwargs) -> None:
+        self.heartbeat(**kwargs)
+
     def get_gmail_runtime_credentials(self) -> dict[str, str]:
         return {
             "gmail_address": "test@gmail.com",

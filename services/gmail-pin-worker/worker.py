@@ -30,6 +30,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
+from attempt_evidence import AttemptEvidence
 
 LOG = logging.getLogger("gmail_pin_worker")
 WORKER_NAME = "gmail_pin"
@@ -186,12 +187,15 @@ class SupabaseAdminClient:
                 "Content-Type": "application/json",
             }
         )
+        self.attempts = AttemptEvidence(self._rpc, self.session, config)
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+        original_name = name
+        name, payload = self.attempts.route(name, payload)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
@@ -200,7 +204,9 @@ class SupabaseAdminClient:
         self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
-        return response.json()
+        result = response.json()
+        self.attempts.accept(original_name, result)
+        return result
 
     def claim_batch(self) -> dict[str, Any] | None:
         rows = self._rpc(
@@ -443,9 +449,13 @@ def extract_fields(body: str) -> dict[str, str | None]:
     # Matches both single-line ("Name: LI NA") and multi-line HTML table text ("Name\n:\nLI NA")
     name = first(r"Name\s*[:：]\s*([^\n\r]+)")
     passport = first(r"Passport\s+No\.?\s*[:：]\s*([A-Za-z0-9]+)")
-    pin = first(
-        r"PIN\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})"
-    )
+    # Capture only this line: an empty PIN must not consume the next line.
+    # Validate the whole value so invalid/long values cannot become a valid prefix.
+    pin = first(r"\bPIN[ \t]*[:：][ \t]*([^\n\r]*)")
+    if pin is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9 _\t-]{1,22}[A-Za-z0-9]", pin
+    ):
+        pin = None
     return {
         "name": name,
         "passport_number": passport.upper() if passport else None,
