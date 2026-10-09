@@ -26,6 +26,7 @@ from datetime import date, datetime
 from typing import Any, Awaitable, Callable
 
 import requests
+from attempt_evidence import AttemptEvidence
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from slider_solver import solve_mdac_slider
@@ -149,12 +150,15 @@ class SupabaseAdminClient:
                 "Content-Type": "application/json",
             }
         )
+        self.attempts = AttemptEvidence(self._rpc, self.session, config)
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+        original_name = name
+        name, payload = self.attempts.route(name, payload)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
@@ -163,7 +167,9 @@ class SupabaseAdminClient:
         self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
-        return response.json()
+        result = response.json()
+        self.attempts.accept(original_name, result)
+        return result
 
     def claim_batch(self) -> dict[str, Any] | None:
         rows = self._rpc(
@@ -240,20 +246,8 @@ class SupabaseAdminClient:
             self._last_hb_status = status
             self._last_hb_batch_id = batch_id
 
-    def upload_screenshot(self, path: str, content: bytes) -> str:
-        object_path = path.strip("/")
-        response = self.session.post(
-            f"{self.storage_url}/object/{self.config.screenshot_bucket}/{object_path}",
-            headers={
-                "Content-Type": "image/png",
-                "Cache-Control": "private, max-age=0, no-store",
-                "x-upsert": "true",
-            },
-            data=content,
-            timeout=self.config.request_timeout_seconds,
-        )
-        self._check(response, "上传 MDAC 预览截图")
-        return object_path
+    def upload_screenshot(self, item_id: str, content: bytes) -> str:
+        return self.attempts.upload(item_id, content, "png")
 
     def finish_fill_preview(
         self,
@@ -280,45 +274,20 @@ class SupabaseAdminClient:
         return result
 
     def finish_registration(
-        self,
-        *,
-        item_id: str,
-        status: str,
-        registration_no: str | None = None,
-        screenshot_path: str | None = None,
-        raw_summary: dict[str, Any] | None = None,
-        error_code: str | None = None,
-        error_message: str | None = None,
+        self, *, item_id: str, status: str, registration_no: str | None = None,
+        screenshot_path: str | None = None, raw_summary: dict[str, Any] | None = None,
+        error_code: str | None = None, error_message: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            result = self._rpc(
-                "finish_mdac_registration_worker",
-                {
-                    "p_item_id": item_id,
-                    "p_worker_id": self.config.worker_id,
-                    "p_status": status,
-                    "p_registration_number": registration_no,
-                    "p_registration_no": registration_no,
-                    "p_screenshot_path": screenshot_path,
-                    "p_raw_summary": raw_summary or {},
-                    "p_error_code": error_code,
-                    "p_error_message": error_message,
-                },
-            )
-            if isinstance(result, dict):
-                return result
-        except Exception as exc:
-            LOG.warning(
-                "调用 finish_mdac_registration_worker 异常，回退至 finish_mdac_fill_preview: %s",
-                exc,
-            )
-        return self.finish_fill_preview(
-            item_id=item_id,
-            screenshot_path=screenshot_path,
-            raw_summary=raw_summary or {},
-            error_code=error_code,
-            error_message=error_message,
-        )
+        result = self._rpc("finish_mdac_registration_worker", {
+            "p_item_id": item_id, "p_worker_id": self.config.worker_id,
+            "p_status": status, "p_registration_number": registration_no,
+            "p_registration_no": registration_no, "p_screenshot_path": screenshot_path,
+            "p_raw_summary": raw_summary or {}, "p_error_code": error_code,
+            "p_error_message": error_message,
+        })
+        if not isinstance(result, dict):
+            raise WorkerError("INVALID_ATTEMPT_FINISH_RESPONSE")
+        return result
 
 
 def parse_date(value: Any) -> date:
@@ -784,16 +753,8 @@ async def process_item(
 
     try:
         screenshot = await page.screenshot(type="png", full_page=True)
-        screenshot_prefix = (
-            "mdac-submissions"
-            if final_status == "SUCCEEDED"
-            else config.screenshot_prefix
-        )
-        screenshot_name = (
-            "success.png" if final_status == "SUCCEEDED" else "preview.png"
-        )
         screenshot_path = client.upload_screenshot(
-            f"{screenshot_prefix}/{batch_id}/{item_id}/{screenshot_name}",
+            item_id,
             screenshot,
         )
         summary["screenshot_saved"] = True

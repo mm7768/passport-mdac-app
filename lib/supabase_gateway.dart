@@ -5,6 +5,11 @@ class SupabaseGateway {
   SupabaseGateway._();
 
   static SupabaseClient? _client;
+  static String? _configuredUrl;
+
+  @visibleForTesting
+  static Future<dynamic> Function(String rpc, Map<String, dynamic> params)?
+      requeueRpcHandler;
 
   @visibleForTesting
   static Future<Map<String, dynamic>> Function({
@@ -46,6 +51,7 @@ class SupabaseGateway {
 
   @visibleForTesting
   static void resetTestingHandlers() {
+    requeueRpcHandler = null;
     createOrderFromOcrHandler = null;
     markOcrResultCreatedHandler = null;
     insertCustomerHandler = null;
@@ -66,6 +72,7 @@ class SupabaseGateway {
     if (!isConfigured) return;
     await Supabase.initialize(url: projectUrl, publishableKey: publishableKey);
     _client = Supabase.instance.client;
+    _configuredUrl = projectUrl;
   }
 
   static Future<void> initializeWith({
@@ -74,6 +81,7 @@ class SupabaseGateway {
   }) async {
     await Supabase.initialize(url: url, anonKey: anonKey);
     _client = Supabase.instance.client;
+    _configuredUrl = url;
   }
 
   static Future<({String name, String role})> signIn({
@@ -1160,36 +1168,46 @@ class SupabaseGateway {
   static Future<Map<String, dynamic>> requeueAutomationBatch(
     String batchId,
   ) async {
-    final result = await _requiredClient.rpc(
-      'requeue_automation_batch',
-      params: {'p_batch_id': batchId},
+    final result = await _callRequeueRpc(
+      'requeue_automation_batch_guarded',
+      {'p_batch_id': batchId},
     );
-    if (result is Map) return Map<String, dynamic>.from(result);
-    return <String, dynamic>{'id': batchId};
+    if (result is! Map || result['id'] != batchId) {
+      throw const FormatException('服务端未确认重排结果，请刷新后核对；不会自动重试。');
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   static Future<void> requeueFailedItems(String batchId) async {
-    final client = _requiredClient;
-    await client
-        .from('automation_items')
-        .update({
-          'status': 'QUEUED',
-          'attempt_count': 0,
-          'error_code': null,
-          'error_message': null,
-          'result_unknown': false,
-          'started_at': null,
-          'finished_at': null,
-        })
-        .eq('batch_id', batchId)
-        .inFilter('status', ['NEEDS_REVIEW', 'FAILED']);
-    await client
-        .from('automation_batches')
-        .update({
-          'status': 'QUEUED',
-          'failed_count': 0,
-        })
-        .eq('id', batchId);
+    // The database must select, authorize and validate every target atomically.
+    // An old server without this RPC must fail closed, never fall back to PATCH.
+    final dynamic result;
+    try {
+      result = await _callRequeueRpc(
+        'requeue_automation_failed_items',
+        {'p_batch_id': batchId},
+      );
+    } on PostgrestException catch (error) {
+      if (error.code == 'PGRST202' || error.code == '42883') {
+        throw StateError('服务器尚未启用安全重试接口，请联系管理员；不会使用旧写入方式。');
+      }
+      rethrow;
+    }
+    if (result is! Map || result['id'] != batchId) {
+      throw const FormatException('服务端未确认失败项重排结果，请刷新后核对；不会自动重试。');
+    }
+  }
+
+  static Future<dynamic> _callRequeueRpc(
+    String rpc,
+    Map<String, dynamic> params,
+  ) {
+    final handler = requeueRpcHandler;
+    if (handler != null) return handler(rpc, params);
+    if (_configuredUrl != 'https://rvgslhjmiaunylwhcamz.supabase.co') {
+      throw StateError('安全重试开发版仅限隔离环境；不会执行旧重试接口。');
+    }
+    return _requiredClient.rpc(rpc, params: params);
   }
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {

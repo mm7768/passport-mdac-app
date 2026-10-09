@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from attempt_evidence import AttemptEvidence
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 LOG = logging.getLogger("visit_pass_check_worker")
@@ -188,12 +189,15 @@ class SupabaseAdminClient:
                 "Content-Type": "application/json",
             }
         )
+        self.attempts = AttemptEvidence(self._rpc, self.session, config)
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+        original_name = name
+        name, payload = self.attempts.route(name, payload)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
@@ -202,7 +206,9 @@ class SupabaseAdminClient:
         self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
-        return response.json()
+        result = response.json()
+        self.attempts.accept(original_name, result)
+        return result
 
     def claim_batch(self) -> dict[str, Any] | None:
         rows = self._rpc(
@@ -236,6 +242,10 @@ class SupabaseAdminClient:
         return dict(rows[0])
 
     def get_runtime_input(self, item_id: str, case_id: str | None = None) -> dict[str, Any]:
+        witness = self.attempts.context(item_id)
+        if case_id and case_id != witness["case_id"]:
+            raise WorkerError("MISMATCHED_ATTEMPT_CASE")
+        case_id = witness["case_id"]
         # 1. 优先尝试调用 RPC (V1.2 / V1.2.1 public.get_visit_pass_check_runtime_input)
         try:
             rows = self._rpc(
@@ -257,7 +267,7 @@ class SupabaseAdminClient:
                 if row.get("case_id"):
                     res["case_id"] = str(row["case_id"]).strip()
                 return res
-            raise WorkerError(f"RPC get_visit_pass_check_runtime_input 返回格式不正确或为空: {rows}")
+            raise WorkerError("INVALID_ATTEMPT_RUNTIME_RESPONSE")
         except Exception as rpc_err:
             if case_id:
                 LOG.error("Strict item %s (case_id=%s) RPC 获取输入失败，终止执行 (Fail-closed): %s", item_id, case_id, rpc_err)
@@ -415,19 +425,7 @@ class SupabaseAdminClient:
 
 
     def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        safe_item_id = re.sub(r"[^a-zA-Z0-9-]", "", item_id)
-        object_path = f"{self.config.screenshot_prefix}/{day}/{safe_item_id}.png"
-        bucket = quote(self.config.screenshot_bucket, safe="")
-        path = quote(object_path, safe="/")
-        response = self.session.post(
-            f"{self.storage_url}/{bucket}/{path}",
-            headers={"Content-Type": "image/png", "x-upsert": "true"},
-            data=image_bytes,
-            timeout=self.config.request_timeout_seconds,
-        )
-        self._check(response, "上传 Check Visit Pass 私有截图")
-        return object_path
+        return self.attempts.upload(item_id, image_bytes, "png")
 
     def finish_item(
         self,
@@ -574,106 +572,16 @@ class SupabaseAdminClient:
         return None
 
     def delete_case_old_visit_pass_evidence(
-        self, case_id: str, current_screenshot_path: str | None = None
+        self, case_id: str, current_screenshot_path: str | None = None,
     ) -> list[str]:
-        """V1.2.1 / V1.2 Section 8: 找到新记录后，通过后端 RPC 清理该 Case (Order) 以往旧证据并删除 Storage 文件。严禁 Worker 直接删除 DB 表行。"""
-        if not case_id:
-            return []
-        deleted_paths: list[str] = []
-        try:
-            rows = self._rpc(
-                "delete_case_old_visit_pass_evidence",
-                {
-                    "p_case_id": case_id,
-                    "p_current_screenshot_path": current_screenshot_path or "",
-                },
-            )
-            paths_to_delete: list[str] = []
-            if isinstance(rows, list):
-                for r in rows:
-                    if isinstance(r, str) and r.strip():
-                        paths_to_delete.append(r.strip())
-                    elif isinstance(r, dict):
-                        p = r.get("screenshot_path") or r.get("path") or r.get("delete_case_old_visit_pass_evidence")
-                        if p and isinstance(p, str) and p.strip():
-                            paths_to_delete.append(p.strip())
-            elif isinstance(rows, str) and rows.strip():
-                paths_to_delete.append(rows.strip())
-
-            bucket = quote(self.config.screenshot_bucket, safe="")
-            for old_path in paths_to_delete:
-                if current_screenshot_path and old_path == current_screenshot_path:
-                    continue
-                try:
-                    del_resp = self.session.delete(
-                        f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
-                        timeout=self.config.request_timeout_seconds,
-                    )
-                    if del_resp.ok or del_resp.status_code == 404:
-                        deleted_paths.append(old_path)
-                        LOG.info("已从 Storage 删除 Case %s 旧 Visit Pass 截图: %s", case_id, old_path)
-                except Exception as e:
-                    LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
-        except Exception as exc:
-            LOG.warning("调用 delete_case_old_visit_pass_evidence RPC 异常 (case_id=%s): %s", case_id, exc)
-        return deleted_paths
+        """Compatibility no-op: retry cannot authorize historical deletion."""
+        return []
 
     def delete_customer_old_visit_pass_screenshots(
-        self, customer_id: str, current_screenshot_path: str | None = None
+        self, customer_id: str, current_screenshot_path: str | None = None,
     ) -> list[str]:
-        """Legacy helper for customer-level evidence cleanup when case_id is null."""
-        if not customer_id:
-            return []
-        deleted_paths: list[str] = []
-        try:
-            resp = self.session.get(
-                f"{self.rest_url}/visit_pass_checks",
-                params={
-                    "customer_id": f"eq.{customer_id}",
-                    "case_id": "is.null",
-                    "select": "id, screenshot_path",
-                },
-                timeout=self.config.request_timeout_seconds,
-            )
-            if not resp.ok:
-                return []
-            rows = resp.json()
-            bucket = quote(self.config.screenshot_bucket, safe="")
-            for row in rows:
-                old_path = row.get("screenshot_path")
-                check_id = row.get("id")
-                if not check_id:
-                    continue
-                # 当前这批刚保存的新截图，严禁删除
-                if old_path and old_path == current_screenshot_path:
-                    continue
-
-                # 1. 从 Storage 中删除旧截图文件
-                if old_path:
-                    try:
-                        del_resp = self.session.delete(
-                            f"{self.storage_url}/{bucket}/{quote(old_path, safe='/')}",
-                            timeout=self.config.request_timeout_seconds,
-                        )
-                        if del_resp.ok or del_resp.status_code == 404:
-                            deleted_paths.append(old_path)
-                            LOG.info("已删除客户 %s 旧 Visit Pass 截图文件: %s", customer_id, old_path)
-                    except Exception as e:
-                        LOG.warning("从 Storage 删除旧截图 %s 失败: %s", old_path, e)
-
-                # 2. 从 visit_pass_checks 中物理删除该旧记录行（彻底避免客户档案呈现两条凭证）
-                try:
-                    self.session.delete(
-                        f"{self.rest_url}/visit_pass_checks",
-                        params={"id": f"eq.{check_id}"},
-                        timeout=self.config.request_timeout_seconds,
-                    )
-                    LOG.info("已物理删除客户 %s 旧 Visit Pass 检查记录: %s", customer_id, check_id)
-                except Exception as e:
-                    LOG.warning("删除旧记录 %s 失败: %s", check_id, e)
-        except Exception as exc:
-            LOG.warning("清理客户 %s 旧 Visit Pass 截图异常: %s", customer_id, exc)
-        return deleted_paths
+        """Legacy cleanup is disabled; controlled retention owns deletion."""
+        return []
 
 
 def entry_window_candidates(iso_date: str | None) -> list[str]:
@@ -1142,6 +1050,7 @@ class VisitPassCheckWorker:
                 customer_id=customer_id,
                 case_id=case_id,
             )
+            writeback_started = False
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id, case_id=case_id)
                 if not case_id and runtime_input.get("case_id"):
@@ -1194,6 +1103,7 @@ class VisitPassCheckWorker:
                     error_code = "PIN_INVALID"
                     error_message = "官方页面提示 PIN 错误"
 
+                writeback_started = True
                 self.supabase.finish_visit_pass_worker(
                     item_id=item_id,
                     outcome=outcome,
@@ -1203,19 +1113,8 @@ class VisitPassCheckWorker:
                     error_message=error_message,
                 )
 
-                # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
-                if outcome == "FOUND" and screenshot_path:
-                    try:
-                        if case_id:
-                            self.supabase.delete_case_old_visit_pass_evidence(
-                                case_id, current_screenshot_path=screenshot_path
-                            )
-                        elif customer_id:
-                            self.supabase.delete_customer_old_visit_pass_screenshots(
-                                customer_id, current_screenshot_path=screenshot_path
-                            )
-                    except Exception as clean_err:
-                        LOG.warning("清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", case_id, customer_id, clean_err)
+                # FOUND must not erase earlier attempt evidence. Expiry/Owner purge
+                # belongs to the controlled retention workflow, not this retry run.
 
                 processed += 1
 
@@ -1232,6 +1131,13 @@ class VisitPassCheckWorker:
                     error_message=error_message,
                 )
             except Exception as exception:
+                if writeback_started:
+                    # A lost finish response may already be committed. Never
+                    # replace it with a different outcome or discard its evidence.
+                    log_event(logging.ERROR, step="result_writeback", status="unknown",
+                              batch_id=batch_id, item_id=item_id,
+                              error_code="ATTEMPT_FINISH_RECONCILIATION_REQUIRED")
+                    continue
                 error_code, error_message, retryable = classify_page_failure(exception)
                 log_event(
                     logging.ERROR,

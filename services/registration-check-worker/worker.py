@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from attempt_evidence import AttemptEvidence
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from slider_solver import solve_mdac_slider
@@ -189,12 +190,15 @@ class SupabaseAdminClient:
                 "Content-Type": "application/json",
             }
         )
+        self.attempts = AttemptEvidence(self._rpc, self.session, config)
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+        original_name = name
+        name, payload = self.attempts.route(name, payload)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
@@ -203,7 +207,9 @@ class SupabaseAdminClient:
         self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
-        return response.json()
+        result = response.json()
+        self.attempts.accept(original_name, result)
+        return result
 
     def claim_batch(self) -> dict[str, Any] | None:
         rows = self._rpc(
@@ -300,74 +306,25 @@ class SupabaseAdminClient:
             self._last_hb_batch_id = batch_id
 
     def upload_evidence(self, item_id: str, content: bytes, extension: str = "png") -> str:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        safe_item_id = re.sub(r"[^a-zA-Z0-9-]", "", item_id)
-        object_path = f"{self.config.screenshot_prefix}/{day}/{safe_item_id}.{extension}"
-        bucket = quote(self.config.screenshot_bucket, safe="")
-        path = quote(object_path, safe="/")
-        content_type = "application/pdf" if extension == "pdf" else "image/png"
-        response = self.session.post(
-            f"{self.storage_url}/{bucket}/{path}",
-            headers={"Content-Type": content_type, "x-upsert": "true"},
-            data=content,
-            timeout=self.config.request_timeout_seconds,
-        )
-        self._check(response, f"上传 Check Registration 私有凭证 ({extension})")
-        return object_path
+        return self.attempts.upload(item_id, content, extension)
 
     def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:
         return self.upload_evidence(item_id, image_bytes, "png")
 
     def finish_check_worker(
-        self,
-        *,
-        item_id: str,
-        outcome: str,
-        evidence_path: str | None = None,
-        raw_summary: dict[str, Any] | None = None,
-        error_code: str | None = None,
+        self, *, item_id: str, outcome: str, evidence_path: str | None = None,
+        raw_summary: dict[str, Any] | None = None, error_code: str | None = None,
         error_message: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            result = self._rpc(
-                "finish_registration_check_worker",
-                {
-                    "p_item_id": item_id,
-                    "p_worker_id": self.config.worker_id,
-                    "p_outcome": outcome,
-                    "p_evidence_path": evidence_path,
-                    "p_raw_summary": raw_summary or {},
-                    "p_error_code": error_code,
-                    "p_error_message": error_message,
-                },
-            )
-            if isinstance(result, dict):
-                return result
-        except Exception as exc:
-            LOG.warning(
-                "调用 finish_registration_check_worker 异常，回退至 finish_item: %s",
-                exc,
-            )
-
-        check_status = (
-            "PARSED"
-            if outcome in ("FOUND", "NO_RECORD")
-            else ("FAILED" if outcome == "PIN_INVALID" else "NEEDS_REVIEW")
-        )
-        return self.finish_item(
-            item_id=item_id,
-            check_status=check_status,
-            normalized_status=outcome
-            if outcome in ("FOUND", "NO_RECORD", "PIN_INVALID")
-            else None,
-            raw_summary=raw_summary or {},
-            screenshot_path=evidence_path,
-            challenge_type="CAPTCHA_SLIDER" if outcome == "FOUND" else None,
-            result_unknown=(outcome not in ("FOUND", "NO_RECORD", "PIN_INVALID")),
-            retryable=False,
-            error_code=error_code,
-            error_message=error_message,
-        )
+        result = self._rpc("finish_registration_check_worker", {
+            "p_item_id": item_id, "p_worker_id": self.config.worker_id,
+            "p_outcome": outcome, "p_evidence_path": evidence_path,
+            "p_raw_summary": raw_summary or {}, "p_error_code": error_code,
+            "p_error_message": error_message,
+        })
+        if not isinstance(result, dict):
+            raise WorkerError("INVALID_ATTEMPT_FINISH_RESPONSE")
+        return result
 
     def finish_item(
         self,
@@ -772,6 +729,7 @@ class RegistrationCheckWorker:
                 item_id=item_id,
                 customer_id=customer_id,
             )
+            writeback_started = False
             try:
                 runtime_input = self.supabase.get_runtime_input(item_id)
                 snapshot = item.get("customer_snapshot") or {}
@@ -815,6 +773,7 @@ class RegistrationCheckWorker:
                     error_code = "PIN_INVALID"
                     error_message = "官方页面提示 PIN 错误"
 
+                writeback_started = True
                 self.supabase.finish_check_worker(
                     item_id=item_id,
                     outcome=outcome,
@@ -836,6 +795,13 @@ class RegistrationCheckWorker:
                     error_message=error_message,
                 )
             except Exception as exception:
+                if writeback_started:
+                    # A lost finish response may already be committed. Never
+                    # replace it with a different outcome or discard its evidence.
+                    log_event(logging.ERROR, step="result_writeback", status="unknown",
+                              batch_id=batch_id, item_id=item_id,
+                              error_code="ATTEMPT_FINISH_RECONCILIATION_REQUIRED")
+                    continue
                 error_code, error_message, retryable = classify_page_failure(exception)
                 log_event(
                     logging.ERROR,

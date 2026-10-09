@@ -200,11 +200,14 @@ class FillPreviewWorkerTests(unittest.TestCase):
         from slider_solver import generate_track
 
         total_distance = 150.0
-        track = generate_track(total_distance)
-        self.assertGreaterEqual(len(track), 30)
-        self.assertLessEqual(len(track), 40)
-        sum_distance = sum(track)
-        self.assertAlmostEqual(sum_distance, total_distance, delta=1.0)
+        # Existing solver chooses 28..36, not 30..40. Exercise both boundaries
+        # deterministically without changing the solver or running a challenge.
+        for steps in (28, 36):
+            with patch("slider_solver.random.randint", return_value=steps):
+                track = generate_track(total_distance)
+            self.assertEqual(len(track), steps)
+            self.assertTrue(all(step >= 0 for step in track))
+            self.assertAlmostEqual(sum(track), total_distance, delta=1.0)
 
     def test_supabase_client_finish_registration_calls_rpc(self) -> None:
         from worker import SupabaseAdminClient
