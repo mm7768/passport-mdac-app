@@ -16,6 +16,22 @@ class SupabaseGateway {
       requeueRpcHandler;
 
   @visibleForTesting
+  static Future<dynamic> Function(String rpc, Map<String, dynamic> params)?
+      humanEvidenceDeleteRpcHandler;
+
+  @visibleForTesting
+  static Future<dynamic> Function(String rpc, Map<String, dynamic> params)?
+      hardDeleteRpcHandler;
+
+  @visibleForTesting
+  static Future<dynamic> Function(String function, Map<String, dynamic> body)?
+      automationEvidenceCleanupHandler;
+
+  @visibleForTesting
+  static Future<void> Function(List<Map<String, dynamic>> paths)?
+      customerStorageRemoveHandler;
+
+  @visibleForTesting
   static Future<Map<String, dynamic>> Function({
     required String ocrResultId,
     required String fullName,
@@ -56,6 +72,10 @@ class SupabaseGateway {
   @visibleForTesting
   static void resetTestingHandlers() {
     requeueRpcHandler = null;
+    humanEvidenceDeleteRpcHandler = null;
+    hardDeleteRpcHandler = null;
+    automationEvidenceCleanupHandler = null;
+    customerStorageRemoveHandler = null;
     _pendingRequeueRequests.clear();
     createOrderFromOcrHandler = null;
     markOcrResultCreatedHandler = null;
@@ -758,66 +778,37 @@ class SupabaseGateway {
     );
   }
 
-  static Future<void> deleteCustomerHumanEvidence({
+  static Future<Map<String, dynamic>> deleteCustomerHumanEvidence({
     required String checkId,
     required String type,
     String? screenshotPath,
   }) async {
-    final client = _requiredClient;
-    try {
-      await client.rpc(
-        'delete_customer_human_evidence',
-        params: {
-          'p_check_id': checkId,
-          'p_type': type,
-        },
-      );
-      return;
-    } catch (_) {
-      // 若 RPC 未配置或失败，回退到表级别直接删除
+    final handler = humanEvidenceDeleteRpcHandler;
+    if (handler == null && _configuredUrl != 'https://rvgslhjmiaunylwhcamz.supabase.co') {
+      throw StateError('ISOLATION_ONLY_EVIDENCE_CLEANUP_CANDIDATE');
     }
-
-    final table = type == 'VISIT_PASS_CHECK'
-        ? 'visit_pass_checks'
-        : 'registration_checks';
-
-    // 1. 删除记录或清空其截图字段（直接删除该条 check 凭证记录）
-    await client.from(table).delete().eq('id', checkId);
-
-    // 2. 如果存在 Storage 路径，尝试从 Storage 中清理对应凭证文件
-    if (screenshotPath != null && screenshotPath.isNotEmpty) {
-      try {
-        await client.storage.from('passport-documents').remove([screenshotPath]);
-      } catch (_) {}
+    final params = {'p_check_id': checkId, 'p_type': type};
+    final result = handler != null
+        ? await handler('delete_customer_human_evidence', params)
+        : await _requiredClient.rpc('delete_customer_human_evidence', params: params);
+    if (result is! Map || result['check_id'] != checkId || result['type'] != type ||
+        result['deleted'] is! bool) {
+      throw const FormatException('证据清理状态未确认；不会直接删除记录或文件。');
     }
+    if (result['deleted'] == false &&
+        (result['state'] != 'PENDING' || !_isCanonicalUuid(result['request_id']))) {
+      throw const FormatException('证据清理请求未确认；请刷新核对。');
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   static Future<void> deleteCustomerOldVisitPassScreenshots({
     required String customerId,
     required String currentScreenshotPath,
   }) async {
-    final client = _requiredClient;
-    try {
-      final rows = await client
-          .from('visit_pass_checks')
-          .select('id, screenshot_path')
-          .eq('customer_id', customerId)
-          .not('screenshot_path', 'is', null);
-
-      for (final row in rows) {
-        final checkId = row['id']?.toString() ?? '';
-        final oldPath = row['screenshot_path']?.toString() ?? '';
-        if (oldPath.isEmpty || oldPath == currentScreenshotPath) continue;
-
-        try {
-          await client.storage.from('passport-documents').remove([oldPath]);
-        } catch (_) {}
-
-        try {
-          await client.from('visit_pass_checks').delete().eq('id', checkId);
-        } catch (_) {}
-      }
-    } catch (_) {}
+    // FOUND is not a retention/deletion authorization. Keep prior evidence.
+    // Explicit Owner/expiry cleanup is coordinated by the controlled server.
+    throw StateError('EVIDENCE_RETENTION_REQUIRED');
   }
 
   static Future<Map<String, dynamic>> fetchGmailSettings() async {
@@ -1560,14 +1551,52 @@ class SupabaseGateway {
     if (customerIds.isEmpty) {
       throw const FormatException('至少需要选择一位客户。');
     }
-    final result = await _requiredClient.rpc(
+    final result = await _callHardDeleteRpc(
       'create_customer_hard_delete_job',
-      params: {'p_customer_ids': customerIds},
+      {'p_customer_ids': customerIds},
     );
     if (result is! Map) {
       throw const FormatException('Supabase 未返回永久删除任务。');
     }
     return Map<String, dynamic>.from(result);
+  }
+
+  static Future<dynamic> _callHardDeleteRpc(
+    String rpc, Map<String, dynamic> params,
+  ) async {
+    final handler = hardDeleteRpcHandler;
+    return handler == null ? await _requiredClient.rpc(rpc, params: params)
+        : await handler(rpc, params);
+  }
+
+  static bool isProtectedAutomationEvidencePath(String path) => const [
+    'automation-attempt-evidence', 'mdac-human-evidence', 'human-query-evidence',
+  ].contains(path.trim().split('/').first);
+
+  static Future<Map<String, dynamic>> cleanupAutomationEvidence(String requestId) async {
+    if (!_isCanonicalUuid(requestId)) throw const FormatException('INVALID_CLEANUP_REQUEST_ID');
+    final handler = automationEvidenceCleanupHandler;
+    if (handler == null && _configuredUrl != 'https://rvgslhjmiaunylwhcamz.supabase.co') {
+      throw StateError('ISOLATION_ONLY_EVIDENCE_CLEANUP_CANDIDATE');
+    }
+    final pending = <String, dynamic>{'request_id': requestId, 'count': 0,
+      'state': 'PENDING', 'error': 'CLEANUP_EXECUTION_UNCONFIRMED'};
+    dynamic result;
+    try {
+      result = handler != null
+          ? await handler('automation-evidence-cleanup', {'request_id': requestId})
+          : (await _requiredClient.functions.invoke('automation-evidence-cleanup',
+              body: {'request_id': requestId}).timeout(const Duration(seconds: 60))).data;
+    } on FunctionException catch (error) {
+      result = error.details;
+      if (result is Map && result['state'] == 'PURGED') return pending;
+    } catch (_) {
+      return pending; // Keep the same server job/plan after transport uncertainty.
+    }
+    if (result is! Map || result['request_id'] != requestId ||
+        !['PENDING', 'PURGED'].contains(result['state']) || result['count'] is! int ||
+        (result['count'] as int) < 0) return pending;
+    return {'request_id': requestId, 'count': result['count'], 'state': result['state']};
   }
 
   static Future<void> removeCustomerStorageObjects(
@@ -1581,8 +1610,14 @@ class SupabaseGateway {
       if (bucket != 'passport-documents') {
         throw const FormatException('永久删除遇到未授权的 Storage bucket。');
       }
+      if (isProtectedAutomationEvidencePath(path)) {
+        throw const FormatException('CONTROLLED_EVIDENCE_CLEANUP_REQUIRED');
+      }
       grouped.putIfAbsent(bucket, () => <String>[]).add(path);
     }
+    if (grouped.isEmpty) return;
+    final handler = customerStorageRemoveHandler;
+    if (handler != null) { await handler(storagePaths); return; }
     for (final entry in grouped.entries) {
       await _requiredClient.storage.from(entry.key).remove(entry.value);
     }
@@ -1591,9 +1626,9 @@ class SupabaseGateway {
   static Future<Map<String, dynamic>> markCustomerHardDeleteStorageCleaned(
     String jobId,
   ) async {
-    final result = await _requiredClient.rpc(
+    final result = await _callHardDeleteRpc(
       'mark_customer_hard_delete_storage_cleaned',
-      params: {'p_job_id': jobId},
+      {'p_job_id': jobId},
     );
     if (result is! Map) {
       throw const FormatException('Supabase 未返回 Storage 清理状态。');
@@ -1605,9 +1640,9 @@ class SupabaseGateway {
     required String jobId,
     required String errorMessage,
   }) async {
-    final result = await _requiredClient.rpc(
+    final result = await _callHardDeleteRpc(
       'fail_customer_hard_delete',
-      params: {'p_job_id': jobId, 'p_error_message': errorMessage},
+      {'p_job_id': jobId, 'p_error_message': errorMessage},
     );
     if (result is! Map) {
       throw const FormatException('Supabase 未返回永久删除失败状态。');
@@ -1618,12 +1653,14 @@ class SupabaseGateway {
   static Future<Map<String, dynamic>> completeCustomerHardDelete(
     String jobId,
   ) async {
-    final result = await _requiredClient.rpc(
+    final result = await _callHardDeleteRpc(
       'complete_customer_hard_delete',
-      params: {'p_job_id': jobId},
+      {'p_job_id': jobId},
     );
-    if (result is! Map) {
-      throw const FormatException('Supabase 未返回永久删除结果。');
+    if (result is! Map || result['job_id'] != jobId || result['status'] != 'COMPLETED' ||
+        result['customer_count'] is! int || (result['customer_count'] as int) < 0 ||
+        result['storage_object_count'] is! int || (result['storage_object_count'] as int) < 0) {
+      throw const FormatException('HARD_DELETE_COMPLETION_UNCONFIRMED');
     }
     return Map<String, dynamic>.from(result);
   }

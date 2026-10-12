@@ -1,10 +1,13 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'mdac_human_review_utils.dart';
+import 'mdac_human_evidence.dart';
 
 /// Human-in-the-loop continuation for an MDAC fill-preview batch.
 ///
@@ -45,8 +48,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
   bool _captchaReady = false;
   bool _submitBusy = false;
   bool _submitClicked = false;
-  bool _resultPageSeen = false;
-  bool _officialSuccessMarkerSeen = false;
   String? _pageMessage;
   String? _loadError;
 
@@ -149,8 +150,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
     _captchaReady = false;
     _submitBusy = false;
     _submitClicked = false;
-    _resultPageSeen = false;
-    _officialSuccessMarkerSeen = false;
     _pageMessage = null;
   }
 
@@ -184,9 +183,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
             setState(() => _pageLoading = false);
             if (_submitClicked) {
               setState(() {
-                if (!_looksLikeRegistrationPage(url)) {
-                  _resultPageSeen = true;
-                }
                 _pageMessage = '提交后的官方页面已加载，正在核对结果标记…';
               });
               await _inspectOfficialSuccessMarker();
@@ -199,7 +195,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
             if (!mounted || url == null || !_submitClicked) return;
             if (!_looksLikeRegistrationPage(url)) {
               setState(() {
-                _resultPageSeen = true;
                 _pageMessage = '检测到提交后页面变化，请核对官方结果。';
               });
             }
@@ -253,7 +248,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       final seen = parsed['officialHost'] == true && parsed['success'] == true;
       if (mounted) {
         setState(() {
-          _officialSuccessMarkerSeen = seen;
           _pageMessage = seen
               ? '已在官方页面检测到 “SUCCESSFULLY REGISTERED.”，请最后人工核对并确认。'
               : '尚未检测到官方成功文字。请等待页面完成；若结果仍不明确，请选择“结果无法确认”。';
@@ -263,7 +257,6 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
     } catch (error) {
       if (mounted) {
         setState(() {
-          _officialSuccessMarkerSeen = false;
           _pageMessage = '无法核对官方成功文字：$error。请按“结果无法确认”处理。';
         });
       }
@@ -495,6 +488,153 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
     return _decodeJsResult(result);
   }
 
+  Future<Map<String, dynamic>?> _collectHumanEvidence(
+    String itemId,
+    String initialReason,
+  ) async {
+    requireMdacHumanIsolation(widget.supabase.rest.url);
+    final actorId = widget.supabase.auth.currentUser?.id;
+    if (actorId == null) throw const AuthException('AUTH_REQUIRED');
+    String reason = initialReason;
+    Uint8List? bytes;
+    String? extension;
+    String? selectionError;
+    bool selecting = false;
+    final selected = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, update) => AlertDialog(
+          title: const Text('独立人工证据'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '选择本次操作的独立 PNG/PDF（最大6 MB）。不自动截取官方页面；仅页面布尔提示不能证明成功。请勿在审计说明填写姓名、护照或 PIN。',
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: reason,
+                  decoration: const InputDecoration(labelText: '人工核对原因'),
+                  items: mdacHumanEvidenceReasons.entries
+                      .map(
+                        (entry) => DropdownMenuItem(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: selecting
+                      ? null
+                      : (value) => update(() => reason = value!),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: selecting
+                      ? null
+                      : () async {
+                          update(() {
+                            selecting = true;
+                            selectionError = null;
+                          });
+                          try {
+                            final result = await FilePicker.platform.pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: ['png', 'pdf'],
+                              withData: true,
+                            );
+                            if (!dialogContext.mounted || result == null)
+                              return;
+                            final file = result.files.single;
+                            final candidateBytes = file.bytes;
+                            final candidateExtension =
+                                file.extension?.toLowerCase() ?? '';
+                            if (candidateBytes == null)
+                              throw const FormatException(
+                                'HUMAN_EVIDENCE_READ_FAILED',
+                              );
+                            validateMdacHumanFile(
+                              candidateBytes,
+                              candidateExtension,
+                            );
+                            update(() {
+                              bytes = candidateBytes;
+                              extension = candidateExtension;
+                            });
+                          } catch (_) {
+                            if (dialogContext.mounted)
+                              update(
+                                () =>
+                                    selectionError = '请选择有效 PNG/PDF，大小不超过6 MB。',
+                              );
+                          } finally {
+                            if (dialogContext.mounted)
+                              update(() => selecting = false);
+                          }
+                        },
+                  child: Text(
+                    selecting
+                        ? '正在选择…'
+                        : bytes == null
+                        ? '选择独立证据文件'
+                        : '已选 ${extension!.toUpperCase()} · ${bytes!.length} bytes',
+                  ),
+                ),
+                if (selectionError != null)
+                  Text(selectionError!, style: const TextStyle(color: _danger)),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: selecting
+                  ? null
+                  : () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: selecting || bytes == null
+                  ? null
+                  : () => Navigator.pop(dialogContext, true),
+              child: const Text('上传并提交核对'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected != true || !mounted) return null;
+    if (_active?.id != itemId) throw StateError('ACTIVE_ITEM_CHANGED');
+    final media = validateMdacHumanFile(bytes!, extension!);
+    final payload = mdacHumanEvidencePayload(
+      actorId: actorId,
+      itemId: itemId,
+      evidenceId: newMdacHumanEvidenceId(),
+      extension: extension!,
+      reason: reason,
+    );
+    try {
+      await widget.supabase.storage
+          .from('passport-documents')
+          .uploadBinary(
+            payload['evidence_ref']['path'] as String,
+            bytes!,
+            retryAttempts: 0,
+            fileOptions: FileOptions(
+              upsert: false,
+              contentType: media,
+              cacheControl: '0',
+            ),
+          );
+    } catch (_) {
+      throw StateError('HUMAN_EVIDENCE_UPLOAD_UNCONFIRMED');
+    }
+    // Uploaded objects survive RPC/network failure for controlled reconciliation.
+    // Never DELETE, overwrite or replace a previously attached evidence object.
+    if (!mounted || _active?.id != itemId)
+      throw StateError('ACTIVE_ITEM_CHANGED');
+    return payload;
+  }
+
   Future<void> _confirmAndSubmit() async {
     final item = _active;
     final controller = _controller;
@@ -531,9 +671,8 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       _submitBusy = true;
       _pageMessage = '正在最后核对官方页面字段与滑块状态…';
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('正在核对并提交，请稍候…')),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('正在核对并提交，请稍候…')));
     // Let the dialog route finish closing before interrogating the WebView.
     await Future<void>.delayed(const Duration(milliseconds: 250));
     try {
@@ -556,17 +695,14 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       setState(() {
         _pageMessage = '最终核对通过，正在记录本次提交意图以防止异常后重复提交…';
       });
+      final humanEvidence = await _collectHumanEvidence(
+        item.id,
+        'MANUAL_SUBMITTED',
+      );
+      if (humanEvidence == null) return;
       await widget.supabase.rpc(
         'mark_mdac_human_submitted',
-        params: {
-          'p_item_id': item.id,
-          'p_evidence': {
-            'source': 'ANDROID_WEBVIEW',
-            'official_host': 'imigresen-online.imi.gov.my',
-            'human_submit_intent_recorded': true,
-            'submit_click_executed': false,
-          },
-        },
+        params: {'p_item_id': item.id, 'p_evidence': humanEvidence},
       );
       if (!mounted) return;
       setState(() {
@@ -590,20 +726,16 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
       setState(() {
         _pageMessage = '已触发官方 Submit。正在等待并核对官方结果，请勿重复提交。';
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已触发官方提交，正在等待结果…')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已触发官方提交，正在等待结果…')));
       // Some official responses replace the DOM without changing the URL, so
       // navigation callbacks alone are insufficient. Poll the visible result.
       for (var attempt = 0; attempt < 12; attempt++) {
         await Future<void>.delayed(const Duration(seconds: 1));
         if (!mounted || _active?.id != item.id) return;
         if (await _inspectOfficialSuccessMarker()) {
-          setState(() => _resultPageSeen = true);
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('已检测到官方注册成功，请点击“确认官方成功”完成写回。'),
-            ),
+            const SnackBar(content: Text('已检测到官方注册成功，请点击“确认官方成功”完成写回。')),
           );
           break;
         }
@@ -671,17 +803,17 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
 
     setState(() => _submitBusy = true);
     try {
+      final humanEvidence = await _collectHumanEvidence(
+        item.id,
+        'INDEPENDENT_CHECK',
+      );
+      if (humanEvidence == null) return;
       await widget.supabase.rpc(
         'confirm_mdac_human_success',
         params: {
           'p_item_id': item.id,
           'p_registration_no': registrationNo.isEmpty ? null : registrationNo,
-          'p_evidence': {
-            'source': 'ANDROID_WEBVIEW',
-            'official_result_page_seen': _resultPageSeen,
-            'official_success_marker_seen': _officialSuccessMarkerSeen,
-            'human_confirmed_success': true,
-          },
+          'p_evidence': humanEvidence,
         },
       );
       if (!mounted) return;
@@ -724,15 +856,14 @@ class _MdacHumanReviewScreenState extends State<MdacHumanReviewScreen> {
     if (confirmed != true || !mounted) return;
     setState(() => _submitBusy = true);
     try {
+      final humanEvidence = await _collectHumanEvidence(
+        item.id,
+        'MANUAL_UNKNOWN',
+      );
+      if (humanEvidence == null) return;
       await widget.supabase.rpc(
         'mark_mdac_human_result_unknown',
-        params: {
-          'p_item_id': item.id,
-          'p_evidence': {
-            'source': 'ANDROID_WEBVIEW',
-            'official_result_page_seen': _resultPageSeen,
-          },
-        },
+        params: {'p_item_id': item.id, 'p_evidence': humanEvidence},
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

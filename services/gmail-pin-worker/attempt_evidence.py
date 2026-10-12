@@ -6,6 +6,8 @@ are identical so existing per-service Docker build contexts remain unchanged.
 from __future__ import annotations
 
 import hashlib
+import math
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -116,6 +118,10 @@ class AttemptEvidence:
 
     def upload(self, item_id: str, content: bytes, extension: str = "png") -> str:
         self.require_isolation()
+        timeout = self.config.request_timeout_seconds
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout <= 0 or timeout > 60):
+            raise AttemptProtocolError("EVIDENCE_UPLOAD_TIMEOUT_INVALID")
         witness = self.context(item_id)
         if extension not in ("png", "pdf") or not isinstance(content, bytes) or not content:
             raise AttemptProtocolError("INVALID_EVIDENCE_CONTENT")
@@ -138,11 +144,21 @@ class AttemptEvidence:
             raise AttemptProtocolError("MISMATCHED_EVIDENCE_GRANT")
         media = "application/pdf" if extension == "pdf" else "image/png"
         try:
+            expires = datetime.fromisoformat(grant["grant_expires_at"].replace("Z", "+00:00"))
+            if expires.tzinfo is None or expires.utcoffset() is None:
+                raise ValueError("timezone required")
+        except (KeyError, TypeError, AttributeError, ValueError):
+            raise AttemptProtocolError("EVIDENCE_GRANT_EXPIRY_REQUIRED") from None
+        # Reject late/near-expiry grants before sending any bytes. Five seconds
+        # covers local scheduling/clock margin beyond the bounded request timeout.
+        if (expires - datetime.now(timezone.utc)).total_seconds() <= timeout + 5:
+            raise AttemptProtocolError("EVIDENCE_GRANT_EXPIRED_OR_TOO_LATE")
+        try:
             response = self.session.post(
                 f"{self.config.supabase_url.rstrip('/')}/storage/v1/object/passport-documents/{path}",
                 headers={"Content-Type": media, "x-upsert": "false",
                          "Cache-Control": "private, max-age=0, no-store"},
-                data=content, timeout=self.config.request_timeout_seconds,
+                data=content, timeout=timeout,
             )
         except Exception:
             # PREPARED grant survives network uncertainty for controlled reconciliation.

@@ -602,6 +602,9 @@ class CustomerHardDeleteOutcome {
   const CustomerHardDeleteOutcome({
     required this.created,
     this.jobId,
+    this.pending = false,
+    this.cleanupRequestId,
+    this.cleanupNotBefore,
     this.blocked = const <CustomerHardDeleteBlocker>[],
     this.customerCount = 0,
     this.storageObjectCount = 0,
@@ -609,6 +612,9 @@ class CustomerHardDeleteOutcome {
 
   final bool created;
   final String? jobId;
+  final bool pending;
+  final String? cleanupRequestId;
+  final DateTime? cleanupNotBefore;
   final List<CustomerHardDeleteBlocker> blocked;
   final int customerCount;
   final int storageObjectCount;
@@ -857,6 +863,7 @@ class DemoRepository extends ChangeNotifier {
   final List<String> auditEvents = [];
   final List<UploadRecord> uploadRecords = [];
   final Set<String> _successfulUploadFingerprints = {};
+  final Set<String> _pendingAutomationRetries = {};
   bool workerOnline = true;
   String workerVersion = 'fill-preview 0.1.0';
   String currentWorkerActivity = '空闲，等待任务';
@@ -1157,7 +1164,8 @@ class DemoRepository extends ChangeNotifier {
   }
 
   Future<String?> requeueAutomationTask(String batchId, String actor) async {
-    if (!remoteMode) return null;
+    if (!remoteMode) return '尚未连接服务器，未执行重新排队。';
+    if (!_pendingAutomationRetries.add(batchId)) return '该批次重试正在处理，请等待结果。';
     try {
       await SupabaseGateway.requeueAutomationBatch(batchId);
       await syncAutomationTasksFromSupabase();
@@ -1167,11 +1175,14 @@ class DemoRepository extends ChangeNotifier {
       return null;
     } catch (exception) {
       return '重新排队失败：$exception';
+    } finally {
+      _pendingAutomationRetries.remove(batchId);
     }
   }
 
   Future<String?> requeueFailedAutomationItems(String batchId, String actor) async {
-    if (!remoteMode) return null;
+    if (!remoteMode) return '尚未连接服务器，未执行失败项重试。';
+    if (!_pendingAutomationRetries.add(batchId)) return '该批次重试正在处理，请等待结果。';
     try {
       await SupabaseGateway.requeueFailedItems(batchId);
       await syncAutomationTasksFromSupabase();
@@ -1181,6 +1192,8 @@ class DemoRepository extends ChangeNotifier {
       return null;
     } catch (exception) {
       return '重新排队未成功项失败：$exception';
+    } finally {
+      _pendingAutomationRetries.remove(batchId);
     }
   }
 
@@ -2115,6 +2128,9 @@ class DemoRepository extends ChangeNotifier {
     }
 
     String? jobId;
+    String? cleanupRequestId;
+    DateTime? cleanupNotBefore;
+    bool evidenceCleanupPending = false;
     try {
       final job = await SupabaseGateway.createCustomerHardDeleteJob(
         customerIds: uniqueIds,
@@ -2128,14 +2144,30 @@ class DemoRepository extends ChangeNotifier {
       if (jobId == null || jobId.isEmpty) {
         throw const FormatException('Supabase 未返回永久删除任务 ID。');
       }
+      cleanupRequestId = job['cleanup_request_id']?.toString();
+      cleanupNotBefore = DateTime.tryParse(job['cleanup_not_before']?.toString() ?? '');
+      evidenceCleanupPending = cleanupRequestId != null;
       final rawPaths = job['storage_paths'];
-      final paths = rawPaths is List
-          ? rawPaths
-                .whereType<Map>()
-                .map((item) => Map<String, dynamic>.from(item))
-                .toList(growable: false)
-          : const <Map<String, dynamic>>[];
-      await SupabaseGateway.removeCustomerStorageObjects(paths);
+      if (rawPaths is! List || rawPaths.any((entry) => entry is! Map ||
+          entry['bucket'] is! String || entry['path'] is! String)) {
+        throw const FormatException('INVALID_HARD_DELETE_STORAGE_MANIFEST');
+      }
+      final paths = rawPaths
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList(growable: false);
+      evidenceCleanupPending = cleanupRequestId != null || paths.any((path) =>
+          SupabaseGateway.isProtectedAutomationEvidencePath(path['path']?.toString() ?? ''));
+      if (evidenceCleanupPending) {
+        if (cleanupRequestId == null ||
+            (await SupabaseGateway.cleanupAutomationEvidence(cleanupRequestId))['state'] != 'PURGED') {
+          return CustomerHardDeleteOutcome(created: true, pending: true, jobId: jobId,
+              cleanupRequestId: cleanupRequestId, cleanupNotBefore: cleanupNotBefore);
+        }
+        evidenceCleanupPending = false;
+      }
+      final legacyPaths = paths.where((path) => !SupabaseGateway.isProtectedAutomationEvidencePath(
+          path['path']?.toString() ?? '')).toList(growable: false);
+      await SupabaseGateway.removeCustomerStorageObjects(legacyPaths);
       await SupabaseGateway.markCustomerHardDeleteStorageCleaned(jobId);
       final completed = await SupabaseGateway.completeCustomerHardDelete(jobId);
       await syncCustomersFromSupabase();
@@ -2149,19 +2181,19 @@ class DemoRepository extends ChangeNotifier {
       return CustomerHardDeleteOutcome(
         created: true,
         jobId: jobId,
-        customerCount:
-            int.tryParse(completed['customer_count']?.toString() ?? '') ??
-            uniqueIds.length,
-        storageObjectCount:
-            int.tryParse(completed['storage_object_count']?.toString() ?? '') ??
-            paths.length,
+        customerCount: completed['customer_count'] as int,
+        storageObjectCount: completed['storage_object_count'] as int,
       );
-    } catch (exception) {
+    } catch (_) {
+      if (evidenceCleanupPending) {
+        return CustomerHardDeleteOutcome(created: true, pending: true, jobId: jobId,
+            cleanupRequestId: cleanupRequestId, cleanupNotBefore: cleanupNotBefore);
+      }
       if (jobId != null && jobId.isNotEmpty) {
         try {
           await SupabaseGateway.failCustomerHardDelete(
             jobId: jobId,
-            errorMessage: exception.toString(),
+            errorMessage: 'HARD_DELETE_FAILED',
           );
         } catch (_) {
           // Preserve the original failure; the Owner can retry the job later.
@@ -2173,7 +2205,7 @@ class DemoRepository extends ChangeNotifier {
         blocked: [
           CustomerHardDeleteBlocker(
             customerId: '',
-            reasons: ['PURGE_FAILED:$exception'],
+            reasons: ['PURGE_FAILED'],
           ),
         ],
       );
@@ -6255,6 +6287,23 @@ class _CustomersScreenState extends State<CustomersScreen> {
       widget.actor,
     );
     if (!mounted) return;
+    _showHardDeleteOutcome(outcome, selectedIds);
+  }
+
+  void _showHardDeleteOutcome(CustomerHardDeleteOutcome outcome, List<String> selectedIds) {
+    if (outcome.pending) {
+      final readyAt = outcome.cleanupNotBefore;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('永久删除任务已保留，证据清理仍待服务器确认。保持当前勾选，稍后重试将继续同一任务。'
+            '${readyAt == null ? '' : ' 可继续时间：${formatDateTime(readyAt.toLocal())}。'}'),
+        duration: const Duration(seconds: 30),
+        action: SnackBarAction(label: '继续清理', onPressed: () async {
+          final resumed = await widget.repository.hardDeleteCustomersWithSync(selectedIds, widget.actor);
+          if (mounted) _showHardDeleteOutcome(resumed, selectedIds);
+        }),
+      ));
+      return;
+    }
     if (!outcome.created) {
       final failure = outcome.blocked
           .map(
@@ -11971,6 +12020,7 @@ class _TaskDetailDialog extends StatefulWidget {
 class _TaskDetailDialogState extends State<_TaskDetailDialog> {
   late AutomationTask task;
   bool _loadingItems = false;
+  bool _retryBusy = false;
 
   @override
   void initState() {
@@ -12318,7 +12368,9 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
         if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
             (task.status == TaskStatus.needsReview || task.status == TaskStatus.failed || task.failedCount > 0)) ...[
           FilledButton.tonalIcon(
-            onPressed: () async {
+            onPressed: _retryBusy ? null : () async {
+              if (_retryBusy) return;
+              setState(() => _retryBusy = true);
               final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
               if (!dialogContext.mounted) return;
               Navigator.pop(dialogContext);
@@ -12336,7 +12388,9 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
             ),
           ),
           FilledButton.tonalIcon(
-            onPressed: () async {
+            onPressed: _retryBusy ? null : () async {
+              if (_retryBusy) return;
+              setState(() => _retryBusy = true);
               final error = await repository.requeueAutomationTask(task.id, '当前用户');
               if (!dialogContext.mounted) return;
               Navigator.pop(dialogContext);

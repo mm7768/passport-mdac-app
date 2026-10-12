@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -63,6 +64,7 @@ class Session:
         self.fail_upload = self.fail_confirm = self.fail_finish = False
         self.missing_nonce = self.missing_member = self.bad_grant = False
         self.duplicate_grant = False
+        self.grant_expiry = None
         self.current_attempt = self.attempt()
         self.counter = 0
 
@@ -97,7 +99,8 @@ class Session:
                 path = f"automation-attempt-evidence/{payload['p_attempt_id']}/{eid}.{payload['p_extension']}"
                 grant = dict(evidence_id=eid, attempt_id=payload["p_attempt_id"],
                              bucket="passport-documents", path=path, sha256=payload["p_sha256"],
-                             state="PREPARED")
+                             state="PREPARED", grant_expires_at=self.grant_expiry or
+                             (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat())
                 self.grants[eid] = grant
                 return Response(dict(grant, path="untrusted/path.png") if self.bad_grant else grant)
             if name == "confirm_automation_evidence":
@@ -193,6 +196,48 @@ class AttemptProtocolTests(unittest.TestCase):
     def test_copies_identical(self):
         blobs = [(ROOT / service / "attempt_evidence.py").read_bytes() for service in ALL_SERVICES]
         self.assertTrue(all(blob == blobs[0] for blob in blobs))
+
+    def test_all_helpers_refuse_expired_near_or_invalid_grants_without_upload(self):
+        for service in ALL_SERVICES:
+            for expiry in ("invalid", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00",
+                           (datetime.now(timezone.utc) + timedelta(seconds=3)).isoformat()):
+                with self.subTest(service=service, expiry_kind=expiry[:4]):
+                    client, module = load_client(service)
+                    client.claim_item(OB)
+                    client.session.grant_expiry = expiry
+                    with self.assertRaises(module.AttemptProtocolError):
+                        client.attempts.upload(ITEM, b"synthetic")
+                    self.assertEqual(client.session.objects, {})
+                    self.assertEqual(len(client.session.grants), 1)
+                    self.assertFalse(any("/storage/" in url for url, _ in client.session.calls))
+
+    def test_all_helpers_bound_upload_timeout_and_never_retry_network_unknown(self):
+        for service in ALL_SERVICES:
+            for timeout in (0, -1, 61, float("inf"), float("nan"), True):
+                client, module = load_client(service)
+                client.claim_item(OB)
+                client.config.request_timeout_seconds = timeout
+                with self.assertRaisesRegex(module.AttemptProtocolError, "EVIDENCE_UPLOAD_TIMEOUT_INVALID"):
+                    client.attempts.upload(ITEM, b"synthetic")
+                self.assertEqual(client.session.objects, {})
+                self.assertEqual(len(client.session.grants), 0)
+            client, module = load_client(service)
+            client.claim_item(OB)
+            client.config.request_timeout_seconds = 60
+            original = client.session.post
+            uploads = []
+            def unknown_upload(url, **kwargs):
+                if "/storage/" in url:
+                    uploads.append(kwargs)
+                    raise TimeoutError("synthetic-private-detail")
+                return original(url, **kwargs)
+            client.session.post = unknown_upload
+            with self.assertRaisesRegex(module.AttemptProtocolError, "EVIDENCE_UPLOAD_NETWORK_UNKNOWN"):
+                client.attempts.upload(ITEM, b"synthetic")
+            self.assertEqual(len(uploads), 1)
+            self.assertEqual(uploads[0]["timeout"], 60)
+            self.assertEqual(uploads[0]["headers"]["x-upsert"], "false")
+            self.assertEqual(next(iter(client.session.grants.values()))["state"], "PREPARED")
 
     def test_three_workers_two_rounds_preserve_old_bytes(self):
         for service in SERVICES:

@@ -548,15 +548,7 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
         screenshotPath: screenshotPath,
       );
 
-      // 若 Visit Pass 查到记录，自动删除该客户以往所有的旧截图
-      if (_visitPass && outcome == 'FOUND' && screenshotPath != null && widget.customerId.isNotEmpty) {
-        try {
-          await SupabaseGateway.deleteCustomerOldVisitPassScreenshots(
-            customerId: widget.customerId,
-            currentScreenshotPath: screenshotPath,
-          );
-        } catch (_) {}
-      }
+      // FOUND never authorizes erasing earlier evidence; retention is server-controlled.
 
       if (!mounted) return;
       Navigator.pop(context, true);
@@ -766,14 +758,16 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
     if (confirmed != true || !mounted) return;
 
     try {
-      await SupabaseGateway.deleteCustomerHumanEvidence(
+      final cleanup = await SupabaseGateway.deleteCustomerHumanEvidence(
         checkId: checkId,
         type: type,
         screenshotPath: screenshotPath,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已删除$label')),
+        SnackBar(content: Text(cleanup['deleted'] == true
+            ? '已删除$label'
+            : '已提交受控清理，等待服务器处理；$label 尚未删除。')),
       );
       _reload();
     } catch (e) {
