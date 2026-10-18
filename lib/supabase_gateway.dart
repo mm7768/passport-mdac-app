@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'mdac_human_evidence.dart';
+
 class SupabaseGateway {
   SupabaseGateway._();
 
@@ -646,18 +648,27 @@ class SupabaseGateway {
     String extension = 'png',
     String contentType = 'image/png',
   }) async {
-    if (bytes.isEmpty) throw const FormatException('查询凭证为空。');
+    requireMdacHumanIsolation(_requiredClient.rest.url);
     final userId = currentUserId;
     if (userId == null) throw const AuthException('登录状态已失效。');
-    final safeExtension = extension.toLowerCase() == 'pdf' ? 'pdf' : 'png';
-    final path =
-        'human-query-evidence/$userId/$itemId-${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
+    final safeExtension = extension.toLowerCase();
+    final media = validateMdacHumanFile(bytes, safeExtension);
+    if (contentType != media) {
+      throw const FormatException('HUMAN_EVIDENCE_FORMAT_INVALID');
+    }
+    final path = humanQueryEvidencePath(
+      actorId: userId,
+      itemId: itemId,
+      evidenceId: newMdacHumanEvidenceId(),
+      extension: safeExtension,
+    );
     await _requiredClient.storage
         .from('passport-documents')
         .uploadBinary(
           path,
           bytes,
-          fileOptions: FileOptions(contentType: contentType, upsert: false),
+          retryAttempts: 0,
+          fileOptions: FileOptions(contentType: media, upsert: false),
         );
     return path;
   }

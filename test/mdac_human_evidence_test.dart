@@ -14,6 +14,38 @@ void main() {
   const evidence = '00000000-0000-4000-8000-000000000003';
   tearDown(SupabaseGateway.resetTestingHandlers);
 
+  test('Human Query uses the exact deployed UUID-shaped namespace', () {
+    for (final extension in ['png', 'pdf']) {
+      expect(
+        humanQueryEvidencePath(
+          actorId: actor,
+          itemId: item,
+          evidenceId: evidence,
+          extension: extension,
+        ),
+        'human-query-evidence/$actor/$item-$evidence.$extension',
+      );
+    }
+  });
+  test('Human Query rejects timestamps, ambiguous scope and unknown types', () {
+    for (final values in [
+      [actor, item, '1792310400000', 'png'],
+      [actor, '../other', evidence, 'png'],
+      ['not-an-actor', item, evidence, 'png'],
+      [actor, item, evidence, 'jpg'],
+    ]) {
+      expect(
+        () => humanQueryEvidencePath(
+          actorId: values[0],
+          itemId: values[1],
+          evidenceId: values[2],
+          extension: values[3],
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'isolated preview rejects absent or privileged keys before initialization',
     () {

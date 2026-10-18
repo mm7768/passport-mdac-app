@@ -33,6 +33,23 @@ String newMdacHumanEvidenceId() {
       '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
+String humanQueryEvidencePath({
+  required String actorId,
+  required String itemId,
+  required String evidenceId,
+  required String extension,
+}) {
+  if (!_uuid(actorId) ||
+      !_uuid(itemId) ||
+      !_uuid(evidenceId) ||
+      !['png', 'pdf'].contains(extension)) {
+    throw const FormatException('HUMAN_EVIDENCE_REFERENCE_INVALID');
+  }
+  // The deployed policy binds this UUID-shaped name to the exact query Task.
+  // A millisecond timestamp is not accepted by that policy.
+  return 'human-query-evidence/$actorId/$itemId-$evidenceId.$extension';
+}
+
 String validateMdacHumanFile(Uint8List bytes, String extension) {
   if (bytes.isEmpty || bytes.length > 6 * 1024 * 1024) {
     throw const FormatException('HUMAN_EVIDENCE_SIZE_INVALID');
