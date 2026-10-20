@@ -41,7 +41,7 @@ const summary = { run_id: runId, environment: 'LOCAL_OFFLINE_NO_AUTH_OR_UPLOAD',
   hosted_requests: 0, browser_interactions: 0, android_device_interactions: 0,
   limits: ['RPC calls are test handlers, not real tokens or database execution.',
     'Media tests inspect local synthetic headers/size, not full-file parser, upload finality or physical deletion.',
-    'HTTP tripwire rejects Dart HttpClient construction inside the selected test execution zone; it is not OS sandbox attestation.'] };
+    'HTTP tripwire rejects Dart HttpClient construction in the selected test isolate; it is not OS sandbox attestation.'] };
 const target = path.join(out, `app-offline-${runId}.json`);
 writeFileSync(target, `${JSON.stringify(summary, null, 2)}\n`, { flag: 'wx' });
 console.log(JSON.stringify({ summary: path.relative(root, target), exit, passed: summary.passed, failed: summary.failed }));
