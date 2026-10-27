@@ -697,6 +697,25 @@ def entry_window_candidates(iso_date: str | None) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
+
+VISIT_PASS_TABLE_FINDER_JS = r"""() => {
+    return Array.from(document.querySelectorAll('table')).find(table => {
+        if (!table.getClientRects().length || getComputedStyle(table).visibility === 'hidden') return false;
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (rows.length < 2) return false;
+        const headers = Array.from(rows[0].children)
+            .filter(cell => /^(TH|TD)$/.test(cell.tagName))
+            .map(cell => (cell.innerText || '').replace(/\s+/g, ' ').trim().toUpperCase());
+        const dateIndex = headers.findIndex(h => ['DATE', 'DATE OF ENTRY', 'ENTRY DATE'].includes(h));
+        if (dateIndex < 0 || !headers.some(h => /TYPE OF PASS|PASS EXPIRY|ENTRY.*EXIT|LOCATION/.test(h))) return false;
+        return rows.slice(1).some(row => {
+            const cells = Array.from(row.children).filter(cell => /^(TH|TD)$/.test(cell.tagName));
+            const date = cells[dateIndex] ? (cells[dateIndex].innerText || '').trim() : '';
+            return cells.length >= 4 && /(?:\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}|\d{4}-\d{1,2}-\d{1,2})/.test(date);
+        });
+    }) || null;
+}"""
+
 def normalize_pin(value: Any) -> str | None:
     if value is None:
         return None
@@ -914,12 +933,9 @@ async def query_and_capture_page(
                     break
 
                 # 必须明确检测到表格实体及关键表头（避免被页面初始静态文字 'movement record' 误触发）
-                has_vp_table = await page.evaluate("""() => {
-                    const table = document.querySelector('table#line, table');
-                    if (!table) return false;
-                    const text = (table.innerText || '').toLowerCase();
-                    return text.includes('date') && (text.includes('pass') || text.includes('entry') || text.includes('location'));
-                }""")
+                has_vp_table = await page.evaluate(
+                    "() => Boolean((" + VISIT_PASS_TABLE_FINDER_JS + ")())"
+                )
                 if has_vp_table:
                     break
 
@@ -956,7 +972,7 @@ async def query_and_capture_page(
                 # 严格按列比对：只比对第 1 列 Date（入境日），严禁把第 6 列 Date of Pass Expiry（到期日）误当成入境日
                 matched_box = await page.evaluate(
                     """(windowDates) => {
-                        const table = document.querySelector('table#line, table');
+                        const table = (""" + VISIT_PASS_TABLE_FINDER_JS + """)();
                         if (!table) return null;
                         const rows = Array.from(table.querySelectorAll('tr'));
                         if (rows.length < 2) return null;
@@ -1039,7 +1055,7 @@ async def query_and_capture_page(
             screenshot: bytes
             doc_height = await page.evaluate("() => Math.max(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0, 1000)")
             table_box = await page.evaluate("""() => {
-                const t = document.querySelector('#div_maklumat, table#line, table');
+                const t = (""" + VISIT_PASS_TABLE_FINDER_JS + """)() || document.querySelector('#div_maklumat');
                 if (!t) return null;
                 const r = t.getBoundingClientRect();
                 return { bottom: r.y + window.scrollY + r.height + 40 };
@@ -1380,3 +1396,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
