@@ -124,7 +124,7 @@ class VisitPassWorkerTests(unittest.TestCase):
             config = MODULE.WorkerConfig.from_env()
         self.assertEqual(config.check_url, MODULE.DEFAULT_CHECK_URL)
         self.assertEqual(config.screenshot_bucket, MODULE.DEFAULT_BUCKET)
-        self.assertEqual(config.poll_seconds, 10.0)
+        self.assertEqual(config.poll_seconds, 30.0)
 
     def test_config_accepts_auto_search_mode(self) -> None:
         env = {
@@ -367,6 +367,9 @@ class VisitPassWorkerTests(unittest.TestCase):
 
 
 class _FakeSupabase:
+    def await_external_permit(self, item_id: str) -> None:
+        pass
+
     def __init__(self) -> None:
         self.items = [{"id": "item-1", "customer_id": "customer-1", "case_id": "case-1"}]
         self.finished: list[dict] = []
@@ -420,3 +423,4 @@ class _FakeSupabase:
 
 if __name__ == "__main__":
     unittest.main()
+
