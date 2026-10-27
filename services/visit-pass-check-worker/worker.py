@@ -780,6 +780,11 @@ def make_preview_summary(
     }
 
 
+def visit_input_rejected(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    return bool(re.search(r"please enter a valid email address\s*/\s*region code\s*/\s*mobile number\s*/\s*pin\b", normalized))
+
+
 def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     if isinstance(exception, PlaywrightTimeoutError):
         return (
@@ -906,6 +911,7 @@ async def query_and_capture_page(
 
             outcome: str | None = None
             explicit_invalid_pin = False
+            input_rejected = False
             explicit_no_record = False
             has_vp_table = False
 
@@ -914,6 +920,9 @@ async def query_and_capture_page(
                 await page.wait_for_timeout(1000)
 
                 all_dialog_text = " ".join(dialog_messages).lower()
+                if visit_input_rejected(all_dialog_text):
+                    input_rejected = True
+                    break
                 if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
                     explicit_invalid_pin = True
                     break
@@ -923,6 +932,9 @@ async def query_and_capture_page(
 
                 page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
                 lowered_text = page_text.lower()
+                if visit_input_rejected(lowered_text):
+                    input_rejected = True
+                    break
 
                 if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
                     explicit_invalid_pin = True
@@ -960,7 +972,10 @@ async def query_and_capture_page(
             matched_box = None
             note = None
 
-            if explicit_invalid_pin:
+            if input_rejected:
+                outcome = "NEEDS_REVIEW"
+                note = "官网拒绝邮箱/区号/手机号/PIN组合，未确认具体错误字段"
+            elif explicit_invalid_pin:
                 LOG.warning("官方明确提示：PIN 无效 (PIN_INVALID)")
                 outcome = "PIN_INVALID"
                 note = "官方页面提示 PIN 错误"
@@ -1108,6 +1123,9 @@ async def query_and_capture_page(
                 "dialogs": dialog_messages if dialog_messages else None,
                 "note": note,
             }
+            if input_rejected:
+                summary["error"] = "VISIT_PASS_INPUT_REJECTED"
+                summary["input_validation_rejected"] = True
             return (outcome, screenshot, summary)
         finally:
             await browser.close()
