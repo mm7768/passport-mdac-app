@@ -42,47 +42,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter build apk --debug --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" 2>&1 | tee build_log.txt
-          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk
-          sha256sum build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk > SHA256SUMS.txt
+          flutter build apk --debug --android-project-arg=mdac-parallel-install=true --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" 2>&1 | tee build_log.txt
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
+          sha256sum build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > SHA256SUMS.txt
       - name: Check packaged client credentials and signing certificate
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/verify_mobile_config.py --apk build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk
+          python3 tools/verify_mobile_config.py --apk build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
           SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
-          "$SIGNER" verify --print-certs build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk > APK-SIGNING.txt
+          "$SIGNER" verify --print-certs build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > APK-SIGNING.txt
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -1)
+          "$AAPT" dump badging build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > APK-METADATA.txt
+          grep -F "name='com.example.passport_mdac_app.repair'" APK-METADATA.txt
+          grep -F "versionCode='43'" APK-METADATA.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: PassportMDAC-v1.0.41-APK
+          name: PassportMDAC-Repair-v1.0.42-APK
           path: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk
+            build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
             SHA256SUMS.txt
             APK-SIGNING.txt
+            APK-METADATA.txt
           if-no-files-found: error
           retention-days: 14
       - name: Publish tested mobile repair
         if: github.ref == 'refs/heads/codex/retry-app-v1.0.41' || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.41
+          tag_name: v1.0.42
           target_commitish: ${{ github.sha }}
-          name: Passport MDAC Desk v1.0.41 - Retry 与批次统计修复
+          name: Passport MDAC Desk v1.0.42 - 独立安装修复版
           body: |
             - Retry 统一走授权 RPC，保留 attempt、case 与成功结果。
             - 成功、失败与待确认分开统计，修复 22/20。
             - 手机端只使用 publishable/anon 公钥，禁止服务端密钥进入安装包。
-            - 本版为 debug 签名包。若设备提示签名冲突，请保留旧版并先核对签名及本地未同步数据；不要直接卸载。
+            - 推荐安装 PassportMDAC-Repair-v1.0.42.apk，桌面名称为 MDAC 修复版；独立包名可保留旧版及其本地数据。安装后重新登录同一账号。此包使用 debug 签名。
             - 官网维护中的任务保持暂停，不自动重试。
           files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v1.0.41.apk
+            build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
             SHA256SUMS.txt
             APK-SIGNING.txt
+            APK-METADATA.txt
       - name: Preserve failed build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MDAC-v1.0.41-build-failure
+          name: MDAC-v1.0.42-build-failure
           path: build_log.txt
           if-no-files-found: ignore
           retention-days: 7
+
