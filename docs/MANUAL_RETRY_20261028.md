@@ -13,3 +13,10 @@ The build workflow uploads an artifact only. It does not merge, publish a GitHub
 New private retry-request/history tables must be explicitly included in a future authorized complete customer/task purge. They are not silently removed by normal task deletion. Production rollback removes new entry points while retaining historical evidence; it must not restore permissive direct state updates.
 
 Validation is isolated and synthetic. Database role tests are not live Auth login or government-site execution. Real customer registrations are not triggered by these tests.
+
+
+## Customer-selected task launch
+
+The customer-selection panel now visibly includes MDAC registration, Get PIN, Check Registration and Check Visit Pass in logged-in mode. It is placed above the customer groups so actions are not buried after the selected list. Confirmation uses an explicitly chosen existing Case for each customer; a unique valid Case may be preselected, while multiple Cases require a choice. Missing Cases are not guessed or created. Existing open memberships are reused; only unassigned selected Cases enter a new Operational Batch through the already deployed create_operational_batch RPC. A lost create response is recovered by one read pass, never a blind second create. Existing createBatchDrivenTaskAsync then revalidates Case/member/batch and enqueues the chosen phase. No customer-only legacy fallback exists.
+
+The new manual-Retry backend was installed as migration20261027201319 after isolated tests. Before/after checks showed all current items/results unchanged, including13 successes. A read-only actual-data preview returned1 safe pre-submit item,1 uncertain item, and13 excluded successes. No manual retry request or history row was created during installation.

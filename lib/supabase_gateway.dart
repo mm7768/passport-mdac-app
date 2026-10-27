@@ -1791,6 +1791,68 @@ class SupabaseGateway {
         .toList(growable: false);
   }
 
+  /// Read every unarchived Case for the explicitly selected Customers. The caller
+  /// must choose a Case; ordering is for display and never means "latest wins".
+  static Future<List<Map<String, dynamic>>> fetchCustomerTaskOrderChoices(
+    List<String> customerIds,
+  ) async {
+    final ids = customerIds.toSet().toList(growable: false);
+    if (ids.isEmpty) return const <Map<String, dynamic>>[];
+    if (ids.length > 100) {
+      throw const FormatException('一次最多选择 100 位客户。');
+    }
+    const pageSize = 500;
+    final result = <Map<String, dynamic>>[];
+    for (var offset = 0; ; offset += pageSize) {
+      final rows = await _requiredClient
+          .from('customer_cases')
+          .select(
+            'id,customer_id,order_no,arrival_date,departure_date,'
+            'case_status,business_status,passport_id',
+          )
+          .inFilter('customer_id', ids)
+          .isFilter('website_archived_at', null)
+          .order('id', ascending: true)
+          .range(offset, offset + pageSize - 1);
+      result.addAll(rows.map((row) => Map<String, dynamic>.from(row)));
+      if (rows.length < pageSize) break;
+    }
+    return result;
+  }
+
+  /// Existing, authorized Operational Batch RPC. Never creates a Customer/Case
+  /// and never falls back to a customer-only automation enqueue.
+  static Future<Map<String, dynamic>> createCustomerTaskOperationalBatch(
+    List<String> orderIds, {
+    String? batchName,
+  }) async {
+    final result = await _requiredClient.rpc(
+      'create_operational_batch',
+      params: {'p_order_ids': orderIds, 'p_batch_name': batchName},
+    );
+    if (result is! Map || result['id'] is! String) {
+      throw const FormatException('排单结果未确认，请刷新后核对。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  /// Raw existing execution-context RPC for membership preparation. Avoids the
+  /// optional result-enrichment queries used by the detailed order screens.
+  static Future<Map<String, dynamic>?> fetchCustomerTaskOrderExecutionContext(
+    String orderId,
+  ) async {
+    final result = await _requiredClient.rpc(
+      'get_app_order_execution_context',
+      params: {'p_order_id': orderId},
+    );
+    if (result is List && result.isEmpty) return null;
+    if (result is List && result.length == 1 && result.single is Map) {
+      return Map<String, dynamic>.from(result.single as Map);
+    }
+    if (result is Map) return Map<String, dynamic>.from(result);
+    throw const FormatException('订单执行上下文格式不正确，请刷新后重试。');
+  }
+
   /// 获取指定 OPEN 批次内当前有效的订单列表 (排除已 released 项)
   /// 支持 Plan A (RPC 直接返回四段状态) 与 Plan B (单次批量查询归并，无 N+1)
   static Future<List<Map<String, dynamic>>> fetchAppBatchOrders(

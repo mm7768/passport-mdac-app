@@ -15,6 +15,8 @@ import 'supabase_gateway.dart';
 import 'features/batches/batch_models.dart';
 import 'features/tasks/task_counts.dart';
 import 'features/tasks/manual_retry.dart';
+import 'features/tasks/customer_task_launch.dart';
+import 'features/tasks/customer_task_launch_dialog.dart';
 import 'features/batches/batches_screen.dart';
 
 Future<void> main() async {
@@ -3335,6 +3337,7 @@ class _MdacShellState extends State<MdacShell> {
           role: widget.role,
           initialBusinessStatusFilter: customerStatusFilter,
           initialSelectedCustomerIds: preSelectedCustomerIds,
+          onTaskCreated: () => open(AppSection.tasks),
         );
       case AppSection.tasks:
         return TasksScreen(
@@ -4054,6 +4057,8 @@ class CustomersScreen extends StatefulWidget {
     required this.role,
     this.initialBusinessStatusFilter,
     this.initialSelectedCustomerIds,
+    this.onTaskCreated,
+    this.taskLaunchCoordinator,
     super.key,
   });
 
@@ -4062,6 +4067,8 @@ class CustomersScreen extends StatefulWidget {
   final UserRole role;
   final String? initialBusinessStatusFilter;
   final List<String>? initialSelectedCustomerIds;
+  final VoidCallback? onTaskCreated;
+  final CustomerTaskLaunchCoordinator? taskLaunchCoordinator;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -4070,6 +4077,9 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
+  bool _launchingTask = false;
+  late final CustomerTaskLaunchCoordinator _taskLaunchCoordinator =
+      widget.taskLaunchCoordinator ?? CustomerTaskLaunchCoordinator();
   final Set<String> _expandedGroupIds = <String>{};
   final Map<String, String> _customGroupNames = <String, String>{};
   late String businessStatusFilter;
@@ -5837,7 +5847,58 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> _startSelectedCustomerTask(TaskType type) async {
+    if (_launchingTask || selected.isEmpty) return;
+    final customers = widget.repository.activeCustomers
+        .where((customer) => selected.contains(customer.id)).toList(growable: false);
+    if (customers.length != selected.length) {
+      showToast(context, '所选客户资料已变化，请刷新后重新选择。', error: true);
+      return;
+    }
+    setState(() => _launchingTask = true);
+    final queuedCustomerIds = <String>{};
+    try {
+      final choices = await _taskLaunchCoordinator.loadOrders(customers.map((c) => c.id).toList(growable: false));
+      if (!mounted) return;
+      final selection = await showDialog<CustomerTaskLaunchSelection>(
+        context: context,
+        builder: (_) => CustomerTaskLaunchDialog(type: type, customers: customers, orderChoices: choices),
+      );
+      if (selection == null || !mounted) return;
+      // Preparing memberships and enqueueing happens only after the user confirms.
+      final groups = await _taskLaunchCoordinator.prepareSelectedOrders(selection.orders);
+      if (groups.isEmpty) {
+        throw const CustomerTaskLaunchException('未取得有效排单，请刷新后重新选择订单。');
+      }
+      for (final group in groups) {
+        final error = await widget.repository.createBatchDrivenTaskAsync(
+          type: type, batchId: group.batchId, orders: group.orders, actor: widget.actor,
+          entryDate: selection.entryDate, exitDate: selection.exitDate,
+        );
+        if (error != null) throw StateError(error);
+        queuedCustomerIds.addAll(group.orders.map((order) => order.customerId));
+      }
+      if (!mounted) return;
+      setState(() => selected.removeAll(queuedCustomerIds));
+      showToast(context, '${taskTypeLabel(type)}已发起，共 ${queuedCustomerIds.length} 位客户。');
+      widget.onTaskCreated?.call();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => selected.removeAll(queuedCustomerIds));
+      showToast(context, queuedCustomerIds.isEmpty
+          ? '任务未确认排队，请刷新后核对：$error'
+          : '已排队 ${queuedCustomerIds.length} 位，其余未排队：$error', error: true);
+      if (queuedCustomerIds.isNotEmpty) widget.onTaskCreated?.call();
+    } finally {
+      if (mounted) setState(() => _launchingTask = false);
+    }
+  }
+
   Future<void> startMdac() async {
+    if (widget.repository.remoteMode) {
+      await _startSelectedCustomerTask(TaskType.mdacRegistration);
+      return;
+    }
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
       return;
@@ -5917,6 +5978,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> startSimpleTask(TaskType type) async {
+    if (widget.repository.remoteMode) {
+      await _startSelectedCustomerTask(type);
+      return;
+    }
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
       return;
@@ -7140,6 +7205,27 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 ],
               ),
             ),
+            if (selected.isNotEmpty)
+              SafeArea(
+                top: false,
+                child: SelectionBar(
+                  key: const ValueKey('customer-task-launch-actions'),
+                  count: selected.length,
+                  startingTasks: _launchingTask,
+                  onMdac: startMdac,
+                  onPin: () => startSimpleTask(TaskType.gmailPin),
+                  onRegistration: () => startSimpleTask(TaskType.registrationCheck),
+                  onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                  onBundlePdf: bundleSelectedPdf,
+                  onStatus: updateSelectedBusinessStatus,
+                  onCreatedAt: widget.role == UserRole.owner ? updateSelectedCreatedAt : null,
+                  onMergeBatch: mergeSelectedBatches,
+                  onSplitBatch: splitSelectedBatches,
+                  onExport: exportSelected,
+                  onDelete: widget.role == UserRole.owner ? deleteSelected : null,
+                ),
+              ),
+            if (selected.isNotEmpty) const SizedBox(height: 14),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 28),
               child: groups.isEmpty
@@ -7161,29 +7247,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           .toList(),
                     ),
             ),
-            if (selected.isNotEmpty)
-              SelectionBar(
-                count: selected.length,
-                onMdac: widget.repository.remoteMode ? null : startMdac,
-                onPin: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.gmailPin),
-                onRegistration: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.registrationCheck),
-                onVisitPass: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.visitPassCheck),
-                onBundlePdf: bundleSelectedPdf,
-                onStatus: updateSelectedBusinessStatus,
-                onCreatedAt: widget.role == UserRole.owner
-                    ? updateSelectedCreatedAt
-                    : null,
-                onMergeBatch: mergeSelectedBatches,
-                onSplitBatch: splitSelectedBatches,
-                onExport: exportSelected,
-                onDelete: widget.role == UserRole.owner ? deleteSelected : null,
-              ),
             const SizedBox(height: 28),
           ],
         ),
@@ -8026,7 +8089,7 @@ class _TasksScreenState extends State<TasksScreen> {
                           const SizedBox(height: 10),
                           const Text('暂无最新自动化任务', style: TextStyle(fontWeight: FontWeight.w700)),
                           const SizedBox(height: 4),
-                          const Text('可在“客户档案”勾选客户发起任务', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                          const Text('在“客户总库”勾选客户后，点击选中面板中的“MDAC 注册 / 获取 PIN / 查询”发起任务。', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -9538,6 +9601,7 @@ class SelectionBar extends StatelessWidget {
     required this.onExport,
     this.onBundlePdf,
     this.onDelete,
+    this.startingTasks = false,
     super.key,
   });
 
@@ -9553,6 +9617,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onExport;
   final VoidCallback? onBundlePdf;
   final VoidCallback? onDelete;
+  final bool startingTasks;
 
   @override
   Widget build(BuildContext context) {
@@ -9575,11 +9640,14 @@ class SelectionBar extends StatelessWidget {
         spacing: 8,
         runSpacing: 8,
         children: [
-          Text(
-            '已选 $count 位',
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
+          SizedBox(
+            width: double.infinity,
+            child: Text(
+              startingTasks ? '正在准备任务…' : '已选 $count 位 · 发起任务',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -9587,25 +9655,25 @@ class SelectionBar extends StatelessWidget {
             ActionChip(
               avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
               label: const Text('MDAC 注册'),
-              onPressed: onMdac,
+              onPressed: startingTasks ? null : onMdac,
             ),
           if (onPin != null)
             ActionChip(
               avatar: const Icon(Icons.mail_outline_rounded, size: 16),
               label: const Text('获取 PIN'),
-              onPressed: onPin,
+              onPressed: startingTasks ? null : onPin,
             ),
           if (onRegistration != null)
             ActionChip(
               avatar: const Icon(Icons.manage_search_rounded, size: 16),
               label: const Text('查 Registration'),
-              onPressed: onRegistration,
+              onPressed: startingTasks ? null : onRegistration,
             ),
           if (onVisitPass != null)
             ActionChip(
               avatar: const Icon(Icons.badge_outlined, size: 16),
               label: const Text('查 Visit Pass'),
-              onPressed: onVisitPass,
+              onPressed: startingTasks ? null : onVisitPass,
             ),
           if (onBundlePdf != null)
             ActionChip(
