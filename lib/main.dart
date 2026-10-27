@@ -13,6 +13,7 @@ import 'customer_bundle_exporter.dart';
 import 'customer_excel_exporter.dart';
 import 'supabase_gateway.dart';
 import 'features/batches/batch_models.dart';
+import 'features/tasks/task_counts.dart';
 import 'features/batches/batches_screen.dart';
 
 Future<void> main() async {
@@ -470,12 +471,15 @@ class AutomationTask {
     this.entryDate,
     this.exitDate,
     this.status = TaskStatus.queued,
-    this.successCount = 0,
-    this.failedCount = 0,
+    int successCount = 0,
+    int failedCount = 0,
+    this.detailsLoaded = true,
+    this.batchAttemptCount = 0,
+    this.leaseExpiresAt,
     this.totalCountOverride,
     this.note = '',
     this.items = const <Map<String, dynamic>>[],
-  });
+  }) : _successCount = successCount, _failedCount = failedCount;
 
   final String id;
   final TaskType type;
@@ -485,15 +489,25 @@ class AutomationTask {
   final DateTime? entryDate;
   final DateTime? exitDate;
   TaskStatus status;
-  int successCount;
-  int failedCount;
+  int _successCount;
+  int _failedCount;
+  final bool detailsLoaded;
+  final int batchAttemptCount;
+  final DateTime? leaseExpiresAt;
+  int get successCount => items.isEmpty ? _successCount : TaskCounts(items).succeeded;
+  set successCount(int value) => _successCount = value;
+  int get failedCount => items.isEmpty ? _failedCount : TaskCounts(items).failed;
+  set failedCount(int value) => _failedCount = value;
   final int? totalCountOverride;
   String note;
   final List<Map<String, dynamic>> items;
 
-  int get needsReviewCount =>
-      items.where((it) => it['status'] == 'NEEDS_REVIEW').length;
+  int get needsReviewCount => TaskCounts(items).review;
+  int get retryableCount => batchAttemptCount >= 5 ||
+      (leaseExpiresAt?.isAfter(DateTime.now()) ?? false)
+      ? 0 : TaskCounts(items).retryable;
   int get totalCount {
+    if (items.isNotEmpty) return TaskCounts(items).total;
     if (totalCountOverride != null && totalCountOverride! > 0) {
       return totalCountOverride!;
     }
@@ -503,7 +517,7 @@ class AutomationTask {
     return sum > 0 ? sum : 0;
   }
   int get completedCount =>
-      successCount + failedCount + (status == TaskStatus.needsReview ? needsReviewCount : 0);
+      successCount + failedCount;
   double get progress =>
       totalCount == 0 ? 0 : (completedCount / totalCount).clamp(0.0, 1.0);
 
@@ -540,6 +554,32 @@ class AutomationTask {
       totalCount > 1 &&
       (uncompletedCustomerIds.isNotEmpty || failedCount > 0 || needsReviewCount > 0) &&
       successCount > 0;
+}
+
+class TaskRetryButton extends StatelessWidget {
+  const TaskRetryButton({required this.task, required this.repository, super.key});
+  final AutomationTask task;
+  final DemoRepository repository;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: repository,
+    builder: (context, _) {
+      final busy = repository.isRetryingBatch(task.id);
+      final eligible = task.retryableCount;
+      return FilledButton.tonalIcon(
+        onPressed: busy || eligible == 0 ? null : () async {
+          final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
+          if (context.mounted) {
+            showToast(context, error ?? '安全失败项已重新排队。', error: error != null);
+          }
+        },
+        icon: const Icon(Icons.refresh_rounded, size: 14),
+        label: Text(busy ? '正在重新排队…' : eligible == 0
+            ? '需先核查执行结果' : '重试失败项 ($eligible)'),
+      );
+    },
+  );
 }
 
 class CustomerHardDeletePreview {
@@ -846,6 +886,8 @@ class DemoRepository extends ChangeNotifier {
   final List<Customer> customers = [];
   final List<OcrDraft> ocrDrafts = [];
   final List<AutomationTask> tasks = [];
+  final Set<String> _retryingBatches = {};
+  bool isRetryingBatch(String id) => _retryingBatches.contains(id);
   final List<AutomationTask> historyTasks = [];
   final List<MdacBatchMembership> mdacBatchMemberships = [];
   final List<AppOperationalBatch> activeBatches = [];
@@ -1156,31 +1198,24 @@ class DemoRepository extends ChangeNotifier {
     }
   }
 
-  Future<String?> requeueAutomationTask(String batchId, String actor) async {
-    if (!remoteMode) return null;
-    try {
-      await SupabaseGateway.requeueAutomationBatch(batchId);
-      await syncAutomationTasksFromSupabase();
-      await syncCustomersFromSupabase();
-      auditEvents.insert(0, '$actor 重新排队任务 $batchId');
-      notifyListeners();
-      return null;
-    } catch (exception) {
-      return '重新排队失败：$exception';
-    }
-  }
+  Future<String?> requeueAutomationTask(String batchId, String actor) =>
+      requeueFailedAutomationItems(batchId, actor);
 
   Future<String?> requeueFailedAutomationItems(String batchId, String actor) async {
     if (!remoteMode) return null;
+    if (!_retryingBatches.add(batchId)) return '该批次正在处理重试请求，请稍候。';
+    notifyListeners();
     try {
       await SupabaseGateway.requeueFailedItems(batchId);
       await syncAutomationTasksFromSupabase();
       await syncCustomersFromSupabase();
-      auditEvents.insert(0, '$actor 重新排队未成功项 $batchId');
-      notifyListeners();
+      auditEvents.insert(0, '$actor 重新排队安全失败项 $batchId');
       return null;
     } catch (exception) {
-      return '重新排队未成功项失败：$exception';
+      return SupabaseGateway.retryErrorMessage(exception);
+    } finally {
+      _retryingBatches.remove(batchId);
+      notifyListeners();
     }
   }
 
@@ -1490,24 +1525,10 @@ class DemoRepository extends ChangeNotifier {
             entryDate: _parseRemoteDate(row['entry_date']),
             exitDate: _parseRemoteDate(row['exit_date']),
             status: status,
-            successCount: () {
-              final remote =
-                  int.tryParse(row['success_count']?.toString() ?? '') ?? 0;
-              final fromItems = items
-                  .where((it) => it['status'] == 'SUCCEEDED')
-                  .length;
-              return remote > fromItems ? remote : fromItems;
-            }(),
-            failedCount: () {
-              final remote =
-                  int.tryParse(row['failed_count']?.toString() ?? '') ?? 0;
-              final fromItems = items
-                  .where((it) =>
-                      it['status'] == 'FAILED' ||
-                      it['status'] == 'NEEDS_REVIEW')
-                  .length;
-              return remote > fromItems ? remote : fromItems;
-            }(),
+            batchAttemptCount: int.tryParse("${row['attempt_count']}") ?? 0,
+            leaseExpiresAt: DateTime.tryParse("${row['lease_expires_at']}"),
+            successCount: TaskCounts(items).succeeded,
+            failedCount: TaskCounts(items).failed,
             totalCountOverride:
                 int.tryParse(row['total_count']?.toString() ?? ''),
             note: row['note']?.toString() ?? '',
@@ -1544,6 +1565,7 @@ class DemoRepository extends ChangeNotifier {
         hasMoreHistory = false;
       }
       for (final row in rows) {
+        final historyItems = (row['items'] as List? ?? const []).whereType<Map>().map((i) => Map<String, dynamic>.from(i)).toList();
         final status = _taskStatusFromRemote(row['status']?.toString());
         historyTasks.add(
           AutomationTask(
@@ -1564,7 +1586,10 @@ class DemoRepository extends ChangeNotifier {
             totalCountOverride:
                 int.tryParse(row['total_count']?.toString() ?? ''),
             note: row['note']?.toString() ?? '',
-            items: const [],
+            items: historyItems,
+            detailsLoaded: false,
+            batchAttemptCount: int.tryParse("${row['attempt_count']}") ?? 0,
+            leaseExpiresAt: DateTime.tryParse("${row['lease_expires_at']}"),
           ),
         );
       }
@@ -1578,7 +1603,7 @@ class DemoRepository extends ChangeNotifier {
   }
 
   Future<AutomationTask> loadTaskDetailOnDemand(AutomationTask task) async {
-    if (task.items.isNotEmpty || !remoteMode) return task;
+    if (task.detailsLoaded || !remoteMode) return task;
     try {
       final detail = await SupabaseGateway.fetchSingleBatchDetail(task.id);
       final items = detail['items'] is List
@@ -1599,20 +1624,10 @@ class DemoRepository extends ChangeNotifier {
         entryDate: task.entryDate,
         exitDate: task.exitDate,
         status: task.status,
-        successCount: () {
-          final remote = task.successCount;
-          final fromItems =
-              items.where((it) => it['status'] == 'SUCCEEDED').length;
-          return remote > fromItems ? remote : fromItems;
-        }(),
-        failedCount: () {
-          final remote = task.failedCount;
-          final fromItems = items
-              .where((it) =>
-                  it['status'] == 'FAILED' || it['status'] == 'NEEDS_REVIEW')
-              .length;
-          return remote > fromItems ? remote : fromItems;
-        }(),
+        batchAttemptCount: int.tryParse("${detail['attempt_count']}") ?? 0,
+        leaseExpiresAt: DateTime.tryParse("${detail['lease_expires_at']}"),
+        successCount: TaskCounts(items).succeeded,
+        failedCount: TaskCounts(items).failed,
         totalCountOverride: task.totalCountOverride,
         note: task.note,
         items: items,
@@ -9761,7 +9776,7 @@ class TaskRow extends StatelessWidget {
         ),
         const SizedBox(height: 5),
         Text(
-          '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功 · ${task.failedCount} 失败',
+          '${task.completedCount}/${task.totalCount} 完成 · ${task.successCount} 成功 · ${task.failedCount} 失败 · ${task.needsReviewCount} 待确认',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(color: AppTheme.muted, fontSize: 10),
@@ -9891,41 +9906,8 @@ class TaskRow extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                   ),
                 ),
-              if (task.failedCount > 0 || task.status == TaskStatus.needsReview)
-                FilledButton.tonalIcon(
-                  onPressed: () async {
-                    final err = await repository.requeueFailedAutomationItems(
-                      task.id,
-                      '当前用户',
-                    );
-                    if (context.mounted) {
-                      if (err != null) {
-                        showToast(context, err, error: true);
-                      } else {
-                        showToast(context, '已将失败项重新排队，Worker 将继续处理。');
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.refresh_rounded, size: 14),
-                  label: Text(
-                    task.failedCount > 0
-                        ? '重试失败项 (${task.failedCount})'
-                        : '重试未完成项',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFE8F5E9),
-                    foregroundColor: const Color(0xFF2E7D32),
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 6,
-                      horizontal: 10,
-                    ),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
+              if (task.failedCount > 0)
+                TaskRetryButton(task: task, repository: repository),
               if (task.canSplitTask)
                 FilledButton.tonalIcon(
                   onPressed: () => showTaskSplitDialog(
@@ -11976,7 +11958,7 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
   void initState() {
     super.initState();
     task = widget.task;
-    if (task.items.isEmpty && widget.repository.remoteMode) {
+    if (!task.detailsLoaded && widget.repository.remoteMode) {
       _loadingItems = true;
       widget.repository.loadTaskDetailOnDemand(widget.task).then((enriched) {
         if (mounted) {
@@ -12315,41 +12297,8 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
               canOpenHumanIntervention(task) ? '人工介入处理 / 查看待审核项' : '查看批次填报详情',
             ),
           ),
-        if ((task.type == TaskType.registrationCheck || task.type == TaskType.visitPassCheck) &&
-            (task.status == TaskStatus.needsReview || task.status == TaskStatus.failed || task.failedCount > 0)) ...[
-          FilledButton.tonalIcon(
-            onPressed: () async {
-              final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
-              if (error != null) {
-                showToast(context, error, error: true);
-              } else {
-                showToast(context, '已将失败客户重新排队，Worker 将继续处理。');
-              }
-            },
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: Text(task.failedCount > 0 ? '仅重试失败项 (${task.failedCount})' : '仅重试未完成项'),
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFE8F5E9),
-              foregroundColor: const Color(0xFF2E7D32),
-            ),
-          ),
-          FilledButton.tonalIcon(
-            onPressed: () async {
-              final error = await repository.requeueAutomationTask(task.id, '当前用户');
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
-              if (error != null) {
-                showToast(context, error, error: true);
-              } else {
-                showToast(context, '批次已重新排队，本地 Worker 将自动重试。');
-              }
-            },
-            icon: const Icon(Icons.replay_rounded, size: 16),
-            label: const Text('全部重新排队'),
-          ),
-        ],
+        if (task.failedCount > 0)
+          TaskRetryButton(task: task, repository: repository),
         if (task.canSplitTask)
           FilledButton.tonalIcon(
             onPressed: () async {
