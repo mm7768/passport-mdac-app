@@ -19,6 +19,8 @@ import re
 import socket
 import sys
 import time
+import traceback
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -785,6 +787,15 @@ def visit_input_rejected(text: str) -> bool:
     return bool(re.search(r"please enter a valid email address\s*/\s*region code\s*/\s*mobile number\s*/\s*pin\b", normalized))
 
 
+def safe_failure_details(exception: Exception) -> dict[str, Any]:
+    # Exception messages may contain request values; retain code locations only.
+    frames = traceback.extract_tb(exception.__traceback__)
+    return {
+        "exception_type": type(exception).__name__,
+        "failure_location": [f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}" for frame in frames[-3:]],
+    }
+
+
 def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     if isinstance(exception, PlaywrightTimeoutError):
         return (
@@ -1267,6 +1278,7 @@ class VisitPassCheckWorker:
                 )
             except Exception as exception:
                 error_code, error_message, retryable = classify_page_failure(exception)
+                failure_details = safe_failure_details(exception)
                 log_event(
                     logging.ERROR,
                     step="page_preview",
@@ -1275,7 +1287,7 @@ class VisitPassCheckWorker:
                     item_id=item_id,
                     customer_id=customer_id,
                     case_id=case_id,
-                    result="RESULT_UNKNOWN",
+                    result=failure_details,
                     error_code=error_code,
                     error_message=error_message,
                 )
@@ -1292,6 +1304,7 @@ class VisitPassCheckWorker:
                             "captcha_bypass": False,
                             "screenshot_saved": False,
                             "error": error_code,
+                            **failure_details,
                         },
                         error_code=error_code,
                         error_message=error_message,
