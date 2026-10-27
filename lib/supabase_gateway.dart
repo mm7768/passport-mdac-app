@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'client_api_key.dart';
 import 'features/tasks/manual_retry.dart';
+import 'features/batches/batch_models.dart';
 
 class SupabaseGateway {
   SupabaseGateway._();
@@ -1851,6 +1852,106 @@ class SupabaseGateway {
     }
     if (result is Map) return Map<String, dynamic>.from(result);
     throw const FormatException('订单执行上下文格式不正确，请刷新后重试。');
+  }
+
+  /// Read-only acknowledgement of one opaque customer-flow request marker.
+  /// A false/failed lookup never authorizes sending create again: the original
+  /// transaction may still commit after an HTTP timeout.
+  static Future<bool> confirmCustomerTaskLaunchReceipt({
+    required String requestId,
+    required String taskType,
+    required List<AppBatchOrder> orders,
+  }) async {
+    final actor = currentUserId;
+    if (actor == null || orders.isEmpty || orders.length > 100 ||
+        !RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+            .hasMatch(requestId) ||
+        !const {'MDAC_REGISTRATION','GMAIL_PIN','REGISTRATION_CHECK','VISIT_PASS_CHECK'}
+            .contains(taskType)) return false;
+    final marker = '[APP-LAUNCH:$requestId]';
+    final matches = await _requiredClient.from('automation_batches')
+        .select('id,task_type,created_by,note,items:automation_items(id,customer_id,case_id)')
+        .eq('created_by', actor).eq('task_type', taskType)
+        .like('note', '%$marker%').limit(2);
+    if (matches.length != 1) return false;
+    final batch = matches.single;
+    if (batch['created_by'] != actor || batch['task_type'] != taskType) return false;
+    final note = batch['note']?.toString() ?? '';
+    final markers = RegExp(r'\[APP-LAUNCH:([0-9a-fA-F-]{36})\]').allMatches(note).toList();
+    if (markers.length != 1 || markers.single.group(1) != requestId) return false;
+    final rawItems = batch['items'];
+    if (rawItems is! List || rawItems.length != orders.length) return false;
+    final expected = {for (final order in orders) order.caseId: order};
+    if (expected.length != orders.length) return false;
+    final seen = <String>{};
+    for (final raw in rawItems) {
+      if (raw is! Map) return false;
+      final caseId = raw['case_id']?.toString();
+      final order = expected[caseId];
+      if (order == null || raw['customer_id'] != order.customerId ||
+          order.caseId != order.orderId || !seen.add(order.caseId)) return false;
+      // Acknowledging an already created task must not depend on a membership
+      // still being active now. The create RPC validated it transactionally;
+      // closing/releasing an Operational Batch later does not undo that receipt.
+      // The current schema does not persist a membership witness on task rows.
+    }
+    return seen.length == expected.length;
+  }
+
+  /// Re-check server evidence before a FIRST MDAC enqueue attempt. A new request
+  /// must not be used as a substitute for manually retrying an existing task.
+  /// Reads fail closed on network/format errors. Existing successful or unfinished
+  /// work is only reported; no status, uncertainty or result is rewritten.
+  static Future<void> ensureNoDuplicateMdacTask({
+    required List<AppBatchOrder> orders,
+    required String entryDate,
+    required String exitDate,
+  }) async {
+    if (orders.isEmpty) throw const FormatException('请选择订单。');
+    final customerIds = orders.map((o) => o.customerId).toSet().toList();
+    final cases = {for (final order in orders) order.caseId: order.customerId};
+    final selectedCustomers = customerIds.toSet();
+    bool sameDate(dynamic a, String b) => a != null && a.toString().split('T').first == b.split('T').first;
+    bool relevant(Map<String,dynamic> row, dynamic arrival, dynamic departure) {
+      final caseId = row['case_id']?.toString();
+      final customer = row['customer_id']?.toString();
+      if (caseId != null && caseId.isNotEmpty) return cases[caseId] == customer;
+      return selectedCustomers.contains(customer) && sameDate(arrival, entryDate) && sameDate(departure, exitDate);
+    }
+    const pageSize = 500;
+    for (var offset = 0; ; offset += pageSize) {
+      final rows = await _requiredClient.from('mdac_registrations')
+          .select('id,case_id,customer_id,registration_status,entry_date,exit_date')
+          .inFilter('customer_id', customerIds).eq('registration_status', 'SUCCEEDED')
+          .order('id', ascending: true).range(offset, offset+pageSize-1);
+      for (final row in rows) {
+        if (relevant(row, row['entry_date'], row['exit_date'])) {
+          throw const FormatException('所选订单已有成功的 MDAC 注册，请到任务历史查看，系统未重复提交。');
+        }
+      }
+      if (rows.length < pageSize) break;
+    }
+    for (var offset = 0; ; offset += pageSize) {
+      final rows = await _requiredClient.from('automation_items')
+          .select('id,case_id,customer_id,status,batch:automation_batches!inner(task_type,entry_date,exit_date)')
+          .inFilter('customer_id', customerIds).eq('batch.task_type', 'MDAC_REGISTRATION')
+          .order('id', ascending: true).range(offset, offset+pageSize-1);
+      for (final row in rows) {
+        final rawBatch = row['batch'];
+        final Map batch;
+        if (rawBatch is Map) {
+          batch = rawBatch;
+        } else if (rawBatch is List && rawBatch.length == 1 && rawBatch.single is Map) {
+          batch = rawBatch.single as Map;
+        } else {
+          throw const FormatException('无法确认已有任务状态，请刷新任务页后再操作。');
+        }
+        if (relevant(row, batch['entry_date'], batch['exit_date'])) {
+          throw const FormatException('所选订单已有 MDAC 任务，请到任务页查看或手动重试，系统未另建重复任务。');
+        }
+      }
+      if (rows.length < pageSize) break;
+    }
   }
 
   /// 获取指定 OPEN 批次内当前有效的订单列表 (排除已 released 项)
