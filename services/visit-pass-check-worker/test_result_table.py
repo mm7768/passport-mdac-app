@@ -73,5 +73,14 @@ class ResultTableTests(unittest.TestCase):
     def test_no_record_is_distinct_from_rejected_input(self):
         self.assertFalse(worker.visit_input_rejected('No Record Found'))
 
+    def test_failure_details_never_include_exception_message(self):
+        try:
+            raise ValueError('SECRET-PIN-AND-PASSPORT')
+        except ValueError as error:
+            details=worker.safe_failure_details(error)
+        self.assertNotIn('SECRET',str(details))
+        self.assertEqual(details['exception_type'],'ValueError')
+        self.assertTrue(details['failure_location'])
+
 if __name__=='__main__':unittest.main()
 
