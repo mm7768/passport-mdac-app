@@ -61,5 +61,17 @@ class ResultTableTests(unittest.TestCase):
         self.page.set_content(table(movement='EXIT'))
         self.assertIsNone(self.page.evaluate(self.match_js,worker.entry_window_candidates('2026-10-28')))
 
+    def test_official_combined_validation_error(self):
+        self.assertTrue(worker.visit_input_rejected('Please enter a valid email address / region code / mobile number / PIN.'))
+
+    def test_official_validation_wrapped_whitespace(self):
+        self.assertTrue(worker.visit_input_rejected('Please enter a valid email address /\n region code / mobile number / PIN.'))
+
+    def test_initial_form_labels_are_not_an_error(self):
+        self.assertFalse(worker.visit_input_rejected('Email Address: Country / Region Code: Mobile Number: PIN:'))
+
+    def test_no_record_is_distinct_from_rejected_input(self):
+        self.assertFalse(worker.visit_input_rejected('No Record Found'))
+
 if __name__=='__main__':unittest.main()
 
