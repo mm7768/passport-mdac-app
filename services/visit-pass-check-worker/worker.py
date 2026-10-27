@@ -24,7 +24,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, parse_qsl, urlencode
 
 import requests
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -808,6 +808,45 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     return ("VISIT_PASS_CHECK_WORKER_ERROR", "Check Visit Pass preview failed", True)
 
 
+async def prepare_visit_contact_submission(page: Page, runtime_input: dict[str, str]) -> dict[str, Any]:
+    """Keep the query contact independent from nationality-driven defaults."""
+    expected_region = runtime_input["region_code"]
+    state: dict[str, Any] = {"expected_region_code": expected_region, "request_verified": False}
+    await page.select_option("#regCd", expected_region)
+    await page.fill("#mobile", runtime_input["mobile"])
+    names = await page.evaluate("""() => Object.fromEntries(
+        ['passNo','nationality','regCd','mobile','pinKeyId'].map(id => [id, document.getElementById(id).name])
+    )""")
+    if not all(names.values()):
+        raise WorkerError("Check Visit Pass 查询字段缺少提交名称")
+
+    async def keep_contact_on_wire(route: Any) -> None:
+        request = route.request
+        if request.method != "POST" or "application/x-www-form-urlencoded" not in request.headers.get("content-type", "").lower():
+            await route.continue_()
+            return
+        pairs = parse_qsl(request.post_data or "", keep_blank_values=True)
+        fields = dict(pairs)
+        if not set(names.values()).issubset(fields):
+            await route.continue_()
+            return
+        if fields[names["passNo"]] != runtime_input["passport_number"] or fields[names["pinKeyId"]] != runtime_input["pin_value"] or fields[names["nationality"]] != runtime_input["nationality"]:
+            state["identity_guard_rejected"] = True
+            await route.abort("blockedbyclient")
+            return
+        state["region_corrected_at_request"] = fields[names["regCd"]] != expected_region
+        replacements = {names["regCd"]: expected_region, names["mobile"]: runtime_input["mobile"]}
+        updated = [(key, replacements.get(key, value)) for key, value in pairs]
+        state.update({"request_verified": True, "submitted_region_code": expected_region, "nationality_unchanged": True, "mobile_matches_snapshot": True})
+        await route.continue_(post_data=urlencode(updated))
+
+    await page.route("**/*", keep_contact_on_wire)
+    state["region_code_before_submit"] = await page.input_value("#regCd")
+    if state["region_code_before_submit"] != expected_region or await page.input_value("#mobile") != runtime_input["mobile"]:
+        raise WorkerError("Check Visit Pass 提交前电话区号或手机号回读不一致")
+    return state
+
+
 async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
@@ -917,6 +956,7 @@ async def query_and_capture_page(
             if await submit_locator.is_disabled():
                 await page.wait_for_timeout(1000)
 
+            contact_submission = await prepare_visit_contact_submission(page, runtime_input)
             await submit_locator.click()
             LOG.info("已点击 Submit 查询，等待结果返回...")
 
@@ -1126,6 +1166,7 @@ async def query_and_capture_page(
                 "mode": "AUTO_SEARCH",
                 "outcome": outcome,
                 "target_entry_date": target_entry_date,
+                "contact_submission": contact_submission,
                 "entry_window": entry_window if entry_window else None,
                 "target_matched": (matched_box is not None if entry_window else None),
                 "slider_solved": True,
