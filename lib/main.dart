@@ -14,6 +14,7 @@ import 'customer_excel_exporter.dart';
 import 'supabase_gateway.dart';
 import 'features/batches/batch_models.dart';
 import 'features/tasks/task_counts.dart';
+import 'features/tasks/manual_retry.dart';
 import 'features/batches/batches_screen.dart';
 
 Future<void> main() async {
@@ -503,6 +504,14 @@ class AutomationTask {
   final List<Map<String, dynamic>> items;
 
   int get needsReviewCount => TaskCounts(items).review;
+  int get manualRetryCount {
+    final loaded = failedCount + needsReviewCount;
+    if (loaded > 0) return loaded;
+    if (status == TaskStatus.needsReview || status == TaskStatus.partialSuccess) {
+      return (totalCount - successCount).clamp(0, totalCount);
+    }
+    return 0;
+  }
   int get retryableCount => batchAttemptCount >= 5 ||
       (leaseExpiresAt?.isAfter(DateTime.now()) ?? false)
       ? 0 : TaskCounts(items).retryable;
@@ -565,18 +574,13 @@ class TaskRetryButton extends StatelessWidget {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: repository,
     builder: (context, _) {
-      final busy = repository.isRetryingBatch(task.id);
-      final eligible = task.retryableCount;
-      return FilledButton.tonalIcon(
-        onPressed: busy || eligible == 0 ? null : () async {
-          final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
-          if (context.mounted) {
-            showToast(context, error ?? '安全失败项已重新排队。', error: error != null);
-          }
+      return ManualTaskRetryButton(
+        controller: repository.manualRetryController(task.id),
+        unfinishedCount: task.manualRetryCount,
+        onConfirmed: () async {
+          await repository.syncAutomationTasksFromSupabase();
+          await repository.syncCustomersFromSupabase();
         },
-        icon: const Icon(Icons.refresh_rounded, size: 14),
-        label: Text(busy ? '正在重新排队…' : eligible == 0
-            ? '需先核查执行结果' : '重试失败项 ($eligible)'),
       );
     },
   );
@@ -888,6 +892,22 @@ class DemoRepository extends ChangeNotifier {
   final List<AutomationTask> tasks = [];
   final Set<String> _retryingBatches = {};
   bool isRetryingBatch(String id) => _retryingBatches.contains(id);
+  final Map<String, ManualRetryController> _manualRetryControllers = {};
+
+  String _manualRetryKey(String batchId) =>
+      '${SupabaseGateway.currentUserId ?? 'signed-out'}:$batchId';
+
+  bool hasPendingManualRetry(String batchId) =>
+      _manualRetryControllers[_manualRetryKey(batchId)]?.pending != null;
+
+  ManualRetryController manualRetryController(String batchId) =>
+      _manualRetryControllers.putIfAbsent(
+        _manualRetryKey(batchId),
+        () => ManualRetryController(
+          loadPreview: () => SupabaseGateway.previewAutomationManualRetry(batchId),
+          send: (intent) => SupabaseGateway.requestAutomationManualRetry(batchId, intent),
+        ),
+      );
   final List<AutomationTask> historyTasks = [];
   final List<MdacBatchMembership> mdacBatchMemberships = [];
   final List<AppOperationalBatch> activeBatches = [];
@@ -9906,7 +9926,7 @@ class TaskRow extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                   ),
                 ),
-              if (task.failedCount > 0)
+              if (task.manualRetryCount > 0 || repository.hasPendingManualRetry(task.id))
                 TaskRetryButton(task: task, repository: repository),
               if (task.canSplitTask)
                 FilledButton.tonalIcon(
@@ -12297,7 +12317,7 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
               canOpenHumanIntervention(task) ? '人工介入处理 / 查看待审核项' : '查看批次填报详情',
             ),
           ),
-        if (task.failedCount > 0)
+        if (task.manualRetryCount > 0 || repository.hasPendingManualRetry(task.id))
           TaskRetryButton(task: task, repository: repository),
         if (task.canSplitTask)
           FilledButton.tonalIcon(

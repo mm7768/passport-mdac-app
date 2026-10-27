@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'client_api_key.dart';
+import 'features/tasks/manual_retry.dart';
 
 class SupabaseGateway {
   SupabaseGateway._();
@@ -1192,6 +1193,57 @@ class SupabaseGateway {
 
   static Future<void> requeueFailedItems(String batchId) async {
     await requeueAutomationBatch(batchId);
+  }
+
+  static Future<ManualRetryPreview> previewAutomationManualRetry(
+    String batchId,
+  ) async {
+    final result = await _manualRetryRpc(
+      'preview_automation_manual_retry',
+      {'p_batch_id': batchId},
+    );
+    return ManualRetryPreview.fromJson(result);
+  }
+
+  static Future<ManualRetryResult> requestAutomationManualRetry(
+    String batchId,
+    ManualRetryIntent intent,
+  ) async {
+    final result = await _manualRetryRpc(
+      'request_automation_manual_retry',
+      {
+        'p_batch_id': batchId,
+        'p_request_id': intent.requestId,
+        'p_snapshot_token': intent.preview.snapshotToken,
+        'p_include_uncertain': intent.includeUncertain,
+      },
+    );
+    return ManualRetryResult.fromJson(result);
+  }
+
+  static Future<Map<String, dynamic>> _manualRetryRpc(
+    String name,
+    Map<String, dynamic> params,
+  ) async {
+    try {
+      final result = await _requiredClient.rpc(name, params: params);
+      if (result is! Map) {
+        throw const FormatException('服务器未确认手动重试响应。');
+      }
+      return Map<String, dynamic>.from(result);
+    } on PostgrestException catch (error) {
+      if (error.code == 'PGRST202' || error.code == '42883') {
+        throw const ManualRetryRejected('服务端尚未升级手动重试接口，请先完成服务端更新。');
+      }
+      if (error.code == '42501') {
+        throw const ManualRetryRejected('当前账号没有重试此批次的权限，或账号已失效。');
+      }
+      if (const ['P0001', '22023', '23505', '40001', '40P01'].contains(error.code)) {
+        throw const ManualRetryRejected('任务状态或重试条件已变化，请刷新后重新选择重试。');
+      }
+      // Unknown server/transport outcomes retain the request ID at the caller.
+      rethrow;
+    }
   }
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {

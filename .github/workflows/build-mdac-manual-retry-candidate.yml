@@ -1,0 +1,63 @@
+name: Build manual Retry candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/manual-retry-four-workers-20261028]
+    paths: [android/**, lib/**, test/**, tools/verify_mobile_config.py, pubspec.yaml, pubspec.lock, .github/workflows/build-mdac-manual-retry-candidate.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-retry-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SUPABASE_URL: https://xdmcxhvdqsbcqedfprcy.supabase.co
+  SUPABASE_PUBLISHABLE_KEY: sb_publishable_phc5gL5g9GhQUgZtv7N2xQ_rq2RPVw9
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.8'
+          cache: true
+      - name: Validate public mobile configuration
+        run: python3 tools/verify_mobile_config.py
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - name: Build separate candidate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --debug --android-project-arg=mdac-manual-retry-install=true --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY"
+          mkdir -p candidate
+          cp build/app/outputs/flutter-apk/app-debug.apk candidate/MDAC-ManualRetry-v1.0.43-ci.apk
+          python3 tools/verify_mobile_config.py --apk candidate/MDAC-ManualRetry-v1.0.43-ci.apk
+          SIGNER=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -1)
+          cp "$SIGNER" candidate/apksigner.jar
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -1)
+          "$AAPT" dump badging candidate/MDAC-ManualRetry-v1.0.43-ci.apk > candidate/APK-METADATA.txt
+          grep -F "name='com.example.passport_mdac_app.manualretry'" candidate/APK-METADATA.txt
+          grep -F "versionCode='44'" candidate/APK-METADATA.txt
+          sha256sum candidate/MDAC-ManualRetry-v1.0.43-ci.apk candidate/apksigner.jar > candidate/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MDAC-ManualRetry-v1.0.43-candidate
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+# This job does not merge, publish a Release, deploy Workers or apply SQL.
