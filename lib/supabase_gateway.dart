@@ -1,10 +1,16 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'client_api_key.dart';
 
 class SupabaseGateway {
   SupabaseGateway._();
 
   static SupabaseClient? _client;
+
+  @visibleForTesting
+  static void useClientForTesting(SupabaseClient? client) {
+    _client = client;
+  }
 
   @visibleForTesting
   static Future<Map<String, dynamic>> Function({
@@ -64,6 +70,7 @@ class SupabaseGateway {
 
   static Future<void> initialize() async {
     if (!isConfigured) return;
+    ClientApiKey.requirePublic(publishableKey);
     await Supabase.initialize(url: projectUrl, publishableKey: publishableKey);
     _client = Supabase.instance.client;
   }
@@ -72,7 +79,8 @@ class SupabaseGateway {
     required String url,
     required String anonKey,
   }) async {
-    await Supabase.initialize(url: url, anonKey: anonKey);
+    ClientApiKey.requirePublic(anonKey);
+    await Supabase.initialize(url: url, publishableKey: anonKey);
     _client = Supabase.instance.client;
   }
 
@@ -933,7 +941,7 @@ class SupabaseGateway {
         .from('automation_items')
         .select(
           'id, batch_id, customer_id, customer_snapshot, status, attempt_count, error_code, '
-          'error_message, result_unknown, created_at, updated_at',
+          'error_message, result_unknown, case_id, submission_started_at, created_at, updated_at',
         )
         .eq('batch_id', batchId)
         .order('created_at');
@@ -1045,7 +1053,7 @@ class SupabaseGateway {
           .select(
             'id, task_type, status, total_count, success_count, failed_count, '
             'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
-            'created_at, updated_at',
+            'created_at, updated_at, attempt_count, lease_expires_at',
           )
           .eq('task_type', taskType)
           .order('created_at', ascending: false)
@@ -1097,7 +1105,8 @@ class SupabaseGateway {
         .select(
           'id, task_type, status, total_count, success_count, failed_count, '
           'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
-          'created_at, updated_at',
+          'created_at, updated_at, attempt_count, lease_expires_at, '
+          'items:automation_items(id,customer_id,status,attempt_count,result_unknown,submission_started_at)',
         )
         .order('created_at', ascending: false)
         .range(page * pageSize, (page + 1) * pageSize - 1);
@@ -1117,7 +1126,7 @@ class SupabaseGateway {
         .select(
           'id, task_type, status, total_count, success_count, failed_count, '
           'entry_date, exit_date, mdac_settings_snapshot, note, created_by, '
-          'created_at, updated_at',
+          'created_at, updated_at, attempt_count, lease_expires_at',
         )
         .eq('id', batchId)
         .single();
@@ -1157,39 +1166,32 @@ class SupabaseGateway {
     return row;
   }
 
-  static Future<Map<String, dynamic>> requeueAutomationBatch(
-    String batchId,
-  ) async {
+  static Future<Map<String, dynamic>> requeueAutomationBatch(String batchId) async {
     final result = await _requiredClient.rpc(
-      'requeue_automation_batch',
-      params: {'p_batch_id': batchId},
+      'requeue_automation_batch', params: {'p_batch_id': batchId},
     );
-    if (result is Map) return Map<String, dynamic>.from(result);
-    return <String, dynamic>{'id': batchId};
+    if (result is! Map || result['id']?.toString() != batchId) {
+      throw const FormatException('Supabase 未确认重试结果，请刷新状态核查。');
+    }
+    return Map<String, dynamic>.from(result);
+  }
+
+  static String retryErrorMessage(Object error) {
+    if (error is PostgrestException && error.code == '23505') {
+      return '客户已有其他活动任务，请先核查，未重新排队。';
+    }
+    final text = error.toString();
+    if (text.contains('G1/G2')) return '任务仍在执行或结果待核查，未重新排队。';
+    if (text.contains('No safely retryable')) return '没有可安全重试的失败项。';
+    if (text.contains('attempt limit')) return '任务已达到重试上限，请人工核查。';
+    if (error is PostgrestException && error.code == '42501') {
+      return '没有重试此批次的权限，或账号已失效。';
+    }
+    return '重新排队未确认，请刷新任务状态后再操作。';
   }
 
   static Future<void> requeueFailedItems(String batchId) async {
-    final client = _requiredClient;
-    await client
-        .from('automation_items')
-        .update({
-          'status': 'QUEUED',
-          'attempt_count': 0,
-          'error_code': null,
-          'error_message': null,
-          'result_unknown': false,
-          'started_at': null,
-          'finished_at': null,
-        })
-        .eq('batch_id', batchId)
-        .inFilter('status', ['NEEDS_REVIEW', 'FAILED']);
-    await client
-        .from('automation_batches')
-        .update({
-          'status': 'QUEUED',
-          'failed_count': 0,
-        })
-        .eq('id', batchId);
+    await requeueAutomationBatch(batchId);
   }
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {

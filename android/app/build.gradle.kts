@@ -9,6 +9,8 @@ plugins {
 
 val keystorePropertiesFile = rootProject.file("key.properties")
 val keystoreProperties = Properties()
+// Install the repair build beside older APKs whose signing key is unavailable.
+val parallelRepairInstall = providers.gradleProperty("mdac-parallel-install").orNull == "true"
 if (keystorePropertiesFile.exists()) {
     FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
 }
@@ -25,7 +27,8 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.passport_mdac_app"
+        applicationId = if (parallelRepairInstall) "com.example.passport_mdac_app.repair" else "com.example.passport_mdac_app"
+        manifestPlaceholders["mdacAppLabel"] = if (parallelRepairInstall) "MDAC 修复版" else "Passport MDAC Desk"
         // webview_flutter 4.14.x supports Android SDK 24+.
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
@@ -64,3 +67,4 @@ kotlin {
 flutter {
     source = "../.."
 }
+

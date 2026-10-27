@@ -3,111 +3,93 @@ name: Build MDAC APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - feat/mdac-human-review
-    paths:
-      - android/**
-      - lib/**
-      - test/**
-      - pubspec.yaml
-      - pubspec.lock
-      - .github/workflows/build-mdac-debug-apk.yml
+    branches: [main, feat/mdac-human-review, codex/retry-app-v1.0.41]
+    paths: [android/**, lib/**, test/**, tools/verify_mobile_config.py, pubspec.yaml, pubspec.lock, .github/workflows/build-mdac-debug-apk.yml]
 
 permissions:
   contents: write
+
+concurrency:
+  group: mdac-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SUPABASE_URL: https://xdmcxhvdqsbcqedfprcy.supabase.co
+  SUPABASE_PUBLISHABLE_KEY: sb_publishable_phc5gL5g9GhQUgZtv7N2xQ_rq2RPVw9
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: gradle
-
-      - name: Set up Flutter stable
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: '3.47.8'
           cache: true
-
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
-
-      - name: Test
-        run: flutter test
-
-      - name: Extract Version
-        id: get_version
-        run: |
-          VERSION=$(grep '^version:' pubspec.yaml | cut -d ' ' -f 2 | cut -d '+' -f 1)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-
+      - name: Validate mobile key boundary
+        run: python3 tools/verify_mobile_config.py
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
       - name: Build debug APK
+        shell: bash
         run: |
-          KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
-          flutter build apk --debug \
-            --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
-            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          cp build/app/outputs/flutter-apk/app-debug.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
-
-      - name: Show Failure Log
-        if: failure()
+          set -euo pipefail
+          flutter build apk --debug --android-project-arg=mdac-parallel-install=true --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" 2>&1 | tee build_log.txt
+          cp build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
+          sha256sum build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > SHA256SUMS.txt
+      - name: Check packaged client credentials and signing certificate
+        shell: bash
         run: |
-          echo "=== BUILD LOG TAIL ==="
-          tail -n 120 build_log.txt
-          echo "=== GRADLE ERROR SEARCH ==="
-          grep -i -C 3 "error:" build_log.txt || true
-          grep -i -C 3 "FAILURE:" build_log.txt || true
-
-      - name: Upload Build Log On Failure
+          set -euo pipefail
+          python3 tools/verify_mobile_config.py --apk build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
+          SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          "$SIGNER" verify --print-certs build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > APK-SIGNING.txt
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -1)
+          "$AAPT" dump badging build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk > APK-METADATA.txt
+          grep -F "name='com.example.passport_mdac_app.repair'" APK-METADATA.txt
+          grep -F "versionCode='43'" APK-METADATA.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PassportMDAC-Repair-v1.0.42-APK
+          path: |
+            build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
+            SHA256SUMS.txt
+            APK-SIGNING.txt
+            APK-METADATA.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish tested mobile repair
+        if: github.ref == 'refs/heads/codex/retry-app-v1.0.41' || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.42
+          target_commitish: ${{ github.sha }}
+          name: Passport MDAC Desk v1.0.42 - 独立安装修复版
+          body: |
+            - Retry 统一走授权 RPC，保留 attempt、case 与成功结果。
+            - 成功、失败与待确认分开统计，修复 22/20。
+            - 手机端只使用 publishable/anon 公钥，禁止服务端密钥进入安装包。
+            - 推荐安装 PassportMDAC-Repair-v1.0.42.apk，桌面名称为 MDAC 修复版；独立包名可保留旧版及其本地数据。安装后重新登录同一账号。此包使用 debug 签名。
+            - 官网维护中的任务保持暂停，不自动重试。
+          files: |
+            build/app/outputs/flutter-apk/PassportMDAC-Repair-v1.0.42.apk
+            SHA256SUMS.txt
+            APK-SIGNING.txt
+            APK-METADATA.txt
+      - name: Preserve failed build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Failure-Log
+          name: MDAC-v1.0.42-build-failure
           path: build_log.txt
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PassportMDAC-v${{ steps.get_version.outputs.VERSION }}-APK
-          path: build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
-        with:
-          tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (Order/Case Worker 绑定安全修复)"
-          body: |
-            ### v${{ steps.get_version.outputs.VERSION }} 更新内容：
-            - **Order/Case Worker 绑定收口**：
-              - 远程模式下客户总库不再允许直接创建 MDAC / PIN / Registration / Visit Pass Worker 任务；
-              - Worker 任务必须先进入 Operational Batch，再从批次工作区执行，强制携带稳定 `case_id`、`membership_id` 与 `operational_batch_id`；
-              - 客户总库在远程模式隐藏旧 Worker 快捷按钮，避免误操作生成 Legacy / NULL `case_id` 任务。
-            - **Registration Check fallback 加固**：
-              - fallback 写回 `registration_checks` 时同步保存 `automation_items.case_id`；
-              - 保证 strict Order 流程在主写回 RPC 异常时仍保持 Order/Case 关联。
-            - **验收**：
-              - Flutter analyze、test、debug APK build 已通过；
-              - 数据库 fallback case-binding rollback rehearsal 已通过。
-
-          files: |
-            build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
