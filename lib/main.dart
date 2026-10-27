@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 
 import 'mdac_human_review.dart';
 import 'human_query_review.dart';
@@ -14,6 +16,9 @@ import 'customer_excel_exporter.dart';
 import 'supabase_gateway.dart';
 import 'features/batches/batch_models.dart';
 import 'features/tasks/task_counts.dart';
+import 'features/tasks/manual_retry.dart';
+import 'features/tasks/customer_task_launch.dart';
+import 'features/tasks/customer_task_launch_dialog.dart';
 import 'features/batches/batches_screen.dart';
 
 Future<void> main() async {
@@ -503,6 +508,14 @@ class AutomationTask {
   final List<Map<String, dynamic>> items;
 
   int get needsReviewCount => TaskCounts(items).review;
+  int get manualRetryCount {
+    final loaded = failedCount + needsReviewCount;
+    if (loaded > 0) return loaded;
+    if (status == TaskStatus.needsReview || status == TaskStatus.partialSuccess) {
+      return (totalCount - successCount).clamp(0, totalCount);
+    }
+    return 0;
+  }
   int get retryableCount => batchAttemptCount >= 5 ||
       (leaseExpiresAt?.isAfter(DateTime.now()) ?? false)
       ? 0 : TaskCounts(items).retryable;
@@ -565,18 +578,13 @@ class TaskRetryButton extends StatelessWidget {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: repository,
     builder: (context, _) {
-      final busy = repository.isRetryingBatch(task.id);
-      final eligible = task.retryableCount;
-      return FilledButton.tonalIcon(
-        onPressed: busy || eligible == 0 ? null : () async {
-          final error = await repository.requeueFailedAutomationItems(task.id, '当前用户');
-          if (context.mounted) {
-            showToast(context, error ?? '安全失败项已重新排队。', error: error != null);
-          }
+      return ManualTaskRetryButton(
+        controller: repository.manualRetryController(task.id),
+        unfinishedCount: task.manualRetryCount,
+        onConfirmed: () async {
+          await repository.syncAutomationTasksFromSupabase();
+          await repository.syncCustomersFromSupabase();
         },
-        icon: const Icon(Icons.refresh_rounded, size: 14),
-        label: Text(busy ? '正在重新排队…' : eligible == 0
-            ? '需先核查执行结果' : '重试失败项 ($eligible)'),
       );
     },
   );
@@ -876,6 +884,38 @@ class GmailSettings {
   bool get isComplete => gmailAddress.trim().isNotEmpty && credentialConfigured;
 }
 
+class CustomerTaskLaunchUnknown implements Exception {
+  const CustomerTaskLaunchUnknown(this.requestId);
+  final String requestId;
+  @override
+  String toString() => '发起结果待确认，请确认原请求，不要重复发起。';
+}
+
+class PendingCustomerTaskLaunch {
+  PendingCustomerTaskLaunch({required this.requestId, required this.actorKey,
+    required this.type, required this.orders});
+  final String requestId;
+  final String actorKey;
+  final TaskType type;
+  final List<AppBatchOrder> orders;
+}
+
+String _newCustomerTaskRequestId() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  final hex = bytes.map((n) => n.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0,8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20)}';
+}
+
+String _taskTypeApiValue(TaskType type) => switch (type) {
+  TaskType.mdacRegistration => 'MDAC_REGISTRATION',
+  TaskType.gmailPin => 'GMAIL_PIN',
+  TaskType.registrationCheck => 'REGISTRATION_CHECK',
+  TaskType.visitPassCheck => 'VISIT_PASS_CHECK',
+};
+
 class DemoRepository extends ChangeNotifier {
   DemoRepository() {
     mdacSettings = MdacSettings.defaults();
@@ -888,6 +928,50 @@ class DemoRepository extends ChangeNotifier {
   final List<AutomationTask> tasks = [];
   final Set<String> _retryingBatches = {};
   bool isRetryingBatch(String id) => _retryingBatches.contains(id);
+  final Map<String, ManualRetryController> _manualRetryControllers = {};
+  final Map<String, PendingCustomerTaskLaunch> _pendingCustomerTaskLaunches = {};
+  String get _customerTaskActorKey => SupabaseGateway.currentUserId ?? 'signed-out';
+  int get pendingCustomerTaskLaunchCount => _pendingCustomerTaskLaunches.values
+      .where((p) => p.actorKey == _customerTaskActorKey)
+      .expand((p) => p.orders.map((o) => o.customerId)).toSet().length;
+
+  bool hasPendingCustomerTaskLaunchFor(TaskType type, List<String> customerIds) =>
+      _pendingCustomerTaskLaunches.values.any((p) => p.actorKey == _customerTaskActorKey &&
+        p.type == type && p.orders.any((o) => customerIds.contains(o.customerId)));
+
+  Future<bool> confirmCustomerTaskLaunchReceipt(PendingCustomerTaskLaunch pending) =>
+      SupabaseGateway.confirmCustomerTaskLaunchReceipt(requestId: pending.requestId,
+        taskType: _taskTypeApiValue(pending.type), orders: pending.orders);
+
+  Future<Set<String>> confirmPendingCustomerTaskLaunches() async {
+    final confirmed = <String>{};
+    for (final pending in _pendingCustomerTaskLaunches.values.toList()) {
+      if (pending.actorKey != _customerTaskActorKey) continue;
+      var found = false;
+      try { found = await confirmCustomerTaskLaunchReceipt(pending); } catch (_) { /* Retain ambiguous intent. */ }
+      if (found) {
+        confirmed.addAll(pending.orders.map((o) => o.customerId));
+        _pendingCustomerTaskLaunches.remove(pending.requestId);
+      }
+    }
+    notifyListeners();
+    return confirmed;
+  }
+
+  String _manualRetryKey(String batchId) =>
+      '${SupabaseGateway.currentUserId ?? 'signed-out'}:$batchId';
+
+  bool hasPendingManualRetry(String batchId) =>
+      _manualRetryControllers[_manualRetryKey(batchId)]?.pending != null;
+
+  ManualRetryController manualRetryController(String batchId) =>
+      _manualRetryControllers.putIfAbsent(
+        _manualRetryKey(batchId),
+        () => ManualRetryController(
+          loadPreview: () => SupabaseGateway.previewAutomationManualRetry(batchId),
+          send: (intent) => SupabaseGateway.requestAutomationManualRetry(batchId, intent),
+        ),
+      );
   final List<AutomationTask> historyTasks = [];
   final List<MdacBatchMembership> mdacBatchMemberships = [];
   final List<AppOperationalBatch> activeBatches = [];
@@ -2732,11 +2816,27 @@ class DemoRepository extends ChangeNotifier {
     required String actor,
     DateTime? entryDate,
     DateTime? exitDate,
+    String? requestId,
   }) async {
     if (!remoteMode) {
       return '离线模式不支持批次驱动任务执行。';
     }
     if (orders.isEmpty) return '请先选择需要执行的订单。';
+    if (requestId != null) {
+      final requestedCases = orders.map((o) => o.caseId).toSet();
+      for (final pending in _pendingCustomerTaskLaunches.values.toList()) {
+        if (pending.actorKey != _customerTaskActorKey || pending.type != type ||
+            !pending.orders.any((o) => requestedCases.contains(o.caseId))) continue;
+        var confirmed = false;
+        try { confirmed = await confirmCustomerTaskLaunchReceipt(pending); } catch (_) { /* Retain. */ }
+        if (!confirmed) throw CustomerTaskLaunchUnknown(pending.requestId);
+        final sameCases = pending.orders.map((o) => o.caseId).toSet();
+        _pendingCustomerTaskLaunches.remove(pending.requestId);
+        notifyListeners();
+        if (sameCases.length == requestedCases.length && sameCases.containsAll(requestedCases)) return null;
+        return '原发起结果已确认，请刷新后重新选择剩余订单。';
+      }
+    }
     if (type != TaskType.mdacRegistration &&
         type != TaskType.gmailPin &&
         type != TaskType.registrationCheck &&
@@ -2800,11 +2900,29 @@ class DemoRepository extends ChangeNotifier {
         },
     ];
 
+    final pending = requestId == null ? null : PendingCustomerTaskLaunch(
+      requestId: requestId, actorKey: _customerTaskActorKey, type: type,
+      orders: List<AppBatchOrder>.unmodifiable(orders),
+    );
+    var writeStarted = false;
+    var acknowledged = false;
+    final marker = requestId == null ? '' : ' [APP-LAUNCH:$requestId]';
     try {
+      if (requestId != null && type == TaskType.mdacRegistration) {
+        await SupabaseGateway.ensureNoDuplicateMdacTask(orders: orders,
+          entryDate: _dateOnly(entryDate!).toIso8601String().substring(0,10),
+          exitDate: _dateOnly(exitDate!).toIso8601String().substring(0,10));
+      }
+      if (pending != null) {
+        _pendingCustomerTaskLaunches[pending.requestId] = pending;
+        notifyListeners();
+      }
+      late Map<String,dynamic> reply;
       if (type == TaskType.gmailPin) {
-        await SupabaseGateway.createGmailPinBatch(
+        writeStarted = true;
+        reply = await SupabaseGateway.createGmailPinBatch(
           customers: customerPayloads,
-          note: '$actor 从批次 $batchId 触发 Gmail PIN 获取；绑定稳定 Case',
+          note: '$actor 从批次 $batchId 触发 Gmail PIN 获取；绑定稳定 Case$marker',
         );
         auditEvents.insert(
           0,
@@ -2812,9 +2930,10 @@ class DemoRepository extends ChangeNotifier {
         );
         currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
       } else if (type == TaskType.registrationCheck) {
-        await SupabaseGateway.createRegistrationCheckBatch(
+        writeStarted = true;
+        reply = await SupabaseGateway.createRegistrationCheckBatch(
           customers: customerPayloads,
-          note: '$actor 从批次 $batchId 触发 Check Registration；绑定稳定 Case',
+          note: '$actor 从批次 $batchId 触发 Check Registration；绑定稳定 Case$marker',
         );
         auditEvents.insert(
           0,
@@ -2827,14 +2946,19 @@ class DemoRepository extends ChangeNotifier {
             settings.mdacEmail.trim().isEmpty ||
             settings.mdacPhone.trim().isEmpty ||
             settings.regionCode.trim().isEmpty) {
+          if (pending != null) {
+            _pendingCustomerTaskLaunches.remove(pending.requestId);
+            notifyListeners();
+          }
           return '请先在 MDAC 默认业务配置中填写邮箱、手机号和国家/地区代码。';
         }
-        await SupabaseGateway.createVisitPassCheckBatch(
+        writeStarted = true;
+        reply = await SupabaseGateway.createVisitPassCheckBatch(
           customers: customerPayloads,
           email: settings.mdacEmail,
           regionCode: settings.regionCode,
           mobile: settings.mdacPhone,
-          note: '$actor 从批次 $batchId 触发 Check Visit Pass；绑定稳定 Case',
+          note: '$actor 从批次 $batchId 触发 Check Visit Pass；绑定稳定 Case$marker',
         );
         auditEvents.insert(
           0,
@@ -2842,11 +2966,12 @@ class DemoRepository extends ChangeNotifier {
         );
         currentWorkerActivity = '已排队，等待 Railway Check Visit Pass Worker';
       } else {
-        await SupabaseGateway.createMdacRegistrationBatch(
+        writeStarted = true;
+        reply = await SupabaseGateway.createMdacRegistrationBatch(
           entryDate: entryDate!,
           exitDate: exitDate!,
           customers: customerPayloads,
-          note: '$actor 从批次 $batchId 触发 MDAC fill-preview；绑定稳定 Case',
+          note: '$actor 从批次 $batchId 触发 MDAC fill-preview；绑定稳定 Case$marker',
         );
         auditEvents.insert(
           0,
@@ -2855,6 +2980,11 @@ class DemoRepository extends ChangeNotifier {
         currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
       }
 
+      if (pending != null && (reply['id'] is! String || (reply['id'] as String).isEmpty)) {
+        throw const FormatException('服务器未确认任务批次。');
+      }
+      acknowledged = true;
+      if (pending != null) _pendingCustomerTaskLaunches.remove(pending.requestId);
       await Future.wait([
         syncAutomationTasksFromSupabase(),
         syncCustomersFromSupabase(),
@@ -2863,6 +2993,26 @@ class DemoRepository extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (exception) {
+      if (pending != null && writeStarted && !acknowledged) {
+        if (exception is PostgrestException && const [
+          '42501','22023','23505','P0001','23503','23514','22P02','PGRST202','42883',
+        ].contains(exception.code)) {
+          _pendingCustomerTaskLaunches.remove(pending.requestId);
+        } else {
+          var confirmed = false;
+          try { confirmed = await confirmCustomerTaskLaunchReceipt(pending); } catch (_) { /* Retain. */ }
+          if (confirmed) {
+            _pendingCustomerTaskLaunches.remove(pending.requestId);
+            notifyListeners();
+            return null;
+          }
+          notifyListeners();
+          throw CustomerTaskLaunchUnknown(pending.requestId);
+        }
+      } else if (pending != null && !writeStarted) {
+        _pendingCustomerTaskLaunches.remove(pending.requestId);
+      }
+      if (acknowledged && requestId != null) return null;
       return '${taskTypeLabel(type)} 批次执行失败：$exception';
     }
   }
@@ -3315,6 +3465,7 @@ class _MdacShellState extends State<MdacShell> {
           role: widget.role,
           initialBusinessStatusFilter: customerStatusFilter,
           initialSelectedCustomerIds: preSelectedCustomerIds,
+          onTaskCreated: () => open(AppSection.tasks),
         );
       case AppSection.tasks:
         return TasksScreen(
@@ -4034,6 +4185,8 @@ class CustomersScreen extends StatefulWidget {
     required this.role,
     this.initialBusinessStatusFilter,
     this.initialSelectedCustomerIds,
+    this.onTaskCreated,
+    this.taskLaunchCoordinator,
     super.key,
   });
 
@@ -4042,6 +4195,8 @@ class CustomersScreen extends StatefulWidget {
   final UserRole role;
   final String? initialBusinessStatusFilter;
   final List<String>? initialSelectedCustomerIds;
+  final VoidCallback? onTaskCreated;
+  final CustomerTaskLaunchCoordinator? taskLaunchCoordinator;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -4050,6 +4205,9 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final searchController = TextEditingController();
   final selected = <String>{};
+  bool _launchingTask = false;
+  late final CustomerTaskLaunchCoordinator _taskLaunchCoordinator =
+      widget.taskLaunchCoordinator ?? CustomerTaskLaunchCoordinator();
   final Set<String> _expandedGroupIds = <String>{};
   final Map<String, String> _customGroupNames = <String, String>{};
   late String businessStatusFilter;
@@ -5817,7 +5975,90 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> _confirmPendingCustomerTaskLaunchResults() async {
+    if (_launchingTask) return;
+    setState(() => _launchingTask = true);
+    try {
+      final confirmed = await widget.repository.confirmPendingCustomerTaskLaunches();
+      if (!mounted) return;
+      setState(() => selected.removeAll(confirmed));
+      final remaining = widget.repository.pendingCustomerTaskLaunchCount;
+      showToast(context, remaining > 0
+          ? '已确认 ${confirmed.length} 位；另 $remaining 位发起结果待确认，未重复发起。'
+          : '已确认 ${confirmed.length} 位客户的原发起结果。');
+      if (confirmed.isNotEmpty) {
+        await widget.repository.syncAutomationTasksFromSupabase();
+        widget.onTaskCreated?.call();
+      }
+    } finally {
+      if (mounted) setState(() => _launchingTask = false);
+    }
+  }
+
+  Future<void> _startSelectedCustomerTask(TaskType type) async {
+    if (_launchingTask || selected.isEmpty) return;
+    if (widget.repository.hasPendingCustomerTaskLaunchFor(type, selected.toList(growable:false))) {
+      await _confirmPendingCustomerTaskLaunchResults();
+      return;
+    }
+    final customers = widget.repository.activeCustomers
+        .where((customer) => selected.contains(customer.id)).toList(growable: false);
+    if (customers.length != selected.length) {
+      showToast(context, '所选客户资料已变化，请刷新后重新选择。', error: true);
+      return;
+    }
+    setState(() => _launchingTask = true);
+    final queuedCustomerIds = <String>{};
+    try {
+      final choices = await _taskLaunchCoordinator.loadOrders(customers.map((c) => c.id).toList(growable: false));
+      if (!mounted) return;
+      final selection = await showDialog<CustomerTaskLaunchSelection>(
+        context: context,
+        builder: (_) => CustomerTaskLaunchDialog(type: type, customers: customers, orderChoices: choices),
+      );
+      if (selection == null || !mounted) return;
+      // Preparing memberships and enqueueing happens only after the user confirms.
+      final groups = await _taskLaunchCoordinator.prepareSelectedOrders(selection.orders);
+      if (groups.isEmpty) {
+        throw const CustomerTaskLaunchException('未取得有效排单，请刷新后重新选择订单。');
+      }
+      for (final group in groups) {
+        final error = await widget.repository.createBatchDrivenTaskAsync(
+          type: type, batchId: group.batchId, orders: group.orders, actor: widget.actor,
+          entryDate: selection.entryDate, exitDate: selection.exitDate,
+          requestId: _newCustomerTaskRequestId(),
+        );
+        if (error != null) throw StateError(error);
+        queuedCustomerIds.addAll(group.orders.map((order) => order.customerId));
+      }
+      if (!mounted) return;
+      setState(() => selected.removeAll(queuedCustomerIds));
+      showToast(context, '${taskTypeLabel(type)}已发起，共 ${queuedCustomerIds.length} 位客户。');
+      widget.onTaskCreated?.call();
+    } on CustomerTaskLaunchUnknown {
+      if (!mounted) return;
+      setState(() => selected.removeAll(queuedCustomerIds));
+      showToast(context, '已确认 ${queuedCustomerIds.length} 位入队；另 '
+          '${widget.repository.pendingCustomerTaskLaunchCount} 位发起结果待确认。'
+          '请点“确认发起结果”，不会重复发起。');
+      if (queuedCustomerIds.isNotEmpty) widget.onTaskCreated?.call();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => selected.removeAll(queuedCustomerIds));
+      showToast(context, queuedCustomerIds.isEmpty
+          ? '任务未确认排队，请刷新后核对：$error'
+          : '已排队 ${queuedCustomerIds.length} 位，其余未排队：$error', error: true);
+      if (queuedCustomerIds.isNotEmpty) widget.onTaskCreated?.call();
+    } finally {
+      if (mounted) setState(() => _launchingTask = false);
+    }
+  }
+
   Future<void> startMdac() async {
+    if (widget.repository.remoteMode) {
+      await _startSelectedCustomerTask(TaskType.mdacRegistration);
+      return;
+    }
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
       return;
@@ -5897,6 +6138,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Future<void> startSimpleTask(TaskType type) async {
+    if (widget.repository.remoteMode) {
+      await _startSelectedCustomerTask(type);
+      return;
+    }
     if (selected.isEmpty) {
       showToast(context, '请先选择客户。');
       return;
@@ -6901,6 +7146,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
             icon: const Icon(Icons.add_rounded),
             label: const Text('导入护照'),
           ),
+          if (widget.repository.pendingCustomerTaskLaunchCount > 0)
+            OutlinedButton.icon(
+              onPressed: _launchingTask ? null : _confirmPendingCustomerTaskLaunchResults,
+              icon: const Icon(Icons.fact_check_outlined),
+              label: Text('确认发起结果 (${widget.repository.pendingCustomerTaskLaunchCount})'),
+            ),
         ],
       ),
       child: SingleChildScrollView(
@@ -7120,6 +7371,27 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 ],
               ),
             ),
+            if (selected.isNotEmpty)
+              SafeArea(
+                top: false,
+                child: SelectionBar(
+                  key: const ValueKey('customer-task-launch-actions'),
+                  count: selected.length,
+                  startingTasks: _launchingTask,
+                  onMdac: startMdac,
+                  onPin: () => startSimpleTask(TaskType.gmailPin),
+                  onRegistration: () => startSimpleTask(TaskType.registrationCheck),
+                  onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
+                  onBundlePdf: bundleSelectedPdf,
+                  onStatus: updateSelectedBusinessStatus,
+                  onCreatedAt: widget.role == UserRole.owner ? updateSelectedCreatedAt : null,
+                  onMergeBatch: mergeSelectedBatches,
+                  onSplitBatch: splitSelectedBatches,
+                  onExport: exportSelected,
+                  onDelete: widget.role == UserRole.owner ? deleteSelected : null,
+                ),
+              ),
+            if (selected.isNotEmpty) const SizedBox(height: 14),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 28),
               child: groups.isEmpty
@@ -7141,29 +7413,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           .toList(),
                     ),
             ),
-            if (selected.isNotEmpty)
-              SelectionBar(
-                count: selected.length,
-                onMdac: widget.repository.remoteMode ? null : startMdac,
-                onPin: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.gmailPin),
-                onRegistration: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.registrationCheck),
-                onVisitPass: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.visitPassCheck),
-                onBundlePdf: bundleSelectedPdf,
-                onStatus: updateSelectedBusinessStatus,
-                onCreatedAt: widget.role == UserRole.owner
-                    ? updateSelectedCreatedAt
-                    : null,
-                onMergeBatch: mergeSelectedBatches,
-                onSplitBatch: splitSelectedBatches,
-                onExport: exportSelected,
-                onDelete: widget.role == UserRole.owner ? deleteSelected : null,
-              ),
             const SizedBox(height: 28),
           ],
         ),
@@ -8006,7 +8255,7 @@ class _TasksScreenState extends State<TasksScreen> {
                           const SizedBox(height: 10),
                           const Text('暂无最新自动化任务', style: TextStyle(fontWeight: FontWeight.w700)),
                           const SizedBox(height: 4),
-                          const Text('可在“客户档案”勾选客户发起任务', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                          const Text('在“客户总库”勾选客户后，点击选中面板中的“MDAC 注册 / 获取 PIN / 查询”发起任务。', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -9518,6 +9767,7 @@ class SelectionBar extends StatelessWidget {
     required this.onExport,
     this.onBundlePdf,
     this.onDelete,
+    this.startingTasks = false,
     super.key,
   });
 
@@ -9533,6 +9783,7 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onExport;
   final VoidCallback? onBundlePdf;
   final VoidCallback? onDelete;
+  final bool startingTasks;
 
   @override
   Widget build(BuildContext context) {
@@ -9555,11 +9806,14 @@ class SelectionBar extends StatelessWidget {
         spacing: 8,
         runSpacing: 8,
         children: [
-          Text(
-            '已选 $count 位',
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
+          SizedBox(
+            width: double.infinity,
+            child: Text(
+              startingTasks ? '正在准备任务…' : '已选 $count 位 · 发起任务',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -9567,25 +9821,25 @@ class SelectionBar extends StatelessWidget {
             ActionChip(
               avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
               label: const Text('MDAC 注册'),
-              onPressed: onMdac,
+              onPressed: startingTasks ? null : onMdac,
             ),
           if (onPin != null)
             ActionChip(
               avatar: const Icon(Icons.mail_outline_rounded, size: 16),
               label: const Text('获取 PIN'),
-              onPressed: onPin,
+              onPressed: startingTasks ? null : onPin,
             ),
           if (onRegistration != null)
             ActionChip(
               avatar: const Icon(Icons.manage_search_rounded, size: 16),
               label: const Text('查 Registration'),
-              onPressed: onRegistration,
+              onPressed: startingTasks ? null : onRegistration,
             ),
           if (onVisitPass != null)
             ActionChip(
               avatar: const Icon(Icons.badge_outlined, size: 16),
               label: const Text('查 Visit Pass'),
-              onPressed: onVisitPass,
+              onPressed: startingTasks ? null : onVisitPass,
             ),
           if (onBundlePdf != null)
             ActionChip(
@@ -9906,7 +10160,7 @@ class TaskRow extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                   ),
                 ),
-              if (task.failedCount > 0)
+              if (task.manualRetryCount > 0 || repository.hasPendingManualRetry(task.id))
                 TaskRetryButton(task: task, repository: repository),
               if (task.canSplitTask)
                 FilledButton.tonalIcon(
@@ -12297,7 +12551,7 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
               canOpenHumanIntervention(task) ? '人工介入处理 / 查看待审核项' : '查看批次填报详情',
             ),
           ),
-        if (task.failedCount > 0)
+        if (task.manualRetryCount > 0 || repository.hasPendingManualRetry(task.id))
           TaskRetryButton(task: task, repository: repository),
         if (task.canSplitTask)
           FilledButton.tonalIcon(

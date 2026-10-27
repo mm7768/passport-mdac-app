@@ -7,6 +7,7 @@ import 'package:http/testing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:passport_mdac_app/main.dart';
 import 'package:passport_mdac_app/supabase_gateway.dart';
+import 'package:passport_mdac_app/features/tasks/manual_retry.dart';
 
 class RemoteRepository extends DemoRepository {
   @override
@@ -21,21 +22,18 @@ class RetryRepository extends RemoteRepository {
 }
 
 class WidgetRetryRepository extends RetryRepository {
-  final pending = Completer<String?>();
-  bool busy = false;
+  final pending = Completer<ManualRetryResult>();
   int calls = 0;
+  late final controller = ManualRetryController(
+    loadPreview: () async => const ManualRetryPreview(
+      status: 'READY', taskType: 'MDAC_REGISTRATION', snapshotToken: 'snapshot',
+      safeCount: 1, uncertainCount: 0, excludedSuccessCount: 0,
+    ),
+    newRequestId: () => '11111111-1111-4111-8111-111111111111',
+    send: (_) { calls++; return pending.future; },
+  );
   @override
-  bool isRetryingBatch(String id) => busy;
-  @override
-  Future<String?> requeueFailedAutomationItems(String id, String actor) async {
-    calls++;
-    busy = true;
-    notifyListeners();
-    final result = await pending.future;
-    busy = false;
-    notifyListeners();
-    return result;
-  }
+  ManualRetryController manualRetryController(String id) => controller;
 }
 
 Map<String, dynamic> item(int i, String status) => {
@@ -168,10 +166,13 @@ void main() {
     await tester.pumpWidget(MaterialApp(home:Scaffold(body:TaskRetryButton(
       task:task([item(1,'FAILED')]),repository:repo,
     ))));
-    await tester.tap(find.text('重试失败项 (1)')); await tester.pump();
-    expect(find.text('正在重新排队…'),findsOneWidget);
-    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,isNull);
-    repo.pending.complete(null);
+    await tester.tap(find.text('重试未成功项 (1)')); await tester.pumpAndSettle();
+    await tester.tap(find.text('确认重试 (1)')); await tester.pump();
+    expect(find.text('正在处理重试请求…'),findsOneWidget);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, '正在处理重试请求…')).onPressed,isNull);
+    repo.pending.complete(const ManualRetryResult(
+      requestId: '11111111-1111-4111-8111-111111111111', requeuedCount: 1, replayed: false,
+    ));
     await tester.pumpAndSettle(); expect(repo.calls,1);
   });
 
@@ -180,8 +181,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(home:Scaffold(body:TaskRetryButton(
       task:task([item(1,'NEEDS_REVIEW')]),repository:repo,
     ))));
-    expect(find.text('需先核查执行结果'),findsOneWidget);
-    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,isNull);
+    expect(find.text('重试未成功项 (1)'),findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,isNotNull);
     expect(repo.calls,0);
   });
 }

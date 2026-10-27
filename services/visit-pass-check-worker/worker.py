@@ -19,10 +19,12 @@ import re
 import socket
 import sys
 import time
+import traceback
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, parse_qsl, urlencode
 
 import requests
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -697,6 +699,25 @@ def entry_window_candidates(iso_date: str | None) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
+
+VISIT_PASS_TABLE_FINDER_JS = r"""() => {
+    return Array.from(document.querySelectorAll('table')).find(table => {
+        if (!table.getClientRects().length || getComputedStyle(table).visibility === 'hidden') return false;
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (rows.length < 2) return false;
+        const headers = Array.from(rows[0].children)
+            .filter(cell => /^(TH|TD)$/.test(cell.tagName))
+            .map(cell => (cell.innerText || '').replace(/\s+/g, ' ').trim().toUpperCase());
+        const dateIndex = headers.findIndex(h => ['DATE', 'DATE OF ENTRY', 'ENTRY DATE'].includes(h));
+        if (dateIndex < 0 || !headers.some(h => /TYPE OF PASS|PASS EXPIRY|ENTRY.*EXIT|LOCATION/.test(h))) return false;
+        return rows.slice(1).some(row => {
+            const cells = Array.from(row.children).filter(cell => /^(TH|TD)$/.test(cell.tagName));
+            const date = cells[dateIndex] ? (cells[dateIndex].innerText || '').trim() : '';
+            return cells.length >= 4 && /(?:\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}|\d{4}-\d{1,2}-\d{1,2})/.test(date);
+        });
+    }) || null;
+}"""
+
 def normalize_pin(value: Any) -> str | None:
     if value is None:
         return None
@@ -761,6 +782,20 @@ def make_preview_summary(
     }
 
 
+def visit_input_rejected(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    return bool(re.search(r"please enter a valid email address\s*/\s*region code\s*/\s*mobile number\s*/\s*pin\b", normalized))
+
+
+def safe_failure_details(exception: Exception) -> dict[str, Any]:
+    # Exception messages may contain request values; retain code locations only.
+    frames = traceback.extract_tb(exception.__traceback__)
+    return {
+        "exception_type": type(exception).__name__,
+        "failure_location": [f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}" for frame in frames[-3:]],
+    }
+
+
 def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     if isinstance(exception, PlaywrightTimeoutError):
         return (
@@ -771,6 +806,45 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     if isinstance(exception, (requests.RequestException, TimeoutError)):
         return ("TRANSIENT_REMOTE_ERROR", "Temporary remote service error", True)
     return ("VISIT_PASS_CHECK_WORKER_ERROR", "Check Visit Pass preview failed", True)
+
+
+async def prepare_visit_contact_submission(page: Page, runtime_input: dict[str, str]) -> dict[str, Any]:
+    """Keep the query contact independent from nationality-driven defaults."""
+    expected_region = runtime_input["region_code"]
+    state: dict[str, Any] = {"expected_region_code": expected_region, "request_verified": False}
+    await page.select_option("#regCd", expected_region)
+    await page.fill("#mobile", runtime_input["mobile"])
+    names = await page.evaluate("""() => Object.fromEntries(
+        ['passNo','nationality','regCd','mobile','pinKeyId'].map(id => [id, document.getElementById(id).name])
+    )""")
+    if not all(names.values()):
+        raise WorkerError("Check Visit Pass 查询字段缺少提交名称")
+
+    async def keep_contact_on_wire(route: Any) -> None:
+        request = route.request
+        if request.method != "POST" or "application/x-www-form-urlencoded" not in request.headers.get("content-type", "").lower():
+            await route.continue_()
+            return
+        pairs = parse_qsl(request.post_data or "", keep_blank_values=True)
+        fields = dict(pairs)
+        if not set(names.values()).issubset(fields):
+            await route.continue_()
+            return
+        if fields[names["passNo"]] != runtime_input["passport_number"] or fields[names["pinKeyId"]] != runtime_input["pin_value"] or fields[names["nationality"]] != runtime_input["nationality"]:
+            state["identity_guard_rejected"] = True
+            await route.abort("blockedbyclient")
+            return
+        state["region_corrected_at_request"] = fields[names["regCd"]] != expected_region
+        replacements = {names["regCd"]: expected_region, names["mobile"]: runtime_input["mobile"]}
+        updated = [(key, replacements.get(key, value)) for key, value in pairs]
+        state.update({"request_verified": True, "submitted_region_code": expected_region, "nationality_unchanged": True, "mobile_matches_snapshot": True})
+        await route.continue_(post_data=urlencode(updated))
+
+    await page.route("**/*", keep_contact_on_wire)
+    state["region_code_before_submit"] = await page.input_value("#regCd")
+    if state["region_code_before_submit"] != expected_region or await page.input_value("#mobile") != runtime_input["mobile"]:
+        raise WorkerError("Check Visit Pass 提交前电话区号或手机号回读不一致")
+    return state
 
 
 async def query_and_capture_page(
@@ -882,11 +956,13 @@ async def query_and_capture_page(
             if await submit_locator.is_disabled():
                 await page.wait_for_timeout(1000)
 
+            contact_submission = await prepare_visit_contact_submission(page, runtime_input)
             await submit_locator.click()
             LOG.info("已点击 Submit 查询，等待结果返回...")
 
             outcome: str | None = None
             explicit_invalid_pin = False
+            input_rejected = False
             explicit_no_record = False
             has_vp_table = False
 
@@ -895,6 +971,9 @@ async def query_and_capture_page(
                 await page.wait_for_timeout(1000)
 
                 all_dialog_text = " ".join(dialog_messages).lower()
+                if visit_input_rejected(all_dialog_text):
+                    input_rejected = True
+                    break
                 if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
                     explicit_invalid_pin = True
                     break
@@ -904,6 +983,9 @@ async def query_and_capture_page(
 
                 page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
                 lowered_text = page_text.lower()
+                if visit_input_rejected(lowered_text):
+                    input_rejected = True
+                    break
 
                 if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
                     explicit_invalid_pin = True
@@ -914,12 +996,9 @@ async def query_and_capture_page(
                     break
 
                 # 必须明确检测到表格实体及关键表头（避免被页面初始静态文字 'movement record' 误触发）
-                has_vp_table = await page.evaluate("""() => {
-                    const table = document.querySelector('table#line, table');
-                    if (!table) return false;
-                    const text = (table.innerText || '').toLowerCase();
-                    return text.includes('date') && (text.includes('pass') || text.includes('entry') || text.includes('location'));
-                }""")
+                has_vp_table = await page.evaluate(
+                    "() => Boolean((" + VISIT_PASS_TABLE_FINDER_JS + ")())"
+                )
                 if has_vp_table:
                     break
 
@@ -944,7 +1023,10 @@ async def query_and_capture_page(
             matched_box = None
             note = None
 
-            if explicit_invalid_pin:
+            if input_rejected:
+                outcome = "NEEDS_REVIEW"
+                note = "官网拒绝邮箱/区号/手机号/PIN组合，未确认具体错误字段"
+            elif explicit_invalid_pin:
                 LOG.warning("官方明确提示：PIN 无效 (PIN_INVALID)")
                 outcome = "PIN_INVALID"
                 note = "官方页面提示 PIN 错误"
@@ -956,7 +1038,7 @@ async def query_and_capture_page(
                 # 严格按列比对：只比对第 1 列 Date（入境日），严禁把第 6 列 Date of Pass Expiry（到期日）误当成入境日
                 matched_box = await page.evaluate(
                     """(windowDates) => {
-                        const table = document.querySelector('table#line, table');
+                        const table = (""" + VISIT_PASS_TABLE_FINDER_JS + """)();
                         if (!table) return null;
                         const rows = Array.from(table.querySelectorAll('tr'));
                         if (rows.length < 2) return null;
@@ -1039,7 +1121,7 @@ async def query_and_capture_page(
             screenshot: bytes
             doc_height = await page.evaluate("() => Math.max(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0, 1000)")
             table_box = await page.evaluate("""() => {
-                const t = document.querySelector('#div_maklumat, table#line, table');
+                const t = (""" + VISIT_PASS_TABLE_FINDER_JS + """)() || document.querySelector('#div_maklumat');
                 if (!t) return null;
                 const r = t.getBoundingClientRect();
                 return { bottom: r.y + window.scrollY + r.height + 40 };
@@ -1084,6 +1166,7 @@ async def query_and_capture_page(
                 "mode": "AUTO_SEARCH",
                 "outcome": outcome,
                 "target_entry_date": target_entry_date,
+                "contact_submission": contact_submission,
                 "entry_window": entry_window if entry_window else None,
                 "target_matched": (matched_box is not None if entry_window else None),
                 "slider_solved": True,
@@ -1092,6 +1175,9 @@ async def query_and_capture_page(
                 "dialogs": dialog_messages if dialog_messages else None,
                 "note": note,
             }
+            if input_rejected:
+                summary["error"] = "VISIT_PASS_INPUT_REJECTED"
+                summary["input_validation_rejected"] = True
             return (outcome, screenshot, summary)
         finally:
             await browser.close()
@@ -1233,6 +1319,7 @@ class VisitPassCheckWorker:
                 )
             except Exception as exception:
                 error_code, error_message, retryable = classify_page_failure(exception)
+                failure_details = safe_failure_details(exception)
                 log_event(
                     logging.ERROR,
                     step="page_preview",
@@ -1241,7 +1328,7 @@ class VisitPassCheckWorker:
                     item_id=item_id,
                     customer_id=customer_id,
                     case_id=case_id,
-                    result="RESULT_UNKNOWN",
+                    result=failure_details,
                     error_code=error_code,
                     error_message=error_message,
                 )
@@ -1258,6 +1345,7 @@ class VisitPassCheckWorker:
                             "captcha_bypass": False,
                             "screenshot_saved": False,
                             "error": error_code,
+                            **failure_details,
                         },
                         error_code=error_code,
                         error_message=error_message,
@@ -1380,3 +1468,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

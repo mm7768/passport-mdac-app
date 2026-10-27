@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 
 import requests
@@ -443,9 +444,8 @@ def extract_fields(body: str) -> dict[str, str | None]:
     # Matches both single-line ("Name: LI NA") and multi-line HTML table text ("Name\n:\nLI NA")
     name = first(r"Name\s*[:：]\s*([^\n\r]+)")
     passport = first(r"Passport\s+No\.?\s*[:：]\s*([A-Za-z0-9]+)")
-    pin = first(
-        r"PIN\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})"
-    )
+    # Keep an empty inline PIN from consuming the following line.
+    pin = first(r"\bPIN[ \t]*[:：][ \t]*([A-Za-z0-9][A-Za-z0-9_ \t-]*)[ \t]*$")
     return {
         "name": name,
         "passport_number": passport.upper() if passport else None,
@@ -453,10 +453,66 @@ def extract_fields(body: str) -> dict[str, str | None]:
     }
 
 
+class _PinTableParser(HTMLParser):
+    """Read a PIN from its own HTML table row, preserving value whitespace."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self.row: list[str] | None = None
+        self.cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag == "tr":
+            self.row = []
+            self.cell = None
+        elif tag in ("td", "th") and self.row is not None:
+            self.cell = []
+        elif tag == "br" and self.cell is not None:
+            self.cell.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self.cell is not None and self.row is not None:
+            self.row.append("".join(self.cell).replace("\xa0", " ").strip())
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            self.rows.append(self.row)
+            self.row = None
+            self.cell = None
+
+
+def extract_html_table_pin(message: Message) -> tuple[bool, str | None]:
+    candidates: set[str] = set()
+    has_pin_row = False
+    for part in message.walk():
+        if part.get_content_type() != "text/html" or part.get_content_disposition() == "attachment":
+            continue
+        parser = _PinTableParser()
+        parser.feed(decode_part_text(part))
+        for row in parser.rows:
+            value = None
+            if len(row) == 3 and row[0].upper() == "PIN" and row[1] in (":", "："):
+                has_pin_row = True
+                value = row[2]
+            elif len(row) == 2 and re.fullmatch(r"PIN\s*[:：]", row[0], flags=re.IGNORECASE):
+                has_pin_row = True
+                value = row[1]
+            if value and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_ \t-]*", value):
+                candidates.add(value)
+    return has_pin_row, next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def parse_message(raw_email: bytes) -> ParsedEmail:
     message = email.message_from_bytes(raw_email)
     body = extract_email_body(message)
     fields = extract_fields(body)
+    has_pin_row, table_pin = extract_html_table_pin(message)
+    if has_pin_row:
+        fields["pin"] = table_pin
     received_at: str | None = None
     date_header = message.get("Date")
     if date_header:
