@@ -236,6 +236,9 @@ class _MockSupabase:
     def heartbeat(self, **kwargs) -> None:
         pass
 
+    def heartbeat_tick(self, **kwargs) -> None:
+        self.heartbeat(**kwargs)
+
     def get_gmail_runtime_credentials(self) -> dict[str, str]:
         return {
             "gmail_address": "test@gmail.com",
@@ -252,3 +255,4 @@ class _MockSupabase:
 
 if __name__ == "__main__":
     unittest.main()
+
