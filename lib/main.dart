@@ -8580,7 +8580,7 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                                   ? PopupMenuButton<String>(
                                       icon: const Icon(
                                         Icons.history_rounded,
-                                        color: AppTheme.accent,
+                                        color: AppTheme.teal,
                                       ),
                                       tooltip: '选择历史使用过的 Gmail',
                                       onSelected: (email) {
@@ -8610,7 +8610,7 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                                                 const Icon(
                                                   Icons.mail_outline_rounded,
                                                   size: 16,
-                                                  color: AppTheme.accent,
+                                                  color: AppTheme.teal,
                                                 ),
                                                 const SizedBox(width: 8),
                                                 Expanded(
@@ -9101,7 +9101,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                             const Icon(
                               Icons.history_edu_rounded,
                               size: 18,
-                              color: AppTheme.accent,
+                              color: AppTheme.teal,
                             ),
                             const SizedBox(width: 8),
                             const Text(
@@ -9144,7 +9144,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
                                       color: hasPass
-                                          ? AppTheme.accent.withOpacity(0.12)
+                                          ? AppTheme.teal.withOpacity(0.12)
                                           : AppTheme.muted.withOpacity(0.12),
                                       borderRadius: BorderRadius.circular(4),
                                     ),
@@ -9154,14 +9154,14 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                                         Icon(
                                           hasPass ? Icons.key_rounded : Icons.key_off_rounded,
                                           size: 12,
-                                          color: hasPass ? AppTheme.accent : AppTheme.muted,
+                                          color: hasPass ? AppTheme.teal : AppTheme.muted,
                                         ),
                                         const SizedBox(width: 4),
                                         Text(
                                           hasPass ? '已存密码' : '无密码',
                                           style: TextStyle(
                                             fontSize: 11,
-                                            color: hasPass ? AppTheme.accent : AppTheme.muted,
+                                            color: hasPass ? AppTheme.teal : AppTheme.muted,
                                           ),
                                         ),
                                       ],
@@ -9199,7 +9199,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                                   avatar: Icon(
                                     Icons.vpn_key_rounded,
                                     size: 13,
-                                    color: isSelected ? Colors.white : AppTheme.accent,
+                                    color: isSelected ? Colors.white : AppTheme.teal,
                                   ),
                                   label: Text(
                                     email,
