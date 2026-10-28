@@ -779,9 +779,21 @@ async def query_and_capture_page(
     target_entry_date: str | None = None,
 ) -> tuple[str, bytes, dict[str, Any]]:
     async with async_playwright() as playwright:
+        browser_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+        ]
+        if not config.headless:
+            window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
+            window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
+            browser_args.extend([
+                f"--window-size={window_size}",
+                f"--window-position={window_pos}",
+            ])
         browser: Browser = await playwright.chromium.launch(
             headless=config.headless,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=browser_args,
         )
         context = await browser.new_context(
             user_agent=(
