@@ -1,14 +1,21 @@
-"""Minimalist Black GUI with White Breathing Light for MDAC Worker Suite.
+"""Modern Linear/Spotify-inspired Dark Theme GUI for MDAC Worker Suite.
 
-Theme: Deep Obsidian Black (#000000)
-Indicator: Pulsing White Breathing Light (Sine-wave animated)
-Platform: Pure Python Tkinter (Zero extra pip dependencies required)
+Theme: Deep Slate / Obsidian Blue (#090D16)
+Palette: Linear & Spotify Tech-Dark (#121927, #1E293B, #10B981, #38BDF8)
+Features:
+- Pure business-oriented terminology (zero developer jargon / raw code console style)
+- Real-time business activity timeline translation
+- System health & uptime dashboard metrics
+- Soft sine-wave breathing indicator (Spotify emerald & cyan glow)
+- Expandable technical debug drawer
+- Zero extra external pip dependencies (Pure standard library + Tkinter)
 """
 from __future__ import annotations
 
 import ctypes
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,78 +31,162 @@ for p in [REPO_ROOT, TOOLS_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-WORKERS = [
+WORKERS_CONFIG = [
     {
         "id": "mdac",
-        "name": "MDAC 自动注册",
-        "tag": "MDAC",
+        "name": "MDAC 马来西亚自动申报服务",
+        "desc": "批量入境卡填报 · 官方滑块拼图自适应验证",
+        "badge": "核心申报",
+        "badge_color": "#065F46",
+        "badge_fg": "#34D399",
         "script": "services/mdac-fill-preview/worker.py",
         "args": ["--poll"],
-        "status": "准备启动...",
-        "active": False,
+        "icon": "⚡",
     },
     {
         "id": "reg",
-        "name": "Check Registration 核查",
-        "tag": "CHECK-REG",
+        "name": "官方登记凭证核验服务",
+        "desc": "Registration 官方登记号查验 · 状态自动回填",
+        "badge": "登记核验",
+        "badge_color": "#1E3A8A",
+        "badge_fg": "#60A5FA",
         "script": "services/registration-check-worker/worker.py",
         "args": ["--poll"],
-        "status": "准备启动...",
-        "active": False,
+        "icon": "🔍",
     },
     {
         "id": "vp",
-        "name": "Check Visit Pass 核查",
-        "tag": "CHECK-VP",
+        "name": "Visit Pass 电子入境签核验",
+        "desc": "电子准证状态获取 · 官方核验结果存盘",
+        "badge": "准证核验",
+        "badge_color": "#581C87",
+        "badge_fg": "#C084FC",
         "script": "services/visit-pass-check-worker/worker.py",
         "args": ["--poll"],
-        "status": "准备启动...",
-        "active": False,
+        "icon": "🛂",
     },
     {
         "id": "ocr",
-        "name": "Azure 护照 OCR 解析",
-        "tag": "OCR",
+        "name": "Azure 智能护照识别 (OCR)",
+        "desc": "护照全量字段高精度提取 · 智能档案校验",
+        "badge": "护照识别",
+        "badge_color": "#134E4A",
+        "badge_fg": "#2DD4BF",
         "script": "worker/azure_ocr_worker.py",
         "args": ["--poll"],
-        "status": "准备启动...",
-        "active": False,
+        "icon": "📷",
     },
     {
         "id": "pin",
-        "name": "Gmail PIN 邮件抓取",
-        "tag": "PIN",
+        "name": "Gmail PIN 验证码自动抓取",
+        "desc": "移民局官方邮件实时监听 · 验证码毫秒级提取",
+        "badge": "邮件验证",
+        "badge_color": "#831843",
+        "badge_fg": "#F472B6",
         "script": "services/gmail-pin-worker/worker.py",
         "args": ["--poll"],
-        "status": "准备启动...",
-        "active": False,
+        "icon": "📬",
     },
 ]
 
-BG_COLOR = "#000000"
-CARD_BG = "#0c0c0e"
-CARD_BORDER = "#1c1c1f"
-TEXT_PRIMARY = "#f4f4f5"
-TEXT_SECONDARY = "#71717a"
-TEXT_MUTED = "#3f3f46"
-ACCENT_WHITE = "#ffffff"
+# Color Palette (Linear / Spotify Premium Slate Dark)
+BG_MAIN = "#090D16"         # Deep obsidian slate
+BG_CARD = "#121927"         # Elevated glass card
+BG_CARD_HOVER = "#172134"   # Card hover state
+BORDER_SUBTLE = "#1E293B"   # Subtle card border
+BORDER_ACTIVE = "#38BDF8"   # Sky blue focus
+TEXT_TITLE = "#F8FAFC"      # Clean crisp white (Slate 50)
+TEXT_SUB = "#94A3B8"        # Soft muted slate (Slate 400)
+TEXT_MUTED = "#64748B"      # Darker hint (Slate 500)
+ACCENT_GREEN = "#10B981"    # Emerald green
+ACCENT_CYAN = "#38BDF8"     # Sky cyan
+ACCENT_AMBER = "#F59E0B"    # Amber warning
+ACCENT_RED = "#EF4444"      # Rose red error
+
+FONT_FAMILY = "Microsoft YaHei UI"
+
+
+def translate_log_to_business(service_id: str, raw_line: str) -> str | None:
+    """Translates raw console code logs into human-friendly business messages."""
+    low = raw_line.lower()
+
+    # Filter out pure noise / polling lines
+    if "polling" in low or "heartbeat" in low or "sleep" in low:
+        return None
+    if "=================" in raw_line or "worker id:" in low:
+        return None
+
+    # Service-specific translations
+    if service_id == "mdac":
+        if "已领取 mdac 批次" in raw_line:
+            return "📥 收到新申报批次任务，准备启动自动填报"
+        if "检测到 mdac 滑块" in raw_line or "slider_solver" in low:
+            return "🧩 检测到官方拼图滑块，正在自适应识别对齐"
+        if "滑块验证成功" in raw_line:
+            return "✅ 滑块拼图校验通过"
+        if "已点击官方 submit" in raw_line:
+            return "🚀 已提交至移民局官网，等待受理确认"
+        if "官方注册成功" in raw_line or "status=succeeded" in low:
+            return "🎉 客户申报成功，官方凭证已写回系统"
+        if "needs_review" in low or "失败" in raw_line:
+            return "⚠️ 遇到官方网页异常，已安全转人工核实"
+
+    elif service_id == "reg":
+        if "已领取" in raw_line or "claimed" in low:
+            return "📥 收到登记核验任务，正在连接官方接口核对"
+        if "核验成功" in raw_line or "success" in low or "status=succeeded" in low:
+            return "✅ 官方登记凭证已核验完毕，状态已更新"
+        if "needs_review" in low:
+            return "ℹ️ 登记号查无记录或需人工复查"
+
+    elif service_id == "vp":
+        if "已领取" in raw_line or "claimed" in low:
+            return "📥 收到 Visit Pass 查签任务，正在查询入境准证"
+        if "提取" in raw_line and "visit pass" in low:
+            return "📄 成功提取到官方电子入境准证"
+        if "success" in low or "status=succeeded" in low:
+            return "✅ Visit Pass 准证核验完成并存盘"
+
+    elif service_id == "ocr":
+        if "claimed" in low or "领取" in raw_line:
+            return "📥 收到待识别护照图片，正在进行智能解析"
+        if "ocr" in low and ("成功" in raw_line or "completed" in low or "success" in low):
+            return "🔍 护照 OCR 信息识别提取完毕，已建档校验"
+
+    elif service_id == "pin":
+        if "claimed" in low or "领取" in raw_line or "polling" in low:
+            return "📥 正在扫描移民局官方邮件..."
+        if "pin" in low and ("提取" in raw_line or "received" in low or "成功" in raw_line):
+            return "🔑 成功提取官方 PIN 安全验证码"
+
+    # Generic catch-all
+    if "succeeded" in low or "完成" in raw_line or "成功" in raw_line:
+        return "✨ 业务任务处理顺利完成"
+    if "error" in low or "exception" in low or "失败" in raw_line:
+        clean = raw_line.replace("ERROR", "").replace("Exception", "").strip()
+        if len(clean) > 40:
+            clean = clean[:38] + "..."
+        return f"⚠️ 提示: {clean}"
+
+    return None
 
 
 class WorkerManager:
-    def __init__(self, on_log=None, on_status_change=None):
+    def __init__(self, on_business_event=None, on_raw_log=None, on_status_change=None):
         self.stop_event = threading.Event()
-        self.on_log = on_log
+        self.on_business_event = on_business_event
+        self.on_raw_log = on_raw_log
         self.on_status_change = on_status_change
         self.threads = []
         self.procs = {}
 
     def start(self):
         self.stop_event.clear()
-        for w in WORKERS:
+        for w in WORKERS_CONFIG:
             t = threading.Thread(target=self._run_loop, args=(w,), daemon=True)
             t.start()
             self.threads.append(t)
-            time.sleep(0.15)
+            time.sleep(0.12)
 
     def stop(self):
         self.stop_event.set()
@@ -108,11 +199,12 @@ class WorkerManager:
 
     def restart(self):
         self.stop()
-        time.sleep(0.5)
+        time.sleep(0.6)
         self.start()
 
     def _run_loop(self, w_info: dict):
-        tag = w_info["tag"]
+        w_id = w_info["id"]
+        w_name = w_info["name"]
         script_path = os.path.join(REPO_ROOT, w_info["script"])
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -120,7 +212,7 @@ class WorkerManager:
 
         while not self.stop_event.is_set():
             if self.on_status_change:
-                self.on_status_change(w_info["id"], "正在连接队列...", True)
+                self.on_status_change(w_id, "正在接入云端队列...", "connecting")
             try:
                 cmd = [PYTHON_EXE, script_path] + w_info["args"]
                 proc = subprocess.Popen(
@@ -133,59 +225,75 @@ class WorkerManager:
                     errors="replace",
                     env=env,
                 )
-                self.procs[w_info["id"]] = proc
+                self.procs[w_id] = proc
                 if self.on_status_change:
-                    self.on_status_change(w_info["id"], "监听待命中 · 空闲", True)
+                    self.on_status_change(w_id, "随时待命 · 队列空闲", "ready")
 
                 for raw_line in iter(proc.stdout.readline, ""):
                     if self.stop_event.is_set() or not raw_line:
                         break
                     line = raw_line.strip()
-                    if line:
-                        if self.on_log:
-                            self.on_log(tag, line)
-                        # Check activity status from line
-                        low = line.lower()
-                        if "claimed" in low or "processing" in low or "handling" in low or "start" in low:
-                            if self.on_status_change:
-                                self.on_status_change(w_info["id"], "正在执行任务...", True)
-                        elif "succeeded" in low or "completed" in low or "done" in low:
-                            if self.on_status_change:
-                                self.on_status_change(w_info["id"], "任务处理完成 · 监听中", True)
-                        elif "idle" in low or "waiting" in low or "heartbeat" in low:
-                            if self.on_status_change:
-                                self.on_status_change(w_info["id"], "监听待命中 · 空闲", True)
+                    if not line:
+                        continue
+
+                    # Deliver raw log for tech drawer
+                    if self.on_raw_log:
+                        self.on_raw_log(w_info["badge"], line)
+
+                    # Translate to business event
+                    b_msg = translate_log_to_business(w_id, line)
+                    if b_msg and self.on_business_event:
+                        self.on_business_event(w_info["badge"], b_msg, w_info["icon"])
+
+                    # Update status
+                    low = line.lower()
+                    if any(k in low for k in ["claimed", "已领取", "processing", "检测到", "正在尝试"]):
+                        if self.on_status_change:
+                            self.on_status_change(w_id, "⚡ 正在执行任务...", "active")
+                    elif any(k in low for k in ["succeeded", "成功", "完成", "done"]):
+                        if self.on_status_change:
+                            self.on_status_change(w_id, "✅ 任务完成 · 待命中", "ready")
+                    elif any(k in low for k in ["idle", "waiting", "heartbeat", "空闲"]):
+                        if self.on_status_change:
+                            self.on_status_change(w_id, "随时待命 · 队列空闲", "ready")
+
                 proc.wait()
             except Exception as e:
-                if self.on_log:
-                    self.on_log(tag, f"运行异常: {e}")
+                if self.on_raw_log:
+                    self.on_raw_log(w_info["badge"], f"运行异常: {e}")
 
             if self.stop_event.is_set():
                 break
 
             if self.on_status_change:
-                self.on_status_change(w_info["id"], "意外中断，3 秒后自动拉起...", False)
+                self.on_status_change(w_id, "服务离线，3秒后自动重启...", "error")
             time.sleep(3)
 
 
-class MinimalistWorkerApp:
+class ModernWorkerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Passport MDAC Desk · Worker Suite")
-        self.root.geometry("560x780")
-        self.root.minsize(500, 600)
-        self.root.configure(bg=BG_COLOR)
+        self.root.title("Passport MDAC Desk · 自动化控制中枢")
+        self.root.geometry("600x820")
+        self.root.minsize(560, 680)
+        self.root.configure(bg=BG_MAIN)
 
-        self.manager = WorkerManager(
-            on_log=self._on_log_received,
-            on_status_change=self._on_status_changed,
-        )
-
+        self.start_time = time.time()
+        self.processed_count = 0
         self.log_visible = False
         self.worker_widgets = {}
+        self.timeline_items = []
+
+        self.manager = WorkerManager(
+            on_business_event=self._on_business_event,
+            on_raw_log=self._on_raw_log,
+            on_status_change=self._on_status_change,
+        )
+
         self._build_ui()
         self._enable_dark_titlebar()
         self._start_breathing_animation()
+        self._start_uptime_ticker()
 
         # Start workers
         self.manager.start()
@@ -206,268 +314,421 @@ class MinimalistWorkerApp:
             pass
 
     def _build_ui(self):
-        # Top Header Area
-        header_frame = tk.Frame(self.root, bg=BG_COLOR)
-        header_frame.pack(fill=tk.X, padx=28, pady=(24, 10))
+        # 1. Top Header Area
+        top_header = tk.Frame(self.root, bg=BG_MAIN)
+        top_header.pack(fill=tk.X, padx=24, pady=(20, 10))
 
-        # Title
-        title_label = tk.Label(
-            header_frame,
+        # Brand row
+        brand_row = tk.Frame(top_header, bg=BG_MAIN)
+        brand_row.pack(fill=tk.X)
+
+        title_lbl = tk.Label(
+            brand_row,
             text="PASSPORT MDAC DESK",
-            font=("Segoe UI", 10, "bold"),
-            fg=TEXT_SECONDARY,
-            bg=BG_COLOR,
+            font=(FONT_FAMILY, 14, "bold"),
+            fg=TEXT_TITLE,
+            bg=BG_MAIN,
         )
-        title_label.pack(anchor=tk.W)
+        title_lbl.pack(side=tk.LEFT)
 
-        subtitle_label = tk.Label(
-            header_frame,
-            text="Local Automation Suite",
-            font=("Segoe UI", 16, "bold"),
-            fg=TEXT_PRIMARY,
-            bg=BG_COLOR,
+        version_pill = tk.Label(
+            brand_row,
+            text="v1.0.43 自动化中枢",
+            font=(FONT_FAMILY, 8, "bold"),
+            fg=ACCENT_CYAN,
+            bg="#0F2847",
+            padx=8,
+            pady=2,
         )
-        subtitle_label.pack(anchor=tk.W, pady=(2, 0))
+        version_pill.pack(side=tk.LEFT, padx=10)
 
-        # Breathing Light Display Card
-        pulse_card = tk.Frame(self.root, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-        pulse_card.pack(fill=tk.X, padx=28, pady=(12, 16))
+        # 2. Hero Breathing Dashboard Card
+        hero_card = tk.Frame(self.root, bg=BG_CARD, highlightbackground=BORDER_SUBTLE, highlightthickness=1)
+        hero_card.pack(fill=tk.X, padx=24, pady=(6, 14))
 
-        inner_pulse = tk.Frame(pulse_card, bg=CARD_BG)
-        inner_pulse.pack(padx=20, pady=16)
+        hero_inner = tk.Frame(hero_card, bg=BG_CARD)
+        hero_inner.pack(fill=tk.X, padx=18, pady=14)
 
-        self.light_canvas = tk.Canvas(inner_pulse, width=44, height=44, bg=CARD_BG, highlightthickness=0)
+        # Left Breathing Light Canvas
+        self.light_canvas = tk.Canvas(hero_inner, width=46, height=46, bg=BG_CARD, highlightthickness=0)
         self.light_canvas.pack(side=tk.LEFT, padx=(0, 16))
 
-        text_block = tk.Frame(inner_pulse, bg=CARD_BG)
-        text_block.pack(side=tk.LEFT, fill=tk.Y)
+        # Middle Status Title & Subtitle
+        mid_status = tk.Frame(hero_inner, bg=BG_CARD)
+        mid_status.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.suite_status_label = tk.Label(
-            text_block,
-            text="ALL WORKERS ONLINE",
-            font=("Segoe UI", 11, "bold"),
-            fg=TEXT_PRIMARY,
-            bg=CARD_BG,
+        self.hero_title = tk.Label(
+            mid_status,
+            text="全套自动化服务平稳巡航中",
+            font=(FONT_FAMILY, 12, "bold"),
+            fg=TEXT_TITLE,
+            bg=BG_CARD,
         )
-        self.suite_status_label.pack(anchor=tk.W)
+        self.hero_title.pack(anchor=tk.W)
 
-        self.suite_sub_label = tk.Label(
-            text_block,
-            text="5 组本地网页与任务 Worker 正在监听 Supabase 队列",
-            font=("Segoe UI", 9),
-            fg=TEXT_SECONDARY,
-            bg=CARD_BG,
+        self.hero_sub = tk.Label(
+            mid_status,
+            text="5 组高并发 Worker 就绪待命 · 实时监听 Supabase 任务队列",
+            font=(FONT_FAMILY, 9),
+            fg=TEXT_SUB,
+            bg=BG_CARD,
         )
-        self.suite_sub_label.pack(anchor=tk.W, pady=(2, 0))
+        self.hero_sub.pack(anchor=tk.W, pady=(3, 0))
 
-        # Workers Section Title
-        sec_label = tk.Label(
+        # Metric Tiles (Uptime + Processed)
+        metrics_frame = tk.Frame(hero_card, bg="#0E1420", highlightbackground=BORDER_SUBTLE, highlightthickness=1)
+        metrics_frame.pack(fill=tk.X, padx=14, pady=(0, 14))
+
+        m1 = tk.Frame(metrics_frame, bg="#0E1420")
+        m1.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=8)
+        tk.Label(m1, text="平稳运行时长", font=(FONT_FAMILY, 8), fg=TEXT_MUTED, bg="#0E1420").pack()
+        self.lbl_uptime = tk.Label(m1, text="00:00:00", font=(FONT_FAMILY, 11, "bold"), fg=TEXT_TITLE, bg="#0E1420")
+        self.lbl_uptime.pack()
+
+        div1 = tk.Frame(metrics_frame, width=1, bg=BORDER_SUBTLE)
+        div1.pack(side=tk.LEFT, fill=tk.Y, pady=6)
+
+        m2 = tk.Frame(metrics_frame, bg="#0E1420")
+        m2.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=8)
+        tk.Label(m2, text="本次处理业务", font=(FONT_FAMILY, 8), fg=TEXT_MUTED, bg="#0E1420").pack()
+        self.lbl_processed = tk.Label(m2, text="0 笔", font=(FONT_FAMILY, 11, "bold"), fg=ACCENT_GREEN, bg="#0E1420")
+        self.lbl_processed.pack()
+
+        div2 = tk.Frame(metrics_frame, width=1, bg=BORDER_SUBTLE)
+        div2.pack(side=tk.LEFT, fill=tk.Y, pady=6)
+
+        m3 = tk.Frame(metrics_frame, bg="#0E1420")
+        m3.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=8)
+        tk.Label(m3, text="云端通信链路", font=(FONT_FAMILY, 8), fg=TEXT_MUTED, bg="#0E1420").pack()
+        self.lbl_cloud = tk.Label(m3, text="正常保持", font=(FONT_FAMILY, 11, "bold"), fg=ACCENT_CYAN, bg="#0E1420")
+        self.lbl_cloud.pack()
+
+        # 3. Monitored Services List
+        sec_title = tk.Label(
             self.root,
-            text="MONITORED WORKERS",
-            font=("Segoe UI", 8, "bold"),
+            text="服务运行状态",
+            font=(FONT_FAMILY, 9, "bold"),
             fg=TEXT_MUTED,
-            bg=BG_COLOR,
+            bg=BG_MAIN,
         )
-        sec_label.pack(anchor=tk.W, padx=32, pady=(8, 4))
+        sec_title.pack(anchor=tk.W, padx=28, pady=(4, 6))
 
-        # Worker Cards Container
-        workers_container = tk.Frame(self.root, bg=BG_COLOR)
-        workers_container.pack(fill=tk.BOTH, expand=False, padx=28, pady=4)
+        services_frame = tk.Frame(self.root, bg=BG_MAIN)
+        services_frame.pack(fill=tk.X, padx=24)
 
-        for w in WORKERS:
-            w_frame = tk.Frame(workers_container, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-            w_frame.pack(fill=tk.X, pady=4)
+        for w in WORKERS_CONFIG:
+            card = tk.Frame(services_frame, bg=BG_CARD, highlightbackground=BORDER_SUBTLE, highlightthickness=1)
+            card.pack(fill=tk.X, pady=3)
 
-            # Left badge & name
-            left_col = tk.Frame(w_frame, bg=CARD_BG)
-            left_col.pack(side=tk.LEFT, padx=14, pady=10)
+            # Left column: Icon & Title
+            left = tk.Frame(card, bg=BG_CARD)
+            left.pack(side=tk.LEFT, padx=12, pady=8)
 
-            dot_canvas = tk.Canvas(left_col, width=10, height=10, bg=CARD_BG, highlightthickness=0)
-            dot_canvas.pack(side=tk.LEFT, padx=(0, 10))
-            dot = dot_canvas.create_oval(1, 1, 9, 9, fill="#52525b", outline="")
+            # Icon circle
+            icon_lbl = tk.Label(
+                left,
+                text=w["icon"],
+                font=(FONT_FAMILY, 12),
+                bg=BG_CARD,
+            )
+            icon_lbl.pack(side=tk.LEFT, padx=(2, 10))
 
-            tag_label = tk.Label(
-                left_col,
-                text=w["tag"],
-                font=("Segoe UI", 8, "bold"),
-                fg=TEXT_SECONDARY,
-                bg="#18181b",
+            # Names & Desc
+            name_box = tk.Frame(left, bg=BG_CARD)
+            name_box.pack(side=tk.LEFT)
+
+            t_row = tk.Frame(name_box, bg=BG_CARD)
+            t_row.pack(anchor=tk.W)
+
+            title = tk.Label(
+                t_row,
+                text=w["name"],
+                font=(FONT_FAMILY, 10, "bold"),
+                fg=TEXT_TITLE,
+                bg=BG_CARD,
+            )
+            title.pack(side=tk.LEFT)
+
+            badge = tk.Label(
+                t_row,
+                text=w["badge"],
+                font=(FONT_FAMILY, 7, "bold"),
+                fg=w["badge_fg"],
+                bg=w["badge_color"],
                 padx=5,
                 pady=1,
             )
-            tag_label.pack(side=tk.LEFT, padx=(0, 10))
+            badge.pack(side=tk.LEFT, padx=6)
 
-            name_label = tk.Label(
-                left_col,
-                text=w["name"],
-                font=("Segoe UI", 10),
-                fg=TEXT_PRIMARY,
-                bg=CARD_BG,
+            desc = tk.Label(
+                name_box,
+                text=w["desc"],
+                font=(FONT_FAMILY, 8),
+                fg=TEXT_SUB,
+                bg=BG_CARD,
             )
-            name_label.pack(side=tk.LEFT)
+            desc.pack(anchor=tk.W, pady=(1, 0))
 
-            # Right status
-            status_label = tk.Label(
-                w_frame,
-                text="准备启动...",
-                font=("Segoe UI", 9),
-                fg=TEXT_SECONDARY,
-                bg=CARD_BG,
+            # Right Status Capsule
+            right = tk.Frame(card, bg=BG_CARD)
+            right.pack(side=tk.RIGHT, padx=14, pady=8)
+
+            dot_canvas = tk.Canvas(right, width=8, height=8, bg=BG_CARD, highlightthickness=0)
+            dot_canvas.pack(side=tk.LEFT, padx=(0, 6))
+            dot = dot_canvas.create_oval(1, 1, 7, 7, fill=ACCENT_GREEN, outline="")
+
+            status_lbl = tk.Label(
+                right,
+                text="随时待命",
+                font=(FONT_FAMILY, 9),
+                fg=ACCENT_GREEN,
+                bg=BG_CARD,
             )
-            status_label.pack(side=tk.RIGHT, padx=14, pady=10)
+            status_lbl.pack(side=tk.LEFT)
 
             self.worker_widgets[w["id"]] = {
+                "card": card,
                 "dot_canvas": dot_canvas,
                 "dot": dot,
-                "status_label": status_label,
+                "status_lbl": status_lbl,
             }
 
-        # Latest Activity Feed
-        feed_frame = tk.Frame(self.root, bg=BG_COLOR)
-        feed_frame.pack(fill=tk.X, padx=28, pady=(12, 6))
+        # 4. Business Activity Timeline Section
+        feed_header = tk.Frame(self.root, bg=BG_MAIN)
+        feed_header.pack(fill=tk.X, padx=28, pady=(14, 6))
 
-        feed_title = tk.Label(feed_frame, text="最新动态", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_COLOR)
-        feed_title.pack(anchor=tk.W)
-
-        self.last_log_label = tk.Label(
-            feed_frame,
-            text="等待队列新任务...",
-            font=("Consolas", 8),
-            fg="#a1a1aa",
-            bg=CARD_BG,
-            anchor=tk.W,
-            padx=10,
-            pady=8,
-            highlightbackground=CARD_BORDER,
-            highlightthickness=1,
+        feed_title = tk.Label(
+            feed_header,
+            text="业务实时播报",
+            font=(FONT_FAMILY, 9, "bold"),
+            fg=TEXT_MUTED,
+            bg=BG_MAIN,
         )
-        self.last_log_label.pack(fill=tk.X, pady=(4, 0))
+        feed_title.pack(side=tk.LEFT)
 
-        # Bottom Button Bar
-        btn_bar = tk.Frame(self.root, bg=BG_COLOR)
-        btn_bar.pack(fill=tk.X, padx=28, pady=(12, 10))
+        feed_hint = tk.Label(
+            feed_header,
+            text="动态翻译官方日志",
+            font=(FONT_FAMILY, 8),
+            fg=TEXT_MUTED,
+            bg=BG_MAIN,
+        )
+        feed_hint.pack(side=tk.RIGHT)
 
-        self.toggle_log_btn = tk.Button(
-            btn_bar,
-            text="展开详细日志 ▾",
-            font=("Segoe UI", 8),
-            fg=TEXT_SECONDARY,
-            bg=CARD_BG,
-            activeforeground=TEXT_PRIMARY,
-            activebackground="#18181b",
+        # Timeline Card Container
+        self.timeline_card = tk.Frame(self.root, bg=BG_CARD, highlightbackground=BORDER_SUBTLE, highlightthickness=1)
+        self.timeline_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=2)
+
+        self.timeline_box = tk.Frame(self.timeline_card, bg=BG_CARD)
+        self.timeline_box.pack(fill=tk.BOTH, expand=True, padx=14, pady=10)
+
+        # Initial Empty state
+        self.empty_lbl = tk.Label(
+            self.timeline_box,
+            text="等待队列新任务中... 各服务正处于巡航监听状态",
+            font=(FONT_FAMILY, 9),
+            fg=TEXT_MUTED,
+            bg=BG_CARD,
+            pady=16,
+        )
+        self.empty_lbl.pack()
+
+        # 5. Bottom Action Bar & Tech Log Drawer
+        bottom_bar = tk.Frame(self.root, bg=BG_MAIN)
+        bottom_bar.pack(fill=tk.X, padx=24, pady=(10, 14))
+
+        self.btn_toggle_tech = tk.Button(
+            bottom_bar,
+            text="查看技术日志 ▾",
+            font=(FONT_FAMILY, 8),
+            fg=TEXT_SUB,
+            bg=BG_CARD,
+            activeforeground=TEXT_TITLE,
+            activebackground=BG_CARD_HOVER,
             relief=tk.FLAT,
             bd=0,
             padx=12,
             pady=6,
-            command=self._toggle_log,
+            cursor="hand2",
+            command=self._toggle_tech_log,
         )
-        self.toggle_log_btn.pack(side=tk.LEFT)
+        self.btn_toggle_tech.pack(side=tk.LEFT)
 
-        restart_btn = tk.Button(
-            btn_bar,
-            text="一键重启所有 Worker",
-            font=("Segoe UI", 8, "bold"),
-            fg=TEXT_PRIMARY,
-            bg="#18181b",
-            activeforeground="#ffffff",
-            activebackground="#27272a",
+        btn_restart = tk.Button(
+            bottom_bar,
+            text="🔄 平稳重启全部服务",
+            font=(FONT_FAMILY, 9, "bold"),
+            fg=TEXT_TITLE,
+            bg="#1E293B",
+            activeforeground="#FFFFFF",
+            activebackground="#334155",
             relief=tk.FLAT,
             bd=0,
-            padx=14,
+            padx=16,
             pady=6,
+            cursor="hand2",
             command=self.manager.restart,
         )
-        restart_btn.pack(side=tk.RIGHT)
+        btn_restart.pack(side=tk.RIGHT)
 
-        # Expandable Log Box
-        self.log_frame = tk.Frame(self.root, bg=CARD_BG, highlightbackground=CARD_BORDER, highlightthickness=1)
-        self.log_text = tk.Text(
-            self.log_frame,
-            bg=CARD_BG,
-            fg="#a1a1aa",
-            insertbackground=TEXT_PRIMARY,
+        # Collapsible Tech Log Drawer
+        self.tech_frame = tk.Frame(self.root, bg="#080C14", highlightbackground=BORDER_SUBTLE, highlightthickness=1)
+        self.tech_text = tk.Text(
+            self.tech_frame,
+            bg="#080C14",
+            fg="#94A3B8",
+            insertbackground=TEXT_TITLE,
             font=("Consolas", 8),
             relief=tk.FLAT,
             bd=0,
             padx=10,
             pady=8,
-            height=8,
+            height=7,
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.tech_text.pack(fill=tk.BOTH, expand=True)
 
-    def _toggle_log(self):
+    def _toggle_tech_log(self):
         if self.log_visible:
-            self.log_frame.pack_forget()
-            self.toggle_log_btn.config(text="展开详细日志 ▾")
+            self.tech_frame.pack_forget()
+            self.btn_toggle_tech.config(text="查看技术日志 ▾")
             self.log_visible = False
         else:
-            self.log_frame.pack(fill=tk.BOTH, expand=True, padx=28, pady=(0, 16))
-            self.toggle_log_btn.config(text="收起详细日志 ▴")
+            self.tech_frame.pack(fill=tk.BOTH, expand=False, padx=24, pady=(0, 14))
+            self.btn_toggle_tech.config(text="收起技术日志 ▴")
             self.log_visible = True
 
     def _start_breathing_animation(self):
         def animate():
             t = time.time()
-            # Smooth sine wave cycle (~2.4s period)
-            val = 0.5 * (1 + math.sin(t * 2.6))  # 0.0 ~ 1.0
+            # Smooth sine wave cycle (~2.8s period)
+            val = 0.5 * (1 + math.sin(t * 2.3))  # 0.0 ~ 1.0
 
-            # Core brightness: from 90 to 255 (white)
-            core_v = int(90 + val * 165)
-            core_hex = f"#{core_v:02x}{core_v:02x}{core_v:02x}"
+            # Linear Emerald & Cyan blend
+            # Emerald: #10B981 (16, 185, 129)
+            # Cyan: #06B6D4 (6, 182, 212)
+            r = int(6 + val * 10)
+            g = int(180 + val * 15)
+            b = int(140 + val * 60)
+            core_hex = f"#{r:02x}{g:02x}{b:02x}"
 
-            # Outer halo brightness: from 20 to 85
-            halo_v = int(20 + val * 65)
-            halo_hex = f"#{halo_v:02x}{halo_v:02x}{halo_v:02x}"
+            # Subtle outer glow halo
+            hr = int(4 + val * 6)
+            hg = int(60 + val * 40)
+            hb = int(50 + val * 50)
+            halo_hex = f"#{hr:02x}{hg:02x}{hb:02x}"
 
-            # Dynamic radius
-            outer_r = 15 + val * 5.0
-            inner_r = 8 + val * 2.0
+            outer_r = 16 + val * 4.0
+            inner_r = 7 + val * 2.0
+            cx, cy = 23, 23
 
-            cx, cy = 22, 22
             self.light_canvas.delete("all")
-            # Outer soft glow halo
+            # Outer soft halo
             self.light_canvas.create_oval(
                 cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r, fill=halo_hex, outline=""
             )
-            # Inner bright core
+            # Inner bright pulse
             self.light_canvas.create_oval(
                 cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r, fill=core_hex, outline=""
             )
 
-            self.root.after(35, animate)
+            self.root.after(40, animate)
 
         animate()
 
-    def _on_log_received(self, tag: str, message: str):
-        display_line = f"[{time.strftime('%H:%M:%S')}] [{tag}] {message}"
+    def _start_uptime_ticker(self):
+        def tick():
+            elapsed = int(time.time() - self.start_time)
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            s = elapsed % 60
+            self.lbl_uptime.config(text=f"{h:02d}:{m:02d}:{s:02d}")
+            self.root.after(1000, tick)
+
+        tick()
+
+    def _on_business_event(self, badge: str, message: str, icon: str):
+        now_str = time.strftime("%H:%M:%S")
 
         def update():
-            # Update last activity
-            short_line = message
-            if len(short_line) > 60:
-                short_line = short_line[:57] + "..."
-            self.last_log_label.config(text=f"[{tag}] {short_line}")
+            # If empty label is visible, hide it
+            if self.empty_lbl.winfo_ismapped():
+                self.empty_lbl.pack_forget()
 
-            # Append to full log text
-            self.log_text.insert(tk.END, display_line + "\n")
-            self.log_text.see(tk.END)
-            # Keep max 500 lines in buffer
-            if float(self.log_text.index("end-1c")) > 500:
-                self.log_text.delete("1.0", "100.0")
+            # Increment counter on success
+            if "成功" in message or "完成" in message:
+                self.processed_count += 1
+                self.lbl_processed.config(text=f"{self.processed_count} 笔")
+
+            # Create new timeline entry row
+            row = tk.Frame(self.timeline_box, bg=BG_CARD)
+            row.pack(fill=tk.X, pady=2, anchor=tk.W)
+
+            time_lbl = tk.Label(
+                row,
+                text=now_str,
+                font=(FONT_FAMILY, 8),
+                fg=TEXT_MUTED,
+                bg=BG_CARD,
+            )
+            time_lbl.pack(side=tk.LEFT, padx=(0, 6))
+
+            badge_lbl = tk.Label(
+                row,
+                text=f"[{badge}]",
+                font=(FONT_FAMILY, 8, "bold"),
+                fg=ACCENT_CYAN,
+                bg=BG_CARD,
+            )
+            badge_lbl.pack(side=tk.LEFT, padx=(0, 6))
+
+            msg_lbl = tk.Label(
+                row,
+                text=message,
+                font=(FONT_FAMILY, 9),
+                fg=TEXT_TITLE,
+                bg=BG_CARD,
+                anchor=tk.W,
+            )
+            msg_lbl.pack(side=tk.LEFT, fill=tk.X)
+
+            self.timeline_items.append(row)
+            # Keep max 5 recent timeline entries visible
+            if len(self.timeline_items) > 5:
+                old = self.timeline_items.pop(0)
+                old.destroy()
 
         self.root.after_idle(update)
 
-    def _on_status_changed(self, w_id: str, status_text: str, is_active: bool):
+    def _on_raw_log(self, badge: str, raw_line: str):
+        def update():
+            entry = f"[{time.strftime('%H:%M:%S')}] [{badge}] {raw_line}\n"
+            self.tech_text.insert(tk.END, entry)
+            self.tech_text.see(tk.END)
+            # Limit lines
+            if float(self.tech_text.index("end-1c")) > 400:
+                self.tech_text.delete("1.0", "100.0")
+
+        self.root.after_idle(update)
+
+    def _on_status_change(self, w_id: str, status_text: str, state_type: str):
         def update():
             w = self.worker_widgets.get(w_id)
-            if w:
-                w["status_label"].config(text=status_text)
-                if is_active:
-                    w["dot_canvas"].itemconfig(w["dot"], fill="#ffffff")
-                    w["status_label"].config(fg="#e4e4e7")
-                else:
-                    w["dot_canvas"].itemconfig(w["dot"], fill="#71717a")
-                    w["status_label"].config(fg=TEXT_SECONDARY)
+            if not w:
+                return
+
+            w["status_lbl"].config(text=status_text)
+            if state_type == "active":
+                w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_CYAN)
+                w["status_lbl"].config(fg=ACCENT_CYAN)
+            elif state_type == "ready":
+                w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_GREEN)
+                w["status_lbl"].config(fg=ACCENT_GREEN)
+            elif state_type == "connecting":
+                w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_AMBER)
+                w["status_lbl"].config(fg=ACCENT_AMBER)
+            else:
+                w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_RED)
+                w["status_lbl"].config(fg=ACCENT_RED)
 
         self.root.after_idle(update)
 
@@ -479,7 +740,7 @@ class MinimalistWorkerApp:
 def main():
     try:
         root = tk.Tk()
-        app = MinimalistWorkerApp(root)
+        app = ModernWorkerApp(root)
         root.mainloop()
     except Exception as e:
         import traceback
@@ -490,7 +751,10 @@ def main():
             traceback.print_exc(file=f)
         try:
             import tkinter.messagebox
-            tkinter.messagebox.showerror("MDAC Worker GUI 启动错误", f"错误详情:\n{e}\n\n详细崩溃日志已记录至: {crash_log}")
+            tkinter.messagebox.showerror(
+                "自动化控制台启动错误",
+                f"错误详情:\n{e}\n\n详细崩溃日志已记录至:\n{crash_log}",
+            )
         except Exception:
             pass
 
