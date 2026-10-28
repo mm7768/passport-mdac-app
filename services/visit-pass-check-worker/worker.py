@@ -1300,7 +1300,7 @@ class VisitPassCheckWorker:
             result={"mode": self.config.mode, "poll_seconds": self.config.poll_seconds},
         )
         self.supabase.heartbeat_tick(status="ONLINE", force=True)
-        backoff_steps = [2.0, 5.0, 10.0]
+        backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
         backoff_idx = 0
         while True:
             try:

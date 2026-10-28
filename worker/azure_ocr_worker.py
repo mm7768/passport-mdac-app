@@ -514,8 +514,10 @@ def run_poll_loop(
     supabase = SupabaseAdminClient(config)
     azure = AzureIdentityDocumentClient(config)
     interval = max(queue_poll_seconds, 5.0)
-    LOG.info("OCR Worker 已启动：worker_id=%s，轮询间隔 %.1fs", worker_id, interval)
+    LOG.info("OCR Worker 已启动：worker_id=%s，初始轮询间隔 %.1fs", worker_id, interval)
     last_hb_time = 0.0
+    backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
+    backoff_idx = 0
     while True:
         try:
             now_mono = time.monotonic()
@@ -527,8 +529,12 @@ def run_poll_loop(
             if batch is None:
                 if once:
                     return 0
-                time.sleep(interval)
+                sleep_sec = backoff_steps[backoff_idx]
+                if backoff_idx < len(backoff_steps) - 1:
+                    backoff_idx += 1
+                time.sleep(sleep_sec)
                 continue
+            backoff_idx = 0
             batch_id = str(batch["id"])
             supabase.heartbeat(worker_id=worker_id, status="BUSY", batch_id=batch_id)
             LOG.info("Worker %s 开始处理批次 %s", worker_id, batch_id)

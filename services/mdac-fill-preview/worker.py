@@ -909,7 +909,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
 
 async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
     client.heartbeat_tick(status="ONLINE", force=True)
-    backoff_steps = [2.0, 5.0, 10.0]
+    backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
     backoff_idx = 0
     while True:
         try:
