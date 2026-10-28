@@ -255,7 +255,7 @@ class CyberCard(tk.Canvas):
         """Dynamically fit canvas height so inner content is never vertically clipped on High-DPI screens."""
         self.inner.update_idletasks()
         req_h = self.inner.winfo_reqheight()
-        target_h = max(self.min_height, req_h + self.pad_y * 2 + 2)
+        target_h = max(self.min_height, req_h + self.pad_y * 2 + 4)
         if target_h > self.winfo_height():
             self.configure(height=target_h)
 
@@ -313,7 +313,7 @@ class CyberCard(tk.Canvas):
         self.bracket_ids.clear()
 
         blen = self.bracket_len
-        bx1, by1, bx2, by2 = 0, 0, w - 1, h - 1
+        bx1, by1, bx2, by2 = 2, 2, w - 3, h - 3
 
         if self.brackets in ("diagonal", "all", "top-left"):
             # Top-Left Bracket: ┌
@@ -477,10 +477,10 @@ class WorkerManager:
                     if any(k in low for k in ["claimed", "已领取", "processing", "检测到", "正在尝试"]):
                         if self.on_status_change:
                             self.on_status_change(w_id, "正在执行任务...", "active")
-                    elif any(k in low for k in ["succeeded", "成功", "完成", "done"]):
+                    elif any(k in low for k in ["succeeded", "成功", "完成", "done", "completed", "no_record", "found", "batch_complete", "poll_complete", "result_writeback", "timeout"]):
                         if self.on_status_change:
                             self.on_status_change(w_id, "随时待命", "ready")
-                    elif any(k in low for k in ["idle", "waiting", "heartbeat", "空闲"]):
+                    elif any(k in low for k in ["idle", "waiting", "heartbeat", "空闲", "sleep"]):
                         if self.on_status_change:
                             self.on_status_change(w_id, "随时待命", "ready")
 
@@ -521,7 +521,6 @@ class CyberHudApp:
         )
 
         self._enable_dark_titlebar()
-        self._build_background_grid()
         self._build_ui()
         self._start_animation_loops()
         self._start_uptime_ticker()
@@ -542,25 +541,9 @@ class CyberHudApp:
         except Exception:
             pass
 
-    def _build_background_grid(self):
-        """Draws the faint blueprint tech grid lines in the window background."""
-        self.grid_canvas = tk.Canvas(self.root, bg=BG_ROOT, highlightthickness=0)
-        self.grid_canvas.place(x=0, y=0, relwidth=1, relheight=1)
-
-        def draw_grid(event):
-            self.grid_canvas.delete("grid_line")
-            w, h = event.width, event.height
-            step = 38
-            for x in range(0, w, step):
-                self.grid_canvas.create_line(x, 0, x, h, fill=BG_GRID, width=1, tags="grid_line")
-            for y in range(0, h, step):
-                self.grid_canvas.create_line(0, y, w, y, fill=BG_GRID, width=1, tags="grid_line")
-
-        self.grid_canvas.bind("<Configure>", draw_grid)
-
     def _build_ui(self):
-        # Master foreground container over background grid
-        self.main_container = tk.Frame(self.root, bg="")
+        # Master foreground container
+        self.main_container = tk.Frame(self.root, bg=BG_ROOT)
         self.main_container.pack(fill=tk.BOTH, expand=True)
 
         # 1. Top Header
@@ -595,7 +578,7 @@ class CyberHudApp:
         # 2. Hero Card with Corner Brackets & Animated Radar
         self.hero_card = CyberCard(
             self.main_container,
-            height=172,
+            height=184,
             bg_color=BG_CARD,
             border_color="#18202C",
             brackets="all",
@@ -709,7 +692,7 @@ class CyberHudApp:
         for i, w in enumerate(WORKERS_CONFIG):
             card = CyberCard(
                 self.main_container,
-                height=62,
+                height=64,
                 bg_color=BG_CARD,
                 border_color="#182230",
                 brackets="diagonal",  # ┌ and ┘
@@ -1086,11 +1069,30 @@ class CyberHudApp:
             w["status_lbl"].config(text=status_text)
             card_entry = w["card_entry"]
 
+            # Cancel any pending auto-revert timer
+            timer_id = w.get("revert_timer")
+            if timer_id:
+                try:
+                    self.root.after_cancel(timer_id)
+                except Exception:
+                    pass
+                w["revert_timer"] = None
+
             if state_type == "active":
                 w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_CYAN)
                 w["status_lbl"].config(fg=ACCENT_CYAN)
                 w["substatus_lbl"].config(text="PROCESSING", fg=ACCENT_CYAN)
                 card_entry["peak_border"] = (56, 189, 248)  # Electric cyan glow
+
+                # Auto-revert to ready after 45s if no new active event arrives
+                def auto_revert():
+                    if w["status_lbl"].cget("text") == "正在执行任务...":
+                        w["dot_canvas"].itemconfig(w["dot"], fill=TEXT_GREEN)
+                        w["status_lbl"].config(text="随时待命", fg=TEXT_GREEN)
+                        w["substatus_lbl"].config(text="QUEUE - IDLE", fg=TEXT_DARK)
+                        card_entry["peak_border"] = (16, 185, 129)
+
+                w["revert_timer"] = self.root.after(45000, auto_revert)
             elif state_type == "ready":
                 w["dot_canvas"].itemconfig(w["dot"], fill=TEXT_GREEN)
                 w["status_lbl"].config(fg=TEXT_GREEN)
