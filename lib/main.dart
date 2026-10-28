@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -2703,9 +2704,118 @@ class DemoRepository extends ChangeNotifier {
         exitDate: exitDate,
       );
     }
+    if (type != TaskType.mdacRegistration &&
+        type != TaskType.gmailPin &&
+        type != TaskType.registrationCheck &&
+        type != TaskType.visitPassCheck) {
+      return '当前只有 MDAC、Gmail PIN、Check Registration 和 Check Visit Pass Worker 已接入。';
+    }
+    if (customerIds.isEmpty) return '请先选择客户。';
+    if (type == TaskType.mdacRegistration &&
+        (entryDate == null || exitDate == null)) {
+      return 'MDAC 注册必须提供入境和出境日期。';
+    }
+    if (type == TaskType.mdacRegistration && exitDate!.isBefore(entryDate!)) {
+      return '出境日期不能早于入境日期。';
+    }
 
-    return '远程模式必须先把 Order 加入 Operational Batch，再从批次页面启动 Worker。'
-        '客户总库不再允许直接排队，避免创建缺少 case_id 的 Automation Item。';
+    final selected = <Customer>[];
+    for (final id in customerIds) {
+      final customer = findCustomer(id);
+      if (customer == null || customer.isDeleted) {
+        return '选中的客户已不存在或已被删除，请刷新后重试。';
+      }
+      if (type == TaskType.mdacRegistration && !customer.hasMdacFields) {
+        return '${customer.fullName} 缺少 MDAC 必填资料，不能启动任务。';
+      }
+      if (type != TaskType.mdacRegistration && !customer.hasQueryFields) {
+        return '${customer.fullName} 缺少护照号或国籍，不能启动查询任务。';
+      }
+      if (activeTaskForCustomer(id) != null) {
+        return '${customer.fullName} 已有运行中的任务，系统阻止重复创建。';
+      }
+      selected.add(customer);
+    }
+
+    final customerPayloads = [
+      for (final customer in selected)
+        {
+          'id': customer.id,
+          'full_name': customer.fullName,
+          'passport_number': customer.passportNumber,
+          'date_of_birth': customer.dateOfBirth,
+          'place_of_birth': customer.placeOfBirth,
+          'nationality': customer.nationality,
+          'gender': customer.gender,
+          'passport_expiry_date': customer.passportExpiryDate,
+        },
+    ];
+
+    try {
+      if (type == TaskType.gmailPin) {
+        await SupabaseGateway.createGmailPinBatch(
+          customers: customerPayloads,
+          note: '$actor 创建 Gmail PIN 获取批次；PIN 不写入日志',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Gmail PIN 获取批次，共 ${selected.length} 位客户',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Gmail PIN Worker';
+      } else if (type == TaskType.registrationCheck) {
+        await SupabaseGateway.createRegistrationCheckBatch(
+          customers: customerPayloads,
+          note: '$actor 创建 Check Registration 批次；只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Check Registration 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Registration Worker';
+      } else if (type == TaskType.visitPassCheck) {
+        final settings = mdacSettings;
+        if (settings == null ||
+            settings.mdacEmail.trim().isEmpty ||
+            settings.mdacPhone.trim().isEmpty ||
+            settings.regionCode.trim().isEmpty) {
+          return '请先在 MDAC 默认业务配置中填写邮箱、手机号和国家/地区代码。';
+        }
+        await SupabaseGateway.createVisitPassCheckBatch(
+          customers: customerPayloads,
+          email: settings.mdacEmail,
+          regionCode: settings.regionCode,
+          mobile: settings.mdacPhone,
+          note: '$actor 创建 Check Visit Pass 批次；只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 Check Visit Pass 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway Check Visit Pass Worker';
+      } else {
+        await SupabaseGateway.createMdacRegistrationBatch(
+          entryDate: entryDate!,
+          exitDate: exitDate!,
+          customers: customerPayloads,
+          note: '$actor 创建 MDAC fill-preview 批次；真实页面只填写不提交',
+        );
+        auditEvents.insert(
+          0,
+          '$actor 创建 MDAC fill-preview 批次，共 ${selected.length} 位客户；未提交',
+        );
+        currentWorkerActivity = '已排队，等待 Railway fill-preview Worker';
+      }
+      await Future.wait([
+        syncAutomationTasksFromSupabase(),
+        syncCustomersFromSupabase(),
+        syncMdacBatchMembershipsFromSupabase(),
+        syncActiveBatchesFromSupabase(),
+      ]);
+      notifyListeners();
+      return null;
+    } catch (exception) {
+      return '${taskTypeLabel(type)} 批次创建失败：$exception';
+    }
   }
 
   /// Batch-driven strict task execution (V1.1 Contract)
@@ -7129,16 +7239,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
             if (selected.isNotEmpty)
               SelectionBar(
                 count: selected.length,
-                onMdac: widget.repository.remoteMode ? null : startMdac,
-                onPin: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.gmailPin),
-                onRegistration: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.registrationCheck),
-                onVisitPass: widget.repository.remoteMode
-                    ? null
-                    : () => startSimpleTask(TaskType.visitPassCheck),
+                onMdac: startMdac,
+                onPin: () => startSimpleTask(TaskType.gmailPin),
+                onRegistration: () =>
+                    startSimpleTask(TaskType.registrationCheck),
+                onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
                 onBundlePdf: bundleSelectedPdf,
                 onStatus: updateSelectedBusinessStatus,
                 onCreatedAt: widget.role == UserRole.owner
@@ -8151,6 +8256,100 @@ class _TasksScreenState extends State<TasksScreen> {
   }
 }
 
+class SettingsHistoryStorage {
+  static const String _mdacEmailHistoryKey = 'mdac_email_history_v1';
+  static const String _gmailAccountHistoryKey = 'gmail_account_history_v1';
+
+  static Future<List<String>> getMdacEmailHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getStringList(_mdacEmailHistoryKey) ?? <String>[];
+    } catch (_) {
+      return <String>[];
+    }
+  }
+
+  static Future<void> addMdacEmail(String email) async {
+    final clean = email.trim().toLowerCase();
+    if (clean.isEmpty || !clean.contains('@')) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_mdacEmailHistoryKey) ?? <String>[];
+      list.removeWhere((item) => item.toLowerCase() == clean);
+      list.insert(0, clean);
+      if (list.length > 30) list.removeRange(30, list.length);
+      await prefs.setStringList(_mdacEmailHistoryKey, list);
+    } catch (_) {}
+  }
+
+  static Future<void> removeMdacEmail(String email) async {
+    final clean = email.trim().toLowerCase();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_mdacEmailHistoryKey) ?? <String>[];
+      list.removeWhere((item) => item.toLowerCase() == clean);
+      await prefs.setStringList(_mdacEmailHistoryKey, list);
+    } catch (_) {}
+  }
+
+  static Future<List<Map<String, String>>> getGmailAccountHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_gmailAccountHistoryKey);
+      if (raw == null || raw.trim().isEmpty) return <Map<String, String>>[];
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((item) => {
+                  'email': (item['email'] ?? '').toString().trim().toLowerCase(),
+                  'app_password': (item['app_password'] ?? '').toString().trim(),
+                })
+            .where((item) => item['email']!.isNotEmpty)
+            .toList();
+      }
+      return <Map<String, String>>[];
+    } catch (_) {
+      return <Map<String, String>>[];
+    }
+  }
+
+  static Future<void> saveGmailAccount({
+    required String email,
+    required String appPassword,
+  }) async {
+    final cleanEmail = email.trim().toLowerCase();
+    final cleanPass = appPassword.trim();
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final current = await getGmailAccountHistory();
+      String passwordToSave = cleanPass;
+      final existingIndex = current.indexWhere((it) => it['email'] == cleanEmail);
+      if (passwordToSave.isEmpty && existingIndex != -1) {
+        passwordToSave = current[existingIndex]['app_password'] ?? '';
+      }
+      current.removeWhere((it) => it['email'] == cleanEmail);
+      current.insert(0, {
+        'email': cleanEmail,
+        'app_password': passwordToSave,
+      });
+      if (current.length > 30) current.removeRange(30, current.length);
+      await prefs.setString(_gmailAccountHistoryKey, jsonEncode(current));
+    } catch (_) {}
+  }
+
+  static Future<void> removeGmailAccount(String email) async {
+    final cleanEmail = email.trim().toLowerCase();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final current = await getGmailAccountHistory();
+      current.removeWhere((it) => it['email'] == cleanEmail);
+      await prefs.setString(_gmailAccountHistoryKey, jsonEncode(current));
+    } catch (_) {}
+  }
+}
+
 class MdacSettingsEditor extends StatefulWidget {
   const MdacSettingsEditor({required this.repository, super.key});
 
@@ -8178,12 +8377,14 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
   String _pobMode = 'NATIONALITY';
   bool _saving = false;
   bool _dirty = false;
+  List<String> _emailHistory = [];
 
   @override
   void initState() {
     super.initState();
     _applySettings(widget.repository.mdacSettings ?? MdacSettings.defaults());
     widget.repository.addListener(_onRepositoryChanged);
+    _loadEmailHistory();
   }
 
   @override
@@ -8204,6 +8405,15 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
       controller.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _loadEmailHistory() async {
+    final list = await SettingsHistoryStorage.getMdacEmailHistory();
+    if (mounted) {
+      setState(() {
+        _emailHistory = list;
+      });
+    }
   }
 
   void _onRepositoryChanged() {
@@ -8288,9 +8498,13 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
       _saving = false;
       if (error == null) _dirty = false;
     });
+    if (error == null) {
+      await SettingsHistoryStorage.addMdacEmail(_emailController.text);
+      await _loadEmailHistory();
+    }
     showToast(
       context,
-      error ?? 'MDAC 默认配置已保存；之后新建的批次会使用这份配置快照。',
+      error ?? 'MDAC 默认配置已保存；联系邮箱已记入历史。',
       error: error != null,
     );
   }
@@ -8337,7 +8551,7 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '这些是新 MDAC 批次使用的固定业务默认值，可在 App 修改。保存批次时会复制快照；已排队批次不会因之后修改设置而改变。',
+                  '这些是新 MDAC 批次使用的固定业务默认值，可在 App 修改。联系邮箱会自动记忆使用过的历史 Gmail，可在切换时直接选取。',
                   style: TextStyle(
                     color: AppTheme.muted,
                     fontSize: 12,
@@ -8351,11 +8565,120 @@ class _MdacSettingsEditorState extends State<MdacSettingsEditor> {
                   children: [
                     _wideField(
                       fieldWidth,
-                      _textField(
-                        label: 'MDAC 联系邮箱',
-                        controller: _emailController,
-                        keyboardType: TextInputType.emailAddress,
-                        validator: _email,
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          TextFormField(
+                            controller: _emailController,
+                            keyboardType: TextInputType.emailAddress,
+                            validator: _email,
+                            onChanged: _markDirty,
+                            decoration: InputDecoration(
+                              labelText: 'MDAC 联系邮箱',
+                              hintText: '例如 mdac.guest@gmail.com',
+                              suffixIcon: _emailHistory.isNotEmpty
+                                  ? PopupMenuButton<String>(
+                                      icon: const Icon(
+                                        Icons.history_rounded,
+                                        color: AppTheme.accent,
+                                      ),
+                                      tooltip: '选择历史使用过的 Gmail',
+                                      onSelected: (email) {
+                                        setState(() {
+                                          _emailController.text = email;
+                                          _dirty = true;
+                                        });
+                                        showToast(context, '已选择历史邮箱: $email');
+                                      },
+                                      itemBuilder: (context) => [
+                                        const PopupMenuItem<String>(
+                                          enabled: false,
+                                          child: Text(
+                                            '历史使用过的 Gmail：',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                              color: AppTheme.muted,
+                                            ),
+                                          ),
+                                        ),
+                                        ..._emailHistory.map(
+                                          (email) => PopupMenuItem<String>(
+                                            value: email,
+                                            child: Row(
+                                              children: [
+                                                const Icon(
+                                                  Icons.mail_outline_rounded,
+                                                  size: 16,
+                                                  color: AppTheme.accent,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Text(
+                                                    email,
+                                                    style: const TextStyle(fontSize: 13),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                IconButton(
+                                                  icon: const Icon(
+                                                    Icons.close_rounded,
+                                                    size: 14,
+                                                    color: AppTheme.muted,
+                                                  ),
+                                                  padding: EdgeInsets.zero,
+                                                  constraints: const BoxConstraints(),
+                                                  tooltip: '从历史中移除',
+                                                  onPressed: () async {
+                                                    Navigator.pop(context);
+                                                    await SettingsHistoryStorage.removeMdacEmail(email);
+                                                    await _loadEmailHistory();
+                                                  },
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : null,
+                            ),
+                          ),
+                          if (_emailHistory.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  const Text(
+                                    '历史记录: ',
+                                    style: TextStyle(fontSize: 11, color: AppTheme.muted),
+                                  ),
+                                  ..._emailHistory.take(4).map(
+                                    (email) => Padding(
+                                      padding: const EdgeInsets.only(right: 6),
+                                      child: ActionChip(
+                                        visualDensity: VisualDensity.compact,
+                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        avatar: const Icon(Icons.history, size: 12),
+                                        label: Text(
+                                          email,
+                                          style: const TextStyle(fontSize: 11),
+                                        ),
+                                        onPressed: () {
+                                          setState(() {
+                                            _emailController.text = email;
+                                            _dirty = true;
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                     _wideField(
@@ -8606,14 +8929,17 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  List<Map<String, String>> _accountHistory = [];
   bool _saving = false;
   bool _dirty = false;
+  bool _showPassword = false;
 
   @override
   void initState() {
     super.initState();
     _applySettings(widget.repository.gmailSettings ?? GmailSettings.defaults());
     widget.repository.addListener(_onRepositoryChanged);
+    _loadAccountHistory();
   }
 
   @override
@@ -8622,6 +8948,15 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAccountHistory() async {
+    final list = await SettingsHistoryStorage.getGmailAccountHistory();
+    if (mounted) {
+      setState(() {
+        _accountHistory = list;
+      });
+    }
   }
 
   void _onRepositoryChanged() {
@@ -8642,6 +8977,22 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
     if (!_dirty) setState(() => _dirty = true);
   }
 
+  void _selectAccount(Map<String, String> account) {
+    final email = account['email'] ?? '';
+    final pass = account['app_password'] ?? '';
+    setState(() {
+      _emailController.text = email;
+      _passwordController.text = pass;
+      _dirty = true;
+    });
+    showToast(
+      context,
+      pass.isNotEmpty
+          ? '已选择历史 Gmail，并自动填入 App Password'
+          : '已选择历史 Gmail（无保存的密码，请补充输入）',
+    );
+  }
+
   String? _email(String? value) {
     final text = value?.trim() ?? '';
     if (text.isEmpty) return 'Gmail 地址不能为空';
@@ -8658,14 +9009,14 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
     }
     final current = widget.repository.gmailSettings ?? GmailSettings.defaults();
     final address = _emailController.text.trim().toLowerCase();
-    final password = _passwordController.text;
+    final password = _passwordController.text.trim();
     final addressChanged = address != current.gmailAddress;
-    if (password.trim().isEmpty &&
+    if (password.isEmpty &&
         (!current.credentialConfigured || addressChanged)) {
       showToast(
         context,
         addressChanged
-            ? '更换 Gmail 地址时必须同时输入新的 App Password。'
+            ? '更换 Gmail 地址时必须同时输入或选择带入 App Password。'
             : '首次配置必须输入 Gmail App Password。',
         error: true,
       );
@@ -8675,7 +9026,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
     final error = await widget.repository.saveGmailSettings(
       GmailSettings(
         gmailAddress: address,
-        credentialConfigured: current.credentialConfigured,
+        credentialConfigured: current.credentialConfigured || password.isNotEmpty,
       ),
       appPassword: password,
     );
@@ -8684,12 +9035,18 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
       _saving = false;
       if (error == null) {
         _dirty = false;
-        _passwordController.clear();
       }
     });
+    if (error == null) {
+      await SettingsHistoryStorage.saveGmailAccount(
+        email: address,
+        appPassword: password,
+      );
+      await _loadAccountHistory();
+    }
     showToast(
       context,
-      error ?? 'Gmail 地址和凭证状态已保存；App 不会回读密码。',
+      error ?? 'Gmail 地址和凭证已成功保存并同步！已记入历史记忆。',
       error: error != null,
     );
   }
@@ -8707,19 +9064,169 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
           final fieldWidth = constraints.maxWidth < 720
               ? constraints.maxWidth
               : (constraints.maxWidth - 16) / 2;
+          final currentEmail = _emailController.text.trim().toLowerCase();
+          final hasSavedPass = _accountHistory.any(
+            (a) => a['email'] == currentEmail && (a['app_password'] ?? '').isNotEmpty,
+          );
+
           return Form(
             key: _formKey,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Gmail 地址和 App Password 可在 App 输入；密码只在保存时提交到加密 Vault，App 不保存、不回读，Worker 运行时才使用。',
+                  'Gmail 地址和 App Password 会在保存时提交到加密 Vault 供 Worker 获取验证码；本地同时记忆历史 Gmail 及其 App Password，切换时一键选入，无需重复查找填写。',
                   style: TextStyle(
                     color: AppTheme.muted,
                     fontSize: 12,
                     height: 1.45,
                   ),
                 ),
+                if (_accountHistory.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.35),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Theme.of(context).dividerColor.withOpacity(0.5),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.history_edu_rounded,
+                              size: 18,
+                              color: AppTheme.accent,
+                            ),
+                            const SizedBox(width: 8),
+                            const Text(
+                              '快捷切换历史 Gmail（自动带入 App Password）：',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        DropdownButtonFormField<String>(
+                          value: _accountHistory.any((a) => a['email'] == currentEmail)
+                              ? currentEmail
+                              : null,
+                          hint: const Text('从历史保存的 Gmail 中选择...'),
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            prefixIcon: Icon(Icons.account_circle_outlined, size: 20),
+                          ),
+                          items: _accountHistory.map((account) {
+                            final email = account['email'] ?? '';
+                            final hasPass = (account['app_password'] ?? '').isNotEmpty;
+                            return DropdownMenuItem<String>(
+                              value: email,
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      email,
+                                      style: const TextStyle(fontSize: 13),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: hasPass
+                                          ? AppTheme.accent.withOpacity(0.12)
+                                          : AppTheme.muted.withOpacity(0.12),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          hasPass ? Icons.key_rounded : Icons.key_off_rounded,
+                                          size: 12,
+                                          color: hasPass ? AppTheme.accent : AppTheme.muted,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          hasPass ? '已存密码' : '无密码',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: hasPass ? AppTheme.accent : AppTheme.muted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (selectedEmail) {
+                            if (selectedEmail != null) {
+                              final found = _accountHistory.firstWhere(
+                                (a) => a['email'] == selectedEmail,
+                                orElse: () => <String, String>{},
+                              );
+                              if (found.isNotEmpty) {
+                                _selectAccount(found);
+                              }
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: _accountHistory.map((account) {
+                              final email = account['email'] ?? '';
+                              final isSelected = email == currentEmail;
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: InputChip(
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  selected: isSelected,
+                                  avatar: Icon(
+                                    Icons.vpn_key_rounded,
+                                    size: 13,
+                                    color: isSelected ? Colors.white : AppTheme.accent,
+                                  ),
+                                  label: Text(
+                                    email,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                    ),
+                                  ),
+                                  onPressed: () => _selectAccount(account),
+                                  onDeleted: () async {
+                                    await SettingsHistoryStorage.removeGmailAccount(email);
+                                    await _loadAccountHistory();
+                                    if (_emailController.text.trim().toLowerCase() == email) {
+                                      _passwordController.clear();
+                                    }
+                                  },
+                                  deleteIconColor: AppTheme.muted,
+                                  deleteButtonTooltipMessage: '删除此历史账号',
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 14),
                 Wrap(
                   spacing: 16,
@@ -8742,13 +9249,28 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                       width: fieldWidth,
                       child: TextFormField(
                         controller: _passwordController,
-                        obscureText: true,
+                        obscureText: !_showPassword,
                         enableSuggestions: false,
                         autocorrect: false,
                         onChanged: _markDirty,
-                        decoration: const InputDecoration(
-                          labelText: 'Gmail App Password（只在保存时提交）',
-                          hintText: '已配置时可留空；更换邮箱必须重新输入',
+                        decoration: InputDecoration(
+                          labelText: 'Gmail App Password（密码）',
+                          hintText: hasSavedPass
+                              ? '已自动填入历史保存的 App Password'
+                              : '首次或更换未记忆邮箱时需输入',
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _showPassword
+                                  ? Icons.visibility_off_rounded
+                                  : Icons.visibility_rounded,
+                              size: 20,
+                              color: AppTheme.muted,
+                            ),
+                            tooltip: _showPassword ? '隐藏密码' : '显示密码',
+                            onPressed: () {
+                              setState(() => _showPassword = !_showPassword);
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -8769,7 +9291,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.save_outlined),
-                      label: Text(_saving ? '保存中…' : '保存 Gmail 凭证'),
+                      label: Text(_saving ? '保存中…' : '保存 Gmail 凭证与历史'),
                     ),
                     if (_dirty)
                       const Text(
@@ -8778,7 +9300,7 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
                       ),
                     if (widget.repository.remoteMode)
                       const Text(
-                        '保存到 Supabase，并写入审计日志',
+                        '保存到 Supabase，并写入审计日志与本地记忆',
                         style: TextStyle(color: AppTheme.muted, fontSize: 12),
                       ),
                   ],
@@ -8791,7 +9313,6 @@ class _GmailSettingsEditorState extends State<GmailSettingsEditor> {
     );
   }
 }
-
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
     required this.repository,
@@ -9507,10 +10028,10 @@ class SelectionBar extends StatelessWidget {
   });
 
   final int count;
-  final VoidCallback? onMdac;
-  final VoidCallback? onPin;
-  final VoidCallback? onRegistration;
-  final VoidCallback? onVisitPass;
+  final VoidCallback onMdac;
+  final VoidCallback onPin;
+  final VoidCallback onRegistration;
+  final VoidCallback onVisitPass;
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback? onMergeBatch;
@@ -9548,30 +10069,26 @@ class SelectionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          if (onMdac != null)
-            ActionChip(
-              avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
-              label: const Text('MDAC 注册'),
-              onPressed: onMdac,
-            ),
-          if (onPin != null)
-            ActionChip(
-              avatar: const Icon(Icons.mail_outline_rounded, size: 16),
-              label: const Text('获取 PIN'),
-              onPressed: onPin,
-            ),
-          if (onRegistration != null)
-            ActionChip(
-              avatar: const Icon(Icons.manage_search_rounded, size: 16),
-              label: const Text('查 Registration'),
-              onPressed: onRegistration,
-            ),
-          if (onVisitPass != null)
-            ActionChip(
-              avatar: const Icon(Icons.badge_outlined, size: 16),
-              label: const Text('查 Visit Pass'),
-              onPressed: onVisitPass,
-            ),
+          ActionChip(
+            avatar: const Icon(Icons.flight_takeoff_rounded, size: 16),
+            label: const Text('MDAC 注册'),
+            onPressed: onMdac,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.mail_outline_rounded, size: 16),
+            label: const Text('获取 PIN'),
+            onPressed: onPin,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.manage_search_rounded, size: 16),
+            label: const Text('查 Registration'),
+            onPressed: onRegistration,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.badge_outlined, size: 16),
+            label: const Text('查 Visit Pass'),
+            onPressed: onVisitPass,
+          ),
           if (onBundlePdf != null)
             ActionChip(
               avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),

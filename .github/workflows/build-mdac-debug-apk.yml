@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/mdac-human-review
+      - v1.0.39-history
     paths:
       - android/**
       - lib/**
@@ -90,23 +91,15 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.0.39-history'
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (Order/Case Worker 绑定安全修复)"
+          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (历史 Gmail 与 App Password 记忆切换增强版)"
           body: |
             ### v${{ steps.get_version.outputs.VERSION }} 更新内容：
-            - **Order/Case Worker 绑定收口**：
-              - 远程模式下客户总库不再允许直接创建 MDAC / PIN / Registration / Visit Pass Worker 任务；
-              - Worker 任务必须先进入 Operational Batch，再从批次工作区执行，强制携带稳定 `case_id`、`membership_id` 与 `operational_batch_id`；
-              - 客户总库在远程模式隐藏旧 Worker 快捷按钮，避免误操作生成 Legacy / NULL `case_id` 任务。
-            - **Registration Check fallback 加固**：
-              - fallback 写回 `registration_checks` 时同步保存 `automation_items.case_id`；
-              - 保证 strict Order 流程在主写回 RPC 异常时仍保持 Order/Case 关联。
-            - **验收**：
-              - Flutter analyze、test、debug APK build 已通过；
-              - 数据库 fallback case-binding rollback rehearsal 已通过。
-
+            - **基于 v1.0.39 完整业务底座**：保留客户列表全部原有快捷按钮（MDAC 注册、获取 PIN、核对 Registration、核对 Visit Pass）及交互逻辑；
+            - **MDAC 默认业务配置**：联系邮箱支持保存使用过的历史 Gmail，支持下拉列表选择及快捷芯片点选，直接切换免去重复输入；
+            - **Gmail PIN 默认邮箱设置**：全面支持保存历史使用过的 Gmail 账号及对应的 Gmail App Passwords！切换历史账号时一键带入邮箱与应用密码，彻底省去查找复制密码的麻烦。
           files: |
             build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
         env:
