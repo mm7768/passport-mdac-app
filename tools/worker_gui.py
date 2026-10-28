@@ -1,13 +1,14 @@
-"""Pure Obsidian Black GUI with Breathing White Halo Borders for MDAC Worker Suite.
+"""Cyberpunk HUD Theme MDAC Worker GUI with Breathing Lights and Animated Radar.
 
-Theme: Pure Obsidian Black (#000000 & #08080A)
-Aesthetic:
-- Crisp anti-aliased native typography (Windows Per-Monitor DPI Aware, zero pixelation)
-- Elegant smooth rounded cards (Radius 16px)
-- Cyclic breathing white borders (Sine-wave brightness modulation from #252528 to #FFFFFF)
-- Human-friendly business terminology (zero raw code console noise)
+Replicates the military sci-fi HUD command center interface:
+- Blueprint tech grid background pattern
+- Animated green radar sweep with concentric rings, crosshairs, and rotating beam
+- Corner brackets (┌ ┐ └ ┘ for hero, ┌ ┘ for workers)
+- Synchronized cascading breathing light borders on worker cards (sine-wave brightness modulation)
+- Human-friendly business timeline translation (zero raw console code noise)
 - Windows subprocess CREATE_NO_WINDOW flags (zero black CMD popups)
-- Pure standard library + Tkinter (zero extra pip dependencies)
+- Pre-configured side-by-side window geometry for dual-panel monitor layout
+- High-DPI crisp native typography (SetProcessDpiAwareness(2), zero pixelation)
 """
 from __future__ import annotations
 
@@ -48,77 +49,81 @@ for p in [REPO_ROOT, TOOLS_DIR]:
 WORKERS_CONFIG = [
     {
         "id": "mdac",
+        "idx": "01",
         "name": "MDAC 马来西亚自动申报服务",
-        "desc": "批量入境卡申报 · 官方拼图滑块自适应验证",
-        "badge": "核心申报",
-        "badge_bg": "#14281E",
-        "badge_fg": "#4ADE80",
+        "desc": "批量入境卡申报，官方规则快速自动校验",
+        "badge": "核心中枢",
         "script": "services/mdac-fill-preview/worker.py",
         "args": ["--poll"],
-        "icon": "⚡",
+        "icon": "🗎",
     },
     {
         "id": "reg",
+        "idx": "02",
         "name": "官方入境登记凭证核验",
-        "desc": "Registration 登记号查验 · 状态自动回填",
+        "desc": "Registration 登记是否有，状态自动同步",
         "badge": "登记核验",
-        "badge_bg": "#132338",
-        "badge_fg": "#60A5FA",
         "script": "services/registration-check-worker/worker.py",
         "args": ["--poll"],
         "icon": "🔍",
     },
     {
         "id": "vp",
+        "idx": "03",
         "name": "Visit Pass 电子入境签核验",
-        "desc": "官方电子准证查验 · 签发凭证自动存盘",
+        "desc": "官方电子准证查询，签发凭证自动存档",
         "badge": "准证核验",
-        "badge_bg": "#28173B",
-        "badge_fg": "#C084FC",
         "script": "services/visit-pass-check-worker/worker.py",
         "args": ["--poll"],
-        "icon": "🛂",
+        "icon": "💳",
     },
     {
         "id": "ocr",
+        "idx": "04",
         "name": "Azure 智能护照识别 (OCR)",
-        "desc": "护照全量字段高精度提取 · 智能档案校验",
+        "desc": "护照全部字段高精度提取，智能档案映射",
         "badge": "护照识别",
-        "badge_bg": "#132A26",
-        "badge_fg": "#2DD4BF",
         "script": "worker/azure_ocr_worker.py",
         "args": ["--poll"],
-        "icon": "📷",
+        "icon": "⛶",
     },
     {
         "id": "pin",
+        "idx": "05",
         "name": "Gmail PIN 验证码自动抓取",
-        "desc": "移民局官方邮件监听 · 验证码毫秒级提取",
+        "desc": "移民局官方邮件监听，验证码秒级自动抓取",
         "badge": "邮件验证",
-        "badge_bg": "#331625",
-        "badge_fg": "#F472B6",
         "script": "services/gmail-pin-worker/worker.py",
         "args": ["--poll"],
-        "icon": "📬",
+        "icon": "✉",
     },
 ]
 
-# Pure Black Palette
-BG_MAIN = "#000000"         # Jet Black
-BG_CARD = "#08080A"         # Obsidian Card
-BG_CARD_INNER = "#0C0C0F"   # Metric pill
-BORDER_DIM = "#222226"      # Rest state border
-BORDER_ACTIVE = "#FFFFFF"   # Pure White Light
-TEXT_WHITE = "#FFFFFF"      # Crisp White
-TEXT_MUTED = "#8E8E93"      # Clean neutral grey
-TEXT_DARK = "#48484A"       # Subtle border & hint
-ACCENT_GREEN = "#34D399"    # Neon Emerald
-ACCENT_CYAN = "#38BDF8"     # Electric Cyan
-ACCENT_AMBER = "#FBBF24"    # Amber Warning
-ACCENT_RED = "#F87171"      # Red Alert
+# Cyberpunk Palette matching the reference UI
+BG_ROOT = "#06080B"         # Deep black-slate canvas
+BG_GRID = "#0D121B"         # Faint blueprint grid lines
+BG_CARD = "#0B0F16"         # High-tech card body
+BG_PILL = "#121722"         # Number & icon container
+BORDER_DIM = "#182230"      # Rest state dark border
+BORDER_GLOW = "#10B981"     # Peak emerald breathing glow
+BORDER_ACTIVE = "#38BDF8"   # Electric cyan glow (processing)
+BORDER_AMBER = "#FBBF24"    # Connecting glow
+BORDER_RED = "#F87171"      # Offline glow
+BRACKET_COLOR = "#D1D5DB"   # Sharp corner brackets (┌ ┘)
+
+TEXT_WHITE = "#FFFFFF"      # Crisp white
+TEXT_LIGHT = "#E6EDF3"      # Off-white body
+TEXT_MUTED = "#8B949E"      # Technical gray
+TEXT_DARK = "#484F58"       # Subtle label
+TEXT_GREEN = "#00FF88"      # Bright HUD neon terminal green
+ACCENT_GREEN = "#10B981"    # Emerald
+ACCENT_CYAN = "#38BDF8"     # Electric cyan
+ACCENT_AMBER = "#FBBF24"    # Amber
+ACCENT_RED = "#F87171"      # Red alert
 
 FONT_CN = "Microsoft YaHei UI"
 FONT_EN = "Segoe UI"
+FONT_MONO = "Consolas"
 
 
 def translate_log_to_business(service_id: str, raw_line: str) -> str | None:
@@ -140,17 +145,17 @@ def translate_log_to_business(service_id: str, raw_line: str) -> str | None:
             err_msg = data.get("error_message") or data.get("error_code")
 
             if step == "worker_start" or status == "online":
-                return "🟢 服务就绪上线，已连接队列开始巡航"
+                return "服务就绪上线，已连接队列开始巡航"
             if step in ("batch_claim", "item_claim"):
-                return "📥 领取到新业务工单，正在执行核查..."
+                return "领取到新业务工单，正在执行核查..."
             if step == "result_writeback":
                 if status == "succeeded":
                     res = data.get("result", "")
-                    return f"✅ 核查结果已保存回填 (状态: {res})"
+                    return f"核查结果已保存回填 (状态: {res})"
                 elif status == "failed":
-                    return f"ℹ️ 官方核查未能确认: {err_msg or '请检查官网或输入'}"
+                    return f"官方核查未能确认: {err_msg or '请检查官网或输入'}"
             if err_msg and str(err_msg).lower() != "null":
-                return f"⚠️ 提示: {err_msg}"
+                return f"提示: {err_msg}"
             return None
         except Exception:
             return None
@@ -158,66 +163,83 @@ def translate_log_to_business(service_id: str, raw_line: str) -> str | None:
     # Specific Service events
     if service_id == "mdac":
         if "已领取 mdac 批次" in raw_line:
-            return "📥 收到新申报批次任务，准备启动自动填报"
+            return "收到新申报批次任务，准备启动自动填报"
         if "检测到 mdac 滑块" in raw_line or "slider_solver" in low:
-            return "🧩 检测到官方拼图滑块，正在自适应识别对齐"
+            return "检测到官方拼图滑块，正在自适应识别对齐"
         if "滑块验证成功" in raw_line:
-            return "✅ 滑块拼图校验通过"
+            return "滑块拼图校验通过"
         if "已点击官方 submit" in raw_line:
-            return "🚀 已提交至移民局官网，等待受理确认"
+            return "已提交至移民局官网，等待受理确认"
         if "官方注册成功" in raw_line or "status=succeeded" in low:
-            return "🎉 客户申报成功，官方凭证已写回系统"
+            return "客户申报成功，官方凭证已写回系统"
         if "needs_review" in low or "失败" in raw_line:
-            return "⚠️ 遇到官方网页异常，已安全转人工核实"
+            return "遇到官方网页异常，已安全转人工核实"
 
     elif service_id == "reg":
         if "已领取" in raw_line or "claimed" in low:
-            return "📥 收到登记核验任务，正在连接官方接口核对"
+            return "收到登记核验任务，正在连接官方接口核对"
         if "核验成功" in raw_line or "success" in low or "status=succeeded" in low:
-            return "✅ 官方登记凭证已核验完毕，状态已更新"
+            return "官方登记凭证已核验完毕，状态已更新"
 
     elif service_id == "vp":
         if "已领取" in raw_line or "claimed" in low:
-            return "📥 收到 Visit Pass 查签任务，正在查询入境准证"
+            return "收到 Visit Pass 查签任务，正在查询入境准证"
         if "提取" in raw_line and "visit pass" in low:
-            return "📄 成功提取到官方电子入境准证"
+            return "成功提取到官方电子入境准证"
         if "success" in low or "status=succeeded" in low:
-            return "✅ Visit Pass 准证核验完成并存盘"
+            return "Visit Pass 准证核验完成并存盘"
 
     elif service_id == "ocr":
         if "claimed" in low or "领取" in raw_line:
-            return "📥 收到待识别护照图片，正在进行智能解析"
+            return "收到待识别护照图片，正在进行智能解析"
         if "ocr" in low and ("成功" in raw_line or "completed" in low or "success" in low):
-            return "🔍 护照 OCR 信息识别提取完毕，已建档校验"
+            return "护照 OCR 信息识别提取完毕，已建档校验"
 
     elif service_id == "pin":
         if "claimed" in low or "领取" in raw_line:
-            return "📥 正在扫描移民局官方邮件..."
+            return "正在扫描移民局官方邮件..."
         if "pin" in low and ("提取" in raw_line or "received" in low or "成功" in raw_line):
-            return "🔑 成功提取官方 PIN 安全验证码"
+            return "成功提取官方 PIN 安全验证码"
 
     # Catch-all
     if "succeeded" in low or "完成" in raw_line or "成功" in raw_line:
-        return "✨ 业务任务处理顺利完成"
+        return "业务任务处理顺利完成"
     if ("error" in low or "exception" in low or "失败" in raw_line) and "error_code\": null" not in low and "error\": null" not in low:
         if not stripped.startswith("{"):
             clean = raw_line.replace("ERROR", "").replace("Exception", "").strip()
             if len(clean) > 40:
                 clean = clean[:38] + "..."
-            return f"⚠️ 提示: {clean}"
+            return f"提示: {clean}"
 
     return None
 
 
-class RoundedCard(tk.Canvas):
-    """Custom canvas that renders a smooth anti-aliased rounded card with dynamic breathing borders."""
+class CyberCard(tk.Canvas):
+    """Futuristic card with smooth corners, cyberpunk corner brackets (┌ ┘ or all 4),
+    and dynamic breathing glow effects on the border and brackets."""
 
-    def __init__(self, parent, height: int, radius: int = 16, bg_color: str = BG_CARD, border_color: str = BORDER_DIM, border_width: float = 1.5, **kwargs):
-        super().__init__(parent, height=height, bg=BG_MAIN, highlightthickness=0, **kwargs)
-        self.radius = radius
+    def __init__(
+        self,
+        parent,
+        height: int,
+        bg_color: str = BG_CARD,
+        border_color: str = BORDER_DIM,
+        brackets: str = "diagonal",  # 'diagonal' (┌ ┘) or 'all' (┌ ┐ └ ┘) or 'top-left'
+        bracket_color: str = BRACKET_COLOR,
+        bracket_len: int = 9,
+        radius: int = 10,
+        **kwargs
+    ):
+        super().__init__(parent, height=height, bg=BG_ROOT, highlightthickness=0, **kwargs)
         self.bg_color = bg_color
-        self.border_width = border_width
+        self.border_color = border_color
+        self.brackets = brackets
+        self.bracket_color = bracket_color
+        self.bracket_len = bracket_len
+        self.radius = radius
+
         self.poly_id = None
+        self.bracket_ids = []
         self.win_id = None
 
         self.inner = tk.Frame(self, bg=bg_color)
@@ -225,10 +247,13 @@ class RoundedCard(tk.Canvas):
 
     def _on_resize(self, event):
         w, h = event.width, event.height
-        if w < 20 or h < 20:
+        if w < 24 or h < 24:
             return
+
         r = self.radius
         x1, y1, x2, y2 = 2, 2, w - 2, h - 2
+
+        # Rounded rectangle outline points
         points = [
             x1 + r, y1, x1 + r, y1,
             x2 - r, y1, x2 - r, y1,
@@ -243,29 +268,113 @@ class RoundedCard(tk.Canvas):
             x1, y1 + r, x1, y1 + r,
             x1, y1,
         ]
+
         if self.poly_id is None:
             self.poly_id = self.create_polygon(
                 points,
                 fill=self.bg_color,
-                outline=BORDER_DIM,
-                width=self.border_width,
+                outline=self.border_color,
+                width=1.2,
                 smooth=True,
             )
             self.win_id = self.create_window(
-                14, 10,
+                12, 7,
                 window=self.inner,
                 anchor="nw",
-                width=w - 28,
-                height=h - 20,
+                width=w - 24,
+                height=h - 14,
             )
         else:
             self.coords(self.poly_id, *points)
-            self.coords(self.win_id, 14, 10)
-            self.itemconfigure(self.win_id, width=w - 28, height=h - 20)
+            self.coords(self.win_id, 12, 7)
+            self.itemconfigure(self.win_id, width=w - 24, height=h - 14)
 
-    def set_border(self, color_hex: str):
+        # Clear and redraw corner brackets
+        for b_id in self.bracket_ids:
+            self.delete(b_id)
+        self.bracket_ids.clear()
+
+        blen = self.bracket_len
+        bx1, by1, bx2, by2 = 0, 0, w - 1, h - 1
+
+        if self.brackets in ("diagonal", "all", "top-left"):
+            # Top-Left Bracket: ┌
+            p1 = self.create_line(bx1, by1 + blen, bx1, by1, bx1 + blen, by1, fill=self.bracket_color, width=1.5)
+            self.bracket_ids.append(p1)
+
+        if self.brackets in ("diagonal", "all"):
+            # Bottom-Right Bracket: ┘
+            p2 = self.create_line(bx2 - blen, by2, bx2, by2, bx2, by2 - blen, fill=self.bracket_color, width=1.5)
+            self.bracket_ids.append(p2)
+
+        if self.brackets == "all":
+            # Top-Right Bracket: ┐
+            p3 = self.create_line(bx2 - blen, by1, bx2, by1, bx2, by1 + blen, fill=self.bracket_color, width=1.5)
+            # Bottom-Left Bracket: └
+            p4 = self.create_line(bx1, by2 - blen, bx1, by2, bx1 + blen, by2, fill=self.bracket_color, width=1.5)
+            self.bracket_ids.extend([p3, p4])
+
+    def set_glow(self, border_hex: str, bracket_hex: str | None = None):
+        """Update border & bracket colors during breathing animation."""
         if self.poly_id is not None:
-            self.itemconfig(self.poly_id, outline=color_hex)
+            self.itemconfig(self.poly_id, outline=border_hex)
+        b_color = bracket_hex or border_hex
+        for b_id in self.bracket_ids:
+            self.itemconfig(b_id, fill=b_color)
+
+
+class RadarWidget(tk.Canvas):
+    """Animated radar scanner matching the screenshot:
+    Outer ring, 2 concentric inner rings, crosshairs, and a sweeping emerald beam with a target blip."""
+
+    def __init__(self, parent, size: int = 70, **kwargs):
+        super().__init__(parent, width=size, height=size, bg=BG_CARD, highlightthickness=0, **kwargs)
+        self.size = size
+        self.angle = 45.0
+        self.cx = size / 2.0
+        self.cy = size / 2.0
+        self.r = (size - 6) / 2.0
+
+    def draw_frame(self, t: float):
+        self.delete("all")
+        cx, cy, r = self.cx, self.cy, self.r
+
+        # Outer dark green glow ring
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#041B13", outline="#094A36", width=1.4)
+
+        # Concentric inner radar rings
+        self.create_oval(cx - r * 0.68, cy - r * 0.68, cx + r * 0.68, cy + r * 0.68, outline="#0F543F", width=1)
+        self.create_oval(cx - r * 0.36, cy - r * 0.36, cx + r * 0.36, cy + r * 0.36, outline="#0F543F", width=1)
+
+        # Crosshairs
+        self.create_line(cx, cy - r, cx, cy + r, fill="#0E4837", width=1)
+        self.create_line(cx - r, cy, cx + r, cy, fill="#0E4837", width=1)
+
+        # Rotating radar sweep
+        self.angle = (self.angle + 3.8) % 360.0
+        rad = math.radians(self.angle)
+
+        # Sweeping beam pie wedge (faint emerald fan)
+        self.create_arc(
+            cx - r, cy - r, cx + r, cy + r,
+            start=self.angle, extent=-38,
+            fill="#0A3E2C", outline="", style="pieslice"
+        )
+
+        # Sweeping leading line (crisp neon emerald beam)
+        lx = cx + r * math.cos(rad)
+        ly = cy - r * math.sin(rad)
+        self.create_line(cx, cy, lx, ly, fill="#00FF88", width=1.5)
+
+        # Center blip
+        self.create_oval(cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5, fill="#00FF88", outline="")
+
+        # Pulsing target blip on radar (at ~2 o'clock)
+        blip_pulse = 0.5 * (1 + math.sin(t * 3.5))
+        if blip_pulse > 0.2:
+            bx = cx + r * 0.52
+            by = cy - r * 0.40
+            self.create_oval(bx - 2, by - 2, bx + 2, by + 2, fill="#34D399", outline="")
 
 
 class WorkerManager:
@@ -283,7 +392,7 @@ class WorkerManager:
             t = threading.Thread(target=self._run_loop, args=(w,), daemon=True)
             t.start()
             self.threads.append(t)
-            time.sleep(0.12)
+            time.sleep(0.1)
 
     def stop(self):
         self.stop_event.set()
@@ -330,7 +439,7 @@ class WorkerManager:
                 )
                 self.procs[w_id] = proc
                 if self.on_status_change:
-                    self.on_status_change(w_id, "随时待命 · 队列空闲", "ready")
+                    self.on_status_change(w_id, "随时待命", "ready")
 
                 for raw_line in iter(proc.stdout.readline, ""):
                     if self.stop_event.is_set() or not raw_line:
@@ -352,10 +461,10 @@ class WorkerManager:
                             self.on_status_change(w_id, "正在执行任务...", "active")
                     elif any(k in low for k in ["succeeded", "成功", "完成", "done"]):
                         if self.on_status_change:
-                            self.on_status_change(w_id, "任务完成 · 待命中", "ready")
+                            self.on_status_change(w_id, "随时待命", "ready")
                     elif any(k in low for k in ["idle", "waiting", "heartbeat", "空闲"]):
                         if self.on_status_change:
-                            self.on_status_change(w_id, "随时待命 · 队列空闲", "ready")
+                            self.on_status_change(w_id, "随时待命", "ready")
 
                 proc.wait()
             except Exception as e:
@@ -366,17 +475,19 @@ class WorkerManager:
                 break
 
             if self.on_status_change:
-                self.on_status_change(w_id, "服务离线，3秒后自动重启...", "error")
+                self.on_status_change(w_id, "服务离线", "error")
             time.sleep(3)
 
 
-class PureBlackWorkerApp:
+class CyberHudApp:
+    """Cyberpunk Sci-Fi HUD Control Center replicating the reference image exactly."""
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Passport MDAC Desk · 自动化控制中枢")
-        self.root.geometry("620x820+30+20")
-        self.root.minsize(560, 720)
-        self.root.configure(bg=BG_MAIN)
+        self.root.geometry("590x840+30+15")
+        self.root.minsize(540, 720)
+        self.root.configure(bg=BG_ROOT)
 
         self.start_time = time.time()
         self.processed_count = 0
@@ -392,11 +503,11 @@ class PureBlackWorkerApp:
         )
 
         self._enable_dark_titlebar()
+        self._build_background_grid()
         self._build_ui()
-        self._start_breathing_loop()
+        self._start_animation_loops()
         self._start_uptime_ticker()
 
-        # Start workers
         self.manager.start()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -413,128 +524,232 @@ class PureBlackWorkerApp:
         except Exception:
             pass
 
-    def _build_ui(self):
-        # 1. Top Brand Header
-        header_box = tk.Frame(self.root, bg=BG_MAIN)
-        header_box.pack(fill=tk.X, padx=26, pady=(22, 10))
+    def _build_background_grid(self):
+        """Draws the faint blueprint tech grid lines in the window background."""
+        self.grid_canvas = tk.Canvas(self.root, bg=BG_ROOT, highlightthickness=0)
+        self.grid_canvas.place(x=0, y=0, relwidth=1, relheight=1)
 
-        brand_line = tk.Frame(header_box, bg=BG_MAIN)
+        def draw_grid(event):
+            self.grid_canvas.delete("grid_line")
+            w, h = event.width, event.height
+            step = 38
+            for x in range(0, w, step):
+                self.grid_canvas.create_line(x, 0, x, h, fill=BG_GRID, width=1, tags="grid_line")
+            for y in range(0, h, step):
+                self.grid_canvas.create_line(0, y, w, y, fill=BG_GRID, width=1, tags="grid_line")
+
+        self.grid_canvas.bind("<Configure>", draw_grid)
+
+    def _build_ui(self):
+        # Master foreground container over background grid
+        self.main_container = tk.Frame(self.root, bg="")
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+
+        # 1. Top Header
+        header_box = tk.Frame(self.main_container, bg=BG_ROOT)
+        header_box.pack(fill=tk.X, padx=22, pady=(18, 8))
+
+        brand_line = tk.Frame(header_box, bg=BG_ROOT)
         brand_line.pack(fill=tk.X)
 
         title_lbl = tk.Label(
             brand_line,
             text="PASSPORT MDAC DESK",
-            font=(FONT_EN, 13, "bold"),
+            font=(FONT_EN, 14, "bold"),
             fg=TEXT_WHITE,
-            bg=BG_MAIN,
+            bg=BG_ROOT,
         )
         title_lbl.pack(side=tk.LEFT)
 
         ver_badge = tk.Label(
             brand_line,
-            text="AUTOMATION SUITE · v1.0.43",
-            font=(FONT_EN, 8, "bold"),
+            text="AUTOMATION SUITE · V1.0.43",
+            font=(FONT_MONO, 8, "bold"),
             fg=TEXT_MUTED,
-            bg="#111114",
-            padx=8,
+            bg=BG_ROOT,
+            highlightbackground="#21262D",
+            highlightthickness=1,
+            padx=7,
             pady=2,
         )
         ver_badge.pack(side=tk.LEFT, padx=12)
 
-        # 2. Hero Card with White Breathing Border
-        self.hero_card = RoundedCard(self.root, height=140, radius=18, bg_color=BG_CARD, border_width=2.0)
-        self.hero_card.pack(fill=tk.X, padx=26, pady=(4, 14))
-        self.breathing_cards.append((self.hero_card, 1.0))  # Full intensity breathing
+        # 2. Hero Card with Corner Brackets & Animated Radar
+        self.hero_card = CyberCard(
+            self.main_container,
+            height=148,
+            bg_color=BG_CARD,
+            border_color="#18202C",
+            brackets="all",
+            bracket_color="#8B949E",
+            bracket_len=10,
+            radius=12,
+        )
+        self.hero_card.pack(fill=tk.X, padx=22, pady=(2, 12))
+        self.breathing_cards.append({
+            "card": self.hero_card,
+            "base_border": (24, 32, 44),
+            "peak_border": (16, 185, 129),
+            "base_bracket": (139, 148, 158),
+            "peak_bracket": (220, 255, 235),
+            "phase": 0.0,
+            "state": "idle",
+        })
 
         hero_top = tk.Frame(self.hero_card.inner, bg=BG_CARD)
-        hero_top.pack(fill=tk.X, padx=6, pady=(6, 10))
+        hero_top.pack(fill=tk.X, padx=8, pady=(4, 8))
 
-        # Glowing white/emerald canvas halo
-        self.light_canvas = tk.Canvas(hero_top, width=44, height=44, bg=BG_CARD, highlightthickness=0)
-        self.light_canvas.pack(side=tk.LEFT, padx=(0, 14))
+        # Radar scanner
+        self.radar = RadarWidget(hero_top, size=70)
+        self.radar.pack(side=tk.LEFT, padx=(0, 14))
 
-        hero_titles = tk.Frame(hero_top, bg=BG_CARD)
-        hero_titles.pack(side=tk.LEFT, fill=tk.Y)
+        # Hero Titles
+        hero_mid = tk.Frame(hero_top, bg=BG_CARD)
+        hero_mid.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+
+        tk.Label(
+            hero_mid,
+            text="SYSTEM NOMINAL",
+            font=(FONT_MONO, 8, "bold"),
+            fg=TEXT_GREEN,
+            bg=BG_CARD,
+        ).pack(anchor=tk.W)
 
         self.hero_title = tk.Label(
-            hero_titles,
+            hero_mid,
             text="全套自动化服务平稳巡航中",
-            font=(FONT_CN, 12, "bold"),
+            font=(FONT_CN, 13, "bold"),
             fg=TEXT_WHITE,
             bg=BG_CARD,
         )
-        self.hero_title.pack(anchor=tk.W)
+        self.hero_title.pack(anchor=tk.W, pady=(1, 2))
 
         self.hero_sub = tk.Label(
-            hero_titles,
-            text="5 组高并发任务 Worker 待命 · 实时监听 Supabase 任务队列",
-            font=(FONT_CN, 9),
+            hero_mid,
+            text="5 组并发任务 Worker 待命 · 实时监听 Supabase 任务队列",
+            font=(FONT_CN, 8),
             fg=TEXT_MUTED,
             bg=BG_CARD,
         )
-        self.hero_sub.pack(anchor=tk.W, pady=(3, 0))
+        self.hero_sub.pack(anchor=tk.W)
 
-        # Metrics Row inside Hero Card
-        metrics_bar = tk.Frame(self.hero_card.inner, bg=BG_CARD_INNER, highlightbackground="#18181B", highlightthickness=1)
-        metrics_bar.pack(fill=tk.X, padx=4, pady=(0, 4))
+        # Right status badge: 5 / 5 ONLINE
+        hero_right = tk.Frame(hero_top, bg=BG_CARD)
+        hero_right.pack(side=tk.RIGHT, anchor=tk.NE, pady=(4, 0))
 
-        m1 = tk.Frame(metrics_bar, bg=BG_CARD_INNER)
-        m1.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=6)
-        tk.Label(m1, text="平稳运行时长", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD_INNER).pack()
-        self.lbl_uptime = tk.Label(m1, text="00:00:00", font=(FONT_EN, 11, "bold"), fg=TEXT_WHITE, bg=BG_CARD_INNER)
-        self.lbl_uptime.pack()
-
-        tk.Frame(metrics_bar, width=1, bg="#1C1C20").pack(side=tk.LEFT, fill=tk.Y, pady=4)
-
-        m2 = tk.Frame(metrics_bar, bg=BG_CARD_INNER)
-        m2.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=6)
-        tk.Label(m2, text="本次处理业务", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD_INNER).pack()
-        self.lbl_processed = tk.Label(m2, text="0 笔", font=(FONT_EN, 11, "bold"), fg=ACCENT_GREEN, bg=BG_CARD_INNER)
-        self.lbl_processed.pack()
-
-        tk.Frame(metrics_bar, width=1, bg="#1C1C20").pack(side=tk.LEFT, fill=tk.Y, pady=4)
-
-        m3 = tk.Frame(metrics_bar, bg=BG_CARD_INNER)
-        m3.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, pady=6)
-        tk.Label(m3, text="云端通信链路", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD_INNER).pack()
-        self.lbl_cloud = tk.Label(m3, text="保持就绪", font=(FONT_CN, 10, "bold"), fg=TEXT_WHITE, bg=BG_CARD_INNER)
-        self.lbl_cloud.pack()
-
-        # 3. Monitored Services List
-        sec_label = tk.Label(
-            self.root,
-            text="服务运行状态",
-            font=(FONT_CN, 9, "bold"),
-            fg=TEXT_MUTED,
-            bg=BG_MAIN,
+        self.online_badge = tk.Label(
+            hero_right,
+            text="5 / 5 ONLINE",
+            font=(FONT_MONO, 8, "bold"),
+            fg=TEXT_GREEN,
+            bg="#062419",
+            highlightbackground="#0E4E36",
+            highlightthickness=1,
+            padx=8,
+            pady=3,
         )
-        sec_label.pack(anchor=tk.W, padx=30, pady=(2, 6))
+        self.online_badge.pack()
 
-        for w in WORKERS_CONFIG:
-            card = RoundedCard(self.root, height=54, radius=14, bg_color=BG_CARD, border_width=1.2)
-            card.pack(fill=tk.X, padx=26, pady=3)
-            self.breathing_cards.append((card, 0.45))  # Subtle white breathing glow for service cards
+        # Divider line
+        tk.Frame(self.hero_card.inner, height=1, bg="#131924").pack(fill=tk.X, padx=6, pady=(0, 6))
 
-            # Left block: icon + title + desc
-            left_box = tk.Frame(card.inner, bg=BG_CARD)
-            left_box.pack(side=tk.LEFT, fill=tk.Y)
+        # Metrics 3-column row
+        metrics_bar = tk.Frame(self.hero_card.inner, bg=BG_CARD)
+        metrics_bar.pack(fill=tk.X, padx=8, pady=(0, 2))
 
-            icon_lbl = tk.Label(
-                left_box,
-                text=w["icon"],
-                font=(FONT_CN, 11),
-                bg=BG_CARD,
+        m1 = tk.Frame(metrics_bar, bg=BG_CARD)
+        m1.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        tk.Label(m1, text="平稳运行时长", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        self.lbl_uptime = tk.Label(m1, text="00:00:00", font=(FONT_MONO, 11, "bold"), fg=TEXT_WHITE, bg=BG_CARD)
+        self.lbl_uptime.pack(anchor=tk.W)
+
+        m2 = tk.Frame(metrics_bar, bg=BG_CARD)
+        m2.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        tk.Label(m2, text="本次处理业务", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        self.lbl_processed = tk.Label(m2, text="0 单", font=(FONT_MONO, 11, "bold"), fg=TEXT_WHITE, bg=BG_CARD)
+        self.lbl_processed.pack(anchor=tk.W)
+
+        m3 = tk.Frame(metrics_bar, bg=BG_CARD)
+        m3.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        tk.Label(m3, text="云端通信链路", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        self.lbl_cloud = tk.Label(m3, text="Supabase 已连接", font=(FONT_CN, 9, "bold"), fg=TEXT_GREEN, bg=BG_CARD)
+        self.lbl_cloud.pack(anchor=tk.W)
+
+        # 3. Section: 服务运行状态
+        sec_label = tk.Label(
+            self.main_container,
+            text="服务运行状态",
+            font=(FONT_CN, 8, "bold"),
+            fg=TEXT_MUTED,
+            bg=BG_ROOT,
+        )
+        sec_label.pack(anchor=tk.W, padx=26, pady=(4, 5))
+
+        # 4. The 5 Worker Cards with Breathing Light Borders
+        for i, w in enumerate(WORKERS_CONFIG):
+            card = CyberCard(
+                self.main_container,
+                height=56,
+                bg_color=BG_CARD,
+                border_color="#182230",
+                brackets="diagonal",  # ┌ and ┘
+                bracket_color=BRACKET_COLOR,
+                bracket_len=8,
+                radius=8,
             )
-            icon_lbl.pack(side=tk.LEFT, padx=(2, 8))
+            card.pack(fill=tk.X, padx=22, pady=3)
 
-            info_box = tk.Frame(left_box, bg=BG_CARD)
-            info_box.pack(side=tk.LEFT, anchor=tk.W)
+            # Progressive phase offset gives cascading breathing wave down the cards
+            phase_offset = i * 0.45
+            self.breathing_cards.append({
+                "card": card,
+                "base_border": (22, 30, 42),
+                "peak_border": (16, 185, 129),       # Pulsing neon emerald
+                "base_bracket": (90, 105, 120),
+                "peak_bracket": (255, 255, 255),      # Pulsing white bracket
+                "phase": phase_offset,
+                "state": "ready",
+            })
 
-            title_row = tk.Frame(info_box, bg=BG_CARD)
-            title_row.pack(anchor=tk.W)
+            inner = card.inner
+
+            # Left Block: Index pill [01] + Icon box [🗎]
+            left_block = tk.Frame(inner, bg=BG_CARD)
+            left_block.pack(side=tk.LEFT, fill=tk.Y)
+
+            # Index box (01, 02...)
+            idx_lbl = tk.Label(
+                left_block,
+                text=w["idx"],
+                font=(FONT_MONO, 8),
+                fg=TEXT_DARK,
+                bg=BG_PILL,
+                padx=6,
+                pady=2,
+            )
+            idx_lbl.pack(side=tk.LEFT, padx=(2, 6))
+
+            # Icon Box
+            icon_lbl = tk.Label(
+                left_block,
+                text=w["icon"],
+                font=(FONT_CN, 10),
+                fg=TEXT_LIGHT,
+                bg=BG_PILL,
+                padx=5,
+                pady=2,
+            )
+            icon_lbl.pack(side=tk.LEFT, padx=(0, 10))
+
+            # Center Block: Title + Badge / Subtitle
+            center_block = tk.Frame(inner, bg=BG_CARD)
+            center_block.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+
+            row1 = tk.Frame(center_block, bg=BG_CARD)
+            row1.pack(anchor=tk.W)
 
             name_lbl = tk.Label(
-                title_row,
+                row1,
                 text=w["name"],
                 font=(FONT_CN, 9, "bold"),
                 fg=TEXT_WHITE,
@@ -543,18 +758,20 @@ class PureBlackWorkerApp:
             name_lbl.pack(side=tk.LEFT)
 
             badge_lbl = tk.Label(
-                title_row,
+                row1,
                 text=w["badge"],
-                font=(FONT_CN, 7, "bold"),
-                fg=w["badge_fg"],
-                bg=w["badge_bg"],
-                padx=5,
-                pady=1,
+                font=(FONT_CN, 7),
+                fg="#C9D1D9",
+                bg="#161B22",
+                highlightbackground="#30363D",
+                highlightthickness=1,
+                padx=4,
+                pady=0,
             )
             badge_lbl.pack(side=tk.LEFT, padx=6)
 
             desc_lbl = tk.Label(
-                info_box,
+                center_block,
                 text=w["desc"],
                 font=(FONT_CN, 8),
                 fg=TEXT_MUTED,
@@ -562,40 +779,54 @@ class PureBlackWorkerApp:
             )
             desc_lbl.pack(anchor=tk.W, pady=(1, 0))
 
-            # Right status indicator
-            right_box = tk.Frame(card.inner, bg=BG_CARD)
-            right_box.pack(side=tk.RIGHT, fill=tk.Y)
+            # Right Status Block: Dot + 随时待命 / QUEUE - IDLE
+            right_block = tk.Frame(inner, bg=BG_CARD)
+            right_block.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
 
-            dot_canvas = tk.Canvas(right_box, width=8, height=8, bg=BG_CARD, highlightthickness=0)
-            dot_canvas.pack(side=tk.LEFT, padx=(0, 6))
-            dot = dot_canvas.create_oval(1, 1, 7, 7, fill=ACCENT_GREEN, outline="")
+            status_row = tk.Frame(right_block, bg=BG_CARD)
+            status_row.pack(anchor=tk.E)
+
+            dot_canvas = tk.Canvas(status_row, width=8, height=8, bg=BG_CARD, highlightthickness=0)
+            dot_canvas.pack(side=tk.LEFT, padx=(0, 4))
+            dot = dot_canvas.create_oval(1, 1, 7, 7, fill=TEXT_GREEN, outline="")
 
             status_lbl = tk.Label(
-                right_box,
+                status_row,
                 text="随时待命",
                 font=(FONT_CN, 8, "bold"),
-                fg=ACCENT_GREEN,
+                fg=TEXT_GREEN,
                 bg=BG_CARD,
             )
             status_lbl.pack(side=tk.LEFT)
 
+            substatus_lbl = tk.Label(
+                right_block,
+                text="QUEUE - IDLE",
+                font=(FONT_MONO, 7),
+                fg=TEXT_DARK,
+                bg=BG_CARD,
+            )
+            substatus_lbl.pack(anchor=tk.E, pady=(1, 0))
+
             self.worker_widgets[w["id"]] = {
                 "card": card,
+                "card_entry": self.breathing_cards[-1],
                 "dot_canvas": dot_canvas,
                 "dot": dot,
                 "status_lbl": status_lbl,
+                "substatus_lbl": substatus_lbl,
             }
 
-        # 4. Business Activity Timeline Section
-        feed_header = tk.Frame(self.root, bg=BG_MAIN)
-        feed_header.pack(fill=tk.X, padx=30, pady=(12, 6))
+        # 5. Section: 业务实时播报
+        feed_header = tk.Frame(self.main_container, bg=BG_ROOT)
+        feed_header.pack(fill=tk.X, padx=26, pady=(10, 4))
 
         feed_title = tk.Label(
             feed_header,
             text="业务实时播报",
-            font=(FONT_CN, 9, "bold"),
+            font=(FONT_CN, 8, "bold"),
             fg=TEXT_MUTED,
-            bg=BG_MAIN,
+            bg=BG_ROOT,
         )
         feed_title.pack(side=tk.LEFT)
 
@@ -604,40 +835,60 @@ class PureBlackWorkerApp:
             text="动态翻译官方日志",
             font=(FONT_CN, 8),
             fg=TEXT_DARK,
-            bg=BG_MAIN,
+            bg=BG_ROOT,
         )
         feed_hint.pack(side=tk.RIGHT)
 
-        # Timeline Rounded Card
-        self.timeline_card = RoundedCard(self.root, height=130, radius=16, bg_color=BG_CARD, border_width=1.2)
-        self.timeline_card.pack(fill=tk.BOTH, expand=True, padx=26, pady=2)
-        self.breathing_cards.append((self.timeline_card, 0.4))
+        # Timeline Card with Top-Left bracket ┌
+        self.timeline_card = CyberCard(
+            self.main_container,
+            height=125,
+            bg_color=BG_CARD,
+            border_color="#182230",
+            brackets="top-left",
+            bracket_color="#8B949E",
+            bracket_len=8,
+            radius=8,
+        )
+        self.timeline_card.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 4))
+        self.breathing_cards.append({
+            "card": self.timeline_card,
+            "base_border": (22, 30, 42),
+            "peak_border": (40, 60, 80),
+            "base_bracket": (80, 90, 105),
+            "peak_bracket": (180, 195, 210),
+            "phase": 0.0,
+            "state": "idle",
+        })
 
         self.timeline_box = tk.Frame(self.timeline_card.inner, bg=BG_CARD)
-        self.timeline_box.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        self.timeline_box.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
         self.empty_lbl = tk.Label(
             self.timeline_box,
-            text="等待队列新任务中... 5 组自动化服务已连接处于就绪状态",
-            font=(FONT_CN, 9),
-            fg=TEXT_MUTED,
+            text="05:09:38 [准证核验] 服务就绪上线，已连接队列开始巡航\n05:09:38 [登记核验] 服务就绪上线，已连接队列开始巡航",
+            font=(FONT_CN, 8),
+            fg=TEXT_LIGHT,
             bg=BG_CARD,
-            pady=16,
+            justify=tk.LEFT,
+            pady=4,
         )
-        self.empty_lbl.pack()
+        self.empty_lbl.pack(anchor=tk.W)
 
-        # 5. Bottom Action Bar
-        bottom_bar = tk.Frame(self.root, bg=BG_MAIN)
-        bottom_bar.pack(fill=tk.X, padx=26, pady=(10, 14))
+        # 6. Bottom Action Controls
+        bottom_bar = tk.Frame(self.main_container, bg=BG_ROOT)
+        bottom_bar.pack(fill=tk.X, padx=22, pady=(6, 12))
 
         self.btn_toggle_tech = tk.Button(
             bottom_bar,
-            text="查看技术日志 ▾",
+            text="☰  查看技术日志",
             font=(FONT_CN, 8),
             fg=TEXT_MUTED,
-            bg=BG_CARD,
+            bg="#10141D",
             activeforeground=TEXT_WHITE,
-            activebackground="#1C1C20",
+            activebackground="#1C2433",
+            highlightbackground="#21262D",
+            highlightthickness=1,
             relief=tk.FLAT,
             bd=0,
             padx=12,
@@ -649,12 +900,14 @@ class PureBlackWorkerApp:
 
         btn_restart = tk.Button(
             bottom_bar,
-            text="🔄 平稳重启全部服务",
+            text="🔄  平稳重启全部服务",
             font=(FONT_CN, 8, "bold"),
-            fg=TEXT_WHITE,
-            bg="#18181B",
+            fg=TEXT_LIGHT,
+            bg="#21262D",
             activeforeground="#FFFFFF",
-            activebackground="#27272A",
+            activebackground="#30363D",
+            highlightbackground="#363F4D",
+            highlightthickness=1,
             relief=tk.FLAT,
             bd=0,
             padx=14,
@@ -664,18 +917,18 @@ class PureBlackWorkerApp:
         )
         btn_restart.pack(side=tk.RIGHT)
 
-        # Collapsible Tech Log Drawer
-        self.tech_frame = tk.Frame(self.root, bg="#050507", highlightbackground=BORDER_DIM, highlightthickness=1)
+        # Technical Log Drawer
+        self.tech_frame = tk.Frame(self.main_container, bg="#070A0F", highlightbackground=BORDER_DIM, highlightthickness=1)
         self.tech_text = tk.Text(
             self.tech_frame,
-            bg="#050507",
-            fg="#A1A1AA",
+            bg="#070A0F",
+            fg="#8B949E",
             insertbackground=TEXT_WHITE,
-            font=("Consolas", 8),
+            font=(FONT_MONO, 8),
             relief=tk.FLAT,
             bd=0,
-            padx=10,
-            pady=8,
+            padx=8,
+            pady=6,
             height=6,
         )
         self.tech_text.pack(fill=tk.BOTH, expand=True)
@@ -683,49 +936,44 @@ class PureBlackWorkerApp:
     def _toggle_tech_log(self):
         if self.log_visible:
             self.tech_frame.pack_forget()
-            self.btn_toggle_tech.config(text="查看技术日志 ▾")
+            self.btn_toggle_tech.config(text="☰  查看技术日志")
             self.log_visible = False
         else:
-            self.tech_frame.pack(fill=tk.BOTH, expand=False, padx=26, pady=(0, 12))
-            self.btn_toggle_tech.config(text="收起技术日志 ▴")
+            self.tech_frame.pack(fill=tk.BOTH, expand=False, padx=22, pady=(0, 10))
+            self.btn_toggle_tech.config(text="▲  收起技术日志")
             self.log_visible = True
 
-    def _start_breathing_loop(self):
-        """Cyclic breathing light on card borders & central halo: white brightness raises & lowers smoothly."""
+    def _start_animation_loops(self):
+        """Drives the animated radar scanner and cascading worker border breathing lights."""
         def animate():
             t = time.time()
-            # Sine wave oscillation (period ~2.4 seconds)
-            val = 0.5 * (1 + math.sin(t * 2.6))  # 0.0 ~ 1.0
 
-            # 1. Update White Breathing Borders for Cards
-            # Range: Dim #222226 to Radiant White #FFFFFF
-            for card, factor in self.breathing_cards:
-                min_b = 30
-                max_b = int(30 + factor * 225)
-                cur_b = int(min_b + val * (max_b - min_b))
-                border_hex = f"#{cur_b:02x}{cur_b:02x}{cur_b:02x}"
-                card.set_border(border_hex)
+            # 1. Animate Radar Scanner
+            self.radar.draw_frame(t)
 
-            # 2. Central Halo Animation in Hero Card
-            # Smooth pulsing white core & soft grey outer aura
-            core_b = int(120 + val * 135)
-            core_hex = f"#{core_b:02x}{core_b:02x}{core_b:02x}"
-            halo_b = int(24 + val * 60)
-            halo_hex = f"#{halo_b:02x}{halo_b:02x}{halo_b:02x}"
+            # 2. Cascading Breathing Lights for Worker Borders & Brackets
+            for item in self.breathing_cards:
+                card = item["card"]
+                base_b = item["base_border"]
+                peak_b = item["peak_border"]
+                base_br = item["base_bracket"]
+                peak_br = item["peak_bracket"]
+                phase = item.get("phase", 0.0)
 
-            outer_r = 15 + val * 4.5
-            inner_r = 7 + val * 2.0
-            cx, cy = 22, 22
+                # Smooth sinusoidal breathing wave (period ~2.4s)
+                val = 0.5 * (1 + math.sin(t * 2.6 + phase))
 
-            self.light_canvas.delete("all")
-            # Outer soft halo
-            self.light_canvas.create_oval(
-                cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r, fill=halo_hex, outline=""
-            )
-            # Inner bright core
-            self.light_canvas.create_oval(
-                cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r, fill=core_hex, outline=""
-            )
+                r = int(base_b[0] + val * (peak_b[0] - base_b[0]))
+                g = int(base_b[1] + val * (peak_b[1] - base_b[1]))
+                b = int(base_b[2] + val * (peak_b[2] - base_b[2]))
+                border_hex = f"#{r:02x}{g:02x}{b:02x}"
+
+                br_r = int(base_br[0] + val * (peak_br[0] - base_br[0]))
+                br_g = int(base_br[1] + val * (peak_br[1] - base_br[1]))
+                br_b = int(base_br[2] + val * (peak_br[2] - base_br[2]))
+                bracket_hex = f"#{br_r:02x}{br_g:02x}{br_b:02x}"
+
+                card.set_glow(border_hex, bracket_hex)
 
             self.root.after(35, animate)
 
@@ -751,15 +999,15 @@ class PureBlackWorkerApp:
 
             if "成功" in message or "完成" in message:
                 self.processed_count += 1
-                self.lbl_processed.config(text=f"{self.processed_count} 笔")
+                self.lbl_processed.config(text=f"{self.processed_count} 单")
 
             row = tk.Frame(self.timeline_box, bg=BG_CARD)
-            row.pack(fill=tk.X, pady=2, anchor=tk.W)
+            row.pack(fill=tk.X, pady=1, anchor=tk.W)
 
             time_lbl = tk.Label(
                 row,
                 text=now_str,
-                font=(FONT_EN, 8),
+                font=(FONT_MONO, 8),
                 fg=TEXT_DARK,
                 bg=BG_CARD,
             )
@@ -778,7 +1026,7 @@ class PureBlackWorkerApp:
                 row,
                 text=message,
                 font=(FONT_CN, 8),
-                fg=TEXT_WHITE,
+                fg=TEXT_LIGHT,
                 bg=BG_CARD,
                 anchor=tk.W,
             )
@@ -808,18 +1056,28 @@ class PureBlackWorkerApp:
                 return
 
             w["status_lbl"].config(text=status_text)
+            card_entry = w["card_entry"]
+
             if state_type == "active":
                 w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_CYAN)
                 w["status_lbl"].config(fg=ACCENT_CYAN)
+                w["substatus_lbl"].config(text="PROCESSING", fg=ACCENT_CYAN)
+                card_entry["peak_border"] = (56, 189, 248)  # Electric cyan glow
             elif state_type == "ready":
-                w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_GREEN)
-                w["status_lbl"].config(fg=ACCENT_GREEN)
+                w["dot_canvas"].itemconfig(w["dot"], fill=TEXT_GREEN)
+                w["status_lbl"].config(fg=TEXT_GREEN)
+                w["substatus_lbl"].config(text="QUEUE - IDLE", fg=TEXT_DARK)
+                card_entry["peak_border"] = (16, 185, 129)  # Emerald green glow
             elif state_type == "connecting":
                 w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_AMBER)
                 w["status_lbl"].config(fg=ACCENT_AMBER)
+                w["substatus_lbl"].config(text="CONNECTING", fg=ACCENT_AMBER)
+                card_entry["peak_border"] = (251, 191, 36)  # Amber glow
             else:
                 w["dot_canvas"].itemconfig(w["dot"], fill=ACCENT_RED)
                 w["status_lbl"].config(fg=ACCENT_RED)
+                w["substatus_lbl"].config(text="OFFLINE", fg=ACCENT_RED)
+                card_entry["peak_border"] = (248, 113, 113)  # Red alert glow
 
         self.root.after_idle(update)
 
@@ -831,7 +1089,7 @@ class PureBlackWorkerApp:
 def main():
     try:
         root = tk.Tk()
-        app = PureBlackWorkerApp(root)
+        app = CyberHudApp(root)
         root.mainloop()
     except Exception as e:
         import traceback
