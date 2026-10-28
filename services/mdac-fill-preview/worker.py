@@ -856,13 +856,21 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
     async with async_playwright() as playwright:
         browser: Browser | None = None
         try:
+            browser_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+            if not config.headless:
+                window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
+                window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
+                browser_args.extend([
+                    f"--window-size={window_size}",
+                    f"--window-position={window_pos}",
+                ])
             browser = await playwright.chromium.launch(
                 headless=config.headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
+                args=browser_args,
             )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
@@ -930,6 +938,13 @@ async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001 - keep poll loop alive
                 LOG.exception("错误状态心跳写入失败")
+            await asyncio.sleep(5.0)
+        except Exception:
+            LOG.exception("MDAC fill-preview Worker 未预期错误")
+            try:
+                client.heartbeat(status="ERROR")
+            except Exception:  # noqa: BLE001
+                LOG.exception("未预期错误心跳写入失败")
             await asyncio.sleep(5.0)
         except Exception:
             LOG.exception("MDAC fill-preview Worker 未预期错误")
