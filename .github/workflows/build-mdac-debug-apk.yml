@@ -67,10 +67,10 @@ jobs:
         if: failure()
         run: |
           echo "=== BUILD LOG TAIL ==="
-          tail -n 120 build_log.txt
+          tail -n 120 build_log.txt 2>/dev/null || true
           echo "=== GRADLE ERROR SEARCH ==="
-          grep -i -C 3 "error:" build_log.txt || true
-          grep -i -C 3 "FAILURE:" build_log.txt || true
+          grep -i -C 3 "error:" build_log.txt 2>/dev/null || true
+          grep -i -C 3 "FAILURE:" build_log.txt 2>/dev/null || true
 
       - name: Upload Build Log On Failure
         if: failure()
