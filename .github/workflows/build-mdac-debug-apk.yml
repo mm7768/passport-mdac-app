@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/mdac-human-review
+      - v1.0.39-history
     paths:
       - android/**
       - lib/**
@@ -66,10 +67,10 @@ jobs:
         if: failure()
         run: |
           echo "=== BUILD LOG TAIL ==="
-          tail -n 120 build_log.txt
+          tail -n 120 build_log.txt 2>/dev/null || true
           echo "=== GRADLE ERROR SEARCH ==="
-          grep -i -C 3 "error:" build_log.txt || true
-          grep -i -C 3 "FAILURE:" build_log.txt || true
+          grep -i -C 3 "error:" build_log.txt 2>/dev/null || true
+          grep -i -C 3 "FAILURE:" build_log.txt 2>/dev/null || true
 
       - name: Upload Build Log On Failure
         if: failure()
@@ -90,23 +91,18 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.0.39-history'
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (Order/Case Worker 绑定安全修复)"
+          name: "Passport MDAC Desk v${{ steps.get_version.outputs.VERSION }} (历史设置记忆与本地部署强化版)"
           body: |
             ### v${{ steps.get_version.outputs.VERSION }} 更新内容：
-            - **Order/Case Worker 绑定收口**：
-              - 远程模式下客户总库不再允许直接创建 MDAC / PIN / Registration / Visit Pass Worker 任务；
-              - Worker 任务必须先进入 Operational Batch，再从批次工作区执行，强制携带稳定 `case_id`、`membership_id` 与 `operational_batch_id`；
-              - 客户总库在远程模式隐藏旧 Worker 快捷按钮，避免误操作生成 Legacy / NULL `case_id` 任务。
-            - **Registration Check fallback 加固**：
-              - fallback 写回 `registration_checks` 时同步保存 `automation_items.case_id`；
-              - 保证 strict Order 流程在主写回 RPC 异常时仍保持 Order/Case 关联。
-            - **验收**：
-              - Flutter analyze、test、debug APK build 已通过；
-              - 数据库 fallback case-binding rollback rehearsal 已通过。
-
+            - **设置项 Gmail 历史记忆与一键切换**：
+              - MDAC 默认业务配置：联系邮箱自动记忆曾用过的历史 Gmail，支持下拉菜单选择与快捷芯片填入；
+              - Gmail PIN 默认邮箱设置：联合记忆历史 Gmail 地址与 16 位 App Passwords，切换历史账号时同时自动填入邮箱与密码，免去重复查找粘贴；
+            - **本地化部署 Worker 指南与工具体系完善**：
+              - 完善 5 大 Worker（MDAC 注册、Check Reg、Check VP、Azure OCR、Gmail PIN）的本地化部署、多模式并发监控与自动恢复支持；
+              - 全面更新官方 README 本地化部署实操文档。
           files: |
             build/app/outputs/flutter-apk/PassportMDAC-v${{ steps.get_version.outputs.VERSION }}.apk
         env:
