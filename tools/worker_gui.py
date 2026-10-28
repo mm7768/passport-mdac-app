@@ -305,6 +305,8 @@ class WorkerManager:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["BROWSER_WINDOW_SIZE"] = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
+        env["BROWSER_WINDOW_POSITION"] = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
 
         creationflags = 0
         if sys.platform == "win32":
@@ -372,7 +374,7 @@ class PureBlackWorkerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Passport MDAC Desk · 自动化控制中枢")
-        self.root.geometry("620x860")
+        self.root.geometry("620x820+30+20")
         self.root.minsize(560, 720)
         self.root.configure(bg=BG_MAIN)
 
@@ -720,7 +722,7 @@ class PureBlackWorkerApp:
             self.light_canvas.create_oval(
                 cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r, fill=halo_hex, outline=""
             )
-            # Inner bright pulse
+            # Inner bright core
             self.light_canvas.create_oval(
                 cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r, fill=core_hex, outline=""
             )
