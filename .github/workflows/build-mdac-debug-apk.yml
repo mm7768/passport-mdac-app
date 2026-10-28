@@ -54,14 +54,25 @@ jobs:
           VERSION=$(grep '^version:' pubspec.yaml | cut -d ' ' -f 2 | cut -d '+' -f 1)
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build debug APK
+      - name: Build APK (Optimized Release with Debug Fallback)
         run: |
           KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
-          flutter build apk --debug \
-            --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
-            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt
           VERSION="${{ steps.get_version.outputs.VERSION }}"
-          cp build/app/outputs/flutter-apk/app-debug.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
+          echo "Attempting optimized release build..."
+          if flutter build apk --release --no-tree-shake-icons \
+            --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt; then
+            echo "Release build succeeded! Optimized APK generated."
+            cp build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
+          else
+            echo "Release build failed, falling back to debug build..."
+            flutter build apk --debug \
+              --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
+              --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee -a build_log.txt
+            cp build/app/outputs/flutter-apk/app-debug.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
+          fi
+          echo "Built APK info:"
+          ls -lh "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
 
       - name: Show Failure Log
         if: failure()
