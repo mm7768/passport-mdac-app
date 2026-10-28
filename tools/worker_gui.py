@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import os
 import re
@@ -28,7 +29,6 @@ if PYTHON_EXE.lower().endswith("pythonw.exe"):
     cand = PYTHON_EXE[:-5] + ".exe"
     if os.path.exists(cand):
         PYTHON_EXE = cand
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -164,14 +164,40 @@ def translate_log_to_business(service_id: str, raw_line: str) -> str | None:
         if "pin" in low and ("提取" in raw_line or "received" in low or "成功" in raw_line):
             return "🔑 成功提取官方 PIN 安全验证码"
 
+    # Structured JSON log handler (from Registration / Visit Pass workers)
+    stripped = raw_line.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            data = json.loads(stripped)
+            step = data.get("step")
+            status = data.get("status")
+            err_msg = data.get("error_message") or data.get("error_code")
+
+            if step == "worker_start" or status == "online":
+                return "🟢 服务就绪上线，已连接队列开始巡航"
+            if step in ("batch_claim", "item_claim"):
+                return "📥 领取到新业务工单，正在执行核查..."
+            if step == "result_writeback":
+                if status == "succeeded":
+                    res = data.get("result", "")
+                    return f"✅ 核查结果已保存回填 (状态: {res})"
+                elif status == "failed":
+                    return f"ℹ️ 官方核查未能确认: {err_msg or '请检查官网或输入'}"
+            if err_msg and str(err_msg).lower() != "null":
+                return f"⚠️ 提示: {err_msg}"
+            return None
+        except Exception:
+            return None
+
     # Generic catch-all
     if "succeeded" in low or "完成" in raw_line or "成功" in raw_line:
         return "✨ 业务任务处理顺利完成"
-    if "error" in low or "exception" in low or "失败" in raw_line:
-        clean = raw_line.replace("ERROR", "").replace("Exception", "").strip()
-        if len(clean) > 40:
-            clean = clean[:38] + "..."
-        return f"⚠️ 提示: {clean}"
+    if ("error" in low or "exception" in low or "失败" in raw_line) and "error_code\": null" not in low and "error\": null" not in low:
+        if not stripped.startswith("{"):
+            clean = raw_line.replace("ERROR", "").replace("Exception", "").strip()
+            if len(clean) > 40:
+                clean = clean[:38] + "..."
+            return f"⚠️ 提示: {clean}"
 
     return None
 
@@ -215,6 +241,10 @@ class WorkerManager:
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
 
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
         while not self.stop_event.is_set():
             if self.on_status_change:
                 self.on_status_change(w_id, "正在接入云端队列...", "connecting")
@@ -229,6 +259,7 @@ class WorkerManager:
                     encoding="utf-8",
                     errors="replace",
                     env=env,
+                    creationflags=creationflags,
                 )
                 self.procs[w_id] = proc
                 if self.on_status_change:
