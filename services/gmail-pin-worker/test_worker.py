@@ -48,11 +48,11 @@ class GMailPinParsingTests(unittest.TestCase):
         message.set_content(
             "Name : TEST PERSON\n"
             "Passport No. : ab123456\n"
-            "PIN :  8pcz  kJDr  \n"
+            "PIN :  8pczkJDr  \n"
         )
         parsed = parse_message(message.as_bytes())
         self.assertEqual(parsed.passport_number, "AB123456")
-        self.assertEqual(parsed.pin, "8pcz  kJDr")
+        self.assertEqual(parsed.pin, "8pczkJDr")
         self.assertEqual(parsed.sender, "mdac@imi.gov.my")
 
     def test_parse_html_message_when_plain_text_missing(self) -> None:
@@ -231,6 +231,9 @@ class _FakeSupabase:
         self.fail_writeback = fail_writeback
 
     def heartbeat(self, **kwargs) -> None:
+        return None
+
+    def heartbeat_tick(self, **kwargs) -> None:
         return None
 
     def get_gmail_runtime_credentials(self) -> dict[str, str]:

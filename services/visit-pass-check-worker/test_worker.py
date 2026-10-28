@@ -113,6 +113,7 @@ class VisitPassWorkerTests(unittest.TestCase):
 
     def test_config_accepts_safe_defaults(self) -> None:
         env = {
+            "ENV_FILE": os.devnull,
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-placeholder",
             "VISIT_PASS_CHECK_WORKER_ID": "test-worker",
@@ -124,7 +125,7 @@ class VisitPassWorkerTests(unittest.TestCase):
             config = MODULE.WorkerConfig.from_env()
         self.assertEqual(config.check_url, MODULE.DEFAULT_CHECK_URL)
         self.assertEqual(config.screenshot_bucket, MODULE.DEFAULT_BUCKET)
-        self.assertEqual(config.poll_seconds, 10.0)
+        self.assertEqual(config.poll_seconds, 30.0)
 
     def test_config_accepts_auto_search_mode(self) -> None:
         env = {
