@@ -221,13 +221,16 @@ class CyberCard(tk.Canvas):
     def __init__(
         self,
         parent,
-        height: int,
+        height: int = 60,
+        min_height: int = 40,
         bg_color: str = BG_CARD,
         border_color: str = BORDER_DIM,
         brackets: str = "diagonal",  # 'diagonal' (┌ ┘) or 'all' (┌ ┐ └ ┘) or 'top-left'
         bracket_color: str = BRACKET_COLOR,
         bracket_len: int = 9,
         radius: int = 10,
+        pad_x: int = 12,
+        pad_y: int = 6,
         **kwargs
     ):
         super().__init__(parent, height=height, bg=BG_ROOT, highlightthickness=0, **kwargs)
@@ -237,6 +240,9 @@ class CyberCard(tk.Canvas):
         self.bracket_color = bracket_color
         self.bracket_len = bracket_len
         self.radius = radius
+        self.min_height = min_height
+        self.pad_x = pad_x
+        self.pad_y = pad_y
 
         self.poly_id = None
         self.bracket_ids = []
@@ -244,6 +250,14 @@ class CyberCard(tk.Canvas):
 
         self.inner = tk.Frame(self, bg=bg_color)
         self.bind("<Configure>", self._on_resize)
+
+    def auto_fit(self):
+        """Dynamically fit canvas height so inner content is never vertically clipped on High-DPI screens."""
+        self.inner.update_idletasks()
+        req_h = self.inner.winfo_reqheight()
+        target_h = max(self.min_height, req_h + self.pad_y * 2 + 2)
+        if target_h > self.winfo_height():
+            self.configure(height=target_h)
 
     def _on_resize(self, event):
         w, h = event.width, event.height
@@ -269,6 +283,10 @@ class CyberCard(tk.Canvas):
             x1, y1,
         ]
 
+        px, py = self.pad_x, self.pad_y
+        inner_w = max(10, w - px * 2)
+        inner_h = max(10, h - py * 2)
+
         if self.poly_id is None:
             self.poly_id = self.create_polygon(
                 points,
@@ -278,16 +296,16 @@ class CyberCard(tk.Canvas):
                 smooth=True,
             )
             self.win_id = self.create_window(
-                12, 7,
+                px, py,
                 window=self.inner,
                 anchor="nw",
-                width=w - 24,
-                height=h - 14,
+                width=inner_w,
+                height=inner_h,
             )
         else:
             self.coords(self.poly_id, *points)
-            self.coords(self.win_id, 12, 7)
-            self.itemconfigure(self.win_id, width=w - 24, height=h - 14)
+            self.coords(self.win_id, px, py)
+            self.itemconfigure(self.win_id, width=inner_w, height=inner_h)
 
         # Clear and redraw corner brackets
         for b_id in self.bracket_ids:
@@ -485,8 +503,8 @@ class CyberHudApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Passport MDAC Desk · 自动化控制中枢")
-        self.root.geometry("590x840+30+15")
-        self.root.minsize(540, 720)
+        self.root.geometry("610x860+25+15")
+        self.root.minsize(580, 750)
         self.root.configure(bg=BG_ROOT)
 
         self.start_time = time.time()
@@ -577,13 +595,15 @@ class CyberHudApp:
         # 2. Hero Card with Corner Brackets & Animated Radar
         self.hero_card = CyberCard(
             self.main_container,
-            height=148,
+            height=172,
             bg_color=BG_CARD,
             border_color="#18202C",
             brackets="all",
             bracket_color="#8B949E",
             bracket_len=10,
             radius=12,
+            pad_x=12,
+            pad_y=8,
         )
         self.hero_card.pack(fill=tk.X, padx=22, pady=(2, 12))
         self.breathing_cards.append({
@@ -597,7 +617,24 @@ class CyberHudApp:
         })
 
         hero_top = tk.Frame(self.hero_card.inner, bg=BG_CARD)
-        hero_top.pack(fill=tk.X, padx=8, pady=(4, 8))
+        hero_top.pack(fill=tk.X, padx=8, pady=(4, 6))
+
+        # Right status badge: 5 / 5 ONLINE (Pack FIRST to guarantee full width and prevent clipping)
+        hero_right = tk.Frame(hero_top, bg=BG_CARD)
+        hero_right.pack(side=tk.RIGHT, anchor=tk.NE, pady=(2, 0))
+
+        self.online_badge = tk.Label(
+            hero_right,
+            text="5 / 5 ONLINE",
+            font=(FONT_MONO, 8, "bold"),
+            fg=TEXT_GREEN,
+            bg="#062419",
+            highlightbackground="#0E4E36",
+            highlightthickness=1,
+            padx=8,
+            pady=3,
+        )
+        self.online_badge.pack()
 
         # Radar scanner
         self.radar = RadarWidget(hero_top, size=70)
@@ -605,7 +642,7 @@ class CyberHudApp:
 
         # Hero Titles
         hero_mid = tk.Frame(hero_top, bg=BG_CARD)
-        hero_mid.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+        hero_mid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         tk.Label(
             hero_mid,
@@ -626,52 +663,35 @@ class CyberHudApp:
 
         self.hero_sub = tk.Label(
             hero_mid,
-            text="5 组并发任务 Worker 待命 · 实时监听 Supabase 任务队列",
+            text="5 组并发任务 Worker 待命 · 实时监听 Supabase 队列",
             font=(FONT_CN, 8),
             fg=TEXT_MUTED,
             bg=BG_CARD,
         )
         self.hero_sub.pack(anchor=tk.W)
 
-        # Right status badge: 5 / 5 ONLINE
-        hero_right = tk.Frame(hero_top, bg=BG_CARD)
-        hero_right.pack(side=tk.RIGHT, anchor=tk.NE, pady=(4, 0))
-
-        self.online_badge = tk.Label(
-            hero_right,
-            text="5 / 5 ONLINE",
-            font=(FONT_MONO, 8, "bold"),
-            fg=TEXT_GREEN,
-            bg="#062419",
-            highlightbackground="#0E4E36",
-            highlightthickness=1,
-            padx=8,
-            pady=3,
-        )
-        self.online_badge.pack()
-
         # Divider line
-        tk.Frame(self.hero_card.inner, height=1, bg="#131924").pack(fill=tk.X, padx=6, pady=(0, 6))
+        tk.Frame(self.hero_card.inner, height=1, bg="#131924").pack(fill=tk.X, padx=6, pady=(2, 6))
 
         # Metrics 3-column row
         metrics_bar = tk.Frame(self.hero_card.inner, bg=BG_CARD)
-        metrics_bar.pack(fill=tk.X, padx=8, pady=(0, 2))
+        metrics_bar.pack(fill=tk.X, padx=8, pady=(2, 4))
 
         m1 = tk.Frame(metrics_bar, bg=BG_CARD)
         m1.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        tk.Label(m1, text="平稳运行时长", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        tk.Label(m1, text="平稳运行时长", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
         self.lbl_uptime = tk.Label(m1, text="00:00:00", font=(FONT_MONO, 11, "bold"), fg=TEXT_WHITE, bg=BG_CARD)
         self.lbl_uptime.pack(anchor=tk.W)
 
         m2 = tk.Frame(metrics_bar, bg=BG_CARD)
         m2.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        tk.Label(m2, text="本次处理业务", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        tk.Label(m2, text="本次处理业务", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
         self.lbl_processed = tk.Label(m2, text="0 单", font=(FONT_MONO, 11, "bold"), fg=TEXT_WHITE, bg=BG_CARD)
         self.lbl_processed.pack(anchor=tk.W)
 
         m3 = tk.Frame(metrics_bar, bg=BG_CARD)
         m3.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        tk.Label(m3, text="云端通信链路", font=(FONT_CN, 7), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
+        tk.Label(m3, text="云端通信链路", font=(FONT_CN, 8), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor=tk.W)
         self.lbl_cloud = tk.Label(m3, text="Supabase 已连接", font=(FONT_CN, 9, "bold"), fg=TEXT_GREEN, bg=BG_CARD)
         self.lbl_cloud.pack(anchor=tk.W)
 
@@ -689,13 +709,15 @@ class CyberHudApp:
         for i, w in enumerate(WORKERS_CONFIG):
             card = CyberCard(
                 self.main_container,
-                height=56,
+                height=62,
                 bg_color=BG_CARD,
                 border_color="#182230",
                 brackets="diagonal",  # ┌ and ┘
                 bracket_color=BRACKET_COLOR,
                 bracket_len=8,
                 radius=8,
+                pad_x=12,
+                pad_y=5,
             )
             card.pack(fill=tk.X, padx=22, pady=3)
 
@@ -741,9 +763,38 @@ class CyberHudApp:
             )
             icon_lbl.pack(side=tk.LEFT, padx=(0, 10))
 
-            # Center Block: Title + Badge / Subtitle
+            # Right Status Block: Dot + 随时待命 / QUEUE - IDLE (Pack BEFORE center block to guarantee width)
+            right_block = tk.Frame(inner, bg=BG_CARD)
+            right_block.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
+
+            status_row = tk.Frame(right_block, bg=BG_CARD)
+            status_row.pack(anchor=tk.E)
+
+            dot_canvas = tk.Canvas(status_row, width=8, height=8, bg=BG_CARD, highlightthickness=0)
+            dot_canvas.pack(side=tk.LEFT, padx=(0, 4))
+            dot = dot_canvas.create_oval(1, 1, 7, 7, fill=TEXT_GREEN, outline="")
+
+            status_lbl = tk.Label(
+                status_row,
+                text="随时待命",
+                font=(FONT_CN, 8, "bold"),
+                fg=TEXT_GREEN,
+                bg=BG_CARD,
+            )
+            status_lbl.pack(side=tk.LEFT)
+
+            substatus_lbl = tk.Label(
+                right_block,
+                text="QUEUE - IDLE",
+                font=(FONT_MONO, 7),
+                fg=TEXT_DARK,
+                bg=BG_CARD,
+            )
+            substatus_lbl.pack(anchor=tk.E, pady=(1, 0))
+
+            # Center Block: Title + Badge / Subtitle (Takes remaining space)
             center_block = tk.Frame(inner, bg=BG_CARD)
-            center_block.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+            center_block.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
             row1 = tk.Frame(center_block, bg=BG_CARD)
             row1.pack(anchor=tk.W)
@@ -778,35 +829,6 @@ class CyberHudApp:
                 bg=BG_CARD,
             )
             desc_lbl.pack(anchor=tk.W, pady=(1, 0))
-
-            # Right Status Block: Dot + 随时待命 / QUEUE - IDLE
-            right_block = tk.Frame(inner, bg=BG_CARD)
-            right_block.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
-
-            status_row = tk.Frame(right_block, bg=BG_CARD)
-            status_row.pack(anchor=tk.E)
-
-            dot_canvas = tk.Canvas(status_row, width=8, height=8, bg=BG_CARD, highlightthickness=0)
-            dot_canvas.pack(side=tk.LEFT, padx=(0, 4))
-            dot = dot_canvas.create_oval(1, 1, 7, 7, fill=TEXT_GREEN, outline="")
-
-            status_lbl = tk.Label(
-                status_row,
-                text="随时待命",
-                font=(FONT_CN, 8, "bold"),
-                fg=TEXT_GREEN,
-                bg=BG_CARD,
-            )
-            status_lbl.pack(side=tk.LEFT)
-
-            substatus_lbl = tk.Label(
-                right_block,
-                text="QUEUE - IDLE",
-                font=(FONT_MONO, 7),
-                fg=TEXT_DARK,
-                bg=BG_CARD,
-            )
-            substatus_lbl.pack(anchor=tk.E, pady=(1, 0))
 
             self.worker_widgets[w["id"]] = {
                 "card": card,
@@ -932,6 +954,12 @@ class CyberHudApp:
             height=6,
         )
         self.tech_text.pack(fill=tk.BOTH, expand=True)
+
+        # Ensure all card heights adapt dynamically to High-DPI fonts without clipping
+        self.root.update_idletasks()
+        self.hero_card.auto_fit()
+        for wdata in self.worker_widgets.values():
+            wdata["card"].auto_fit()
 
     def _toggle_tech_log(self):
         if self.log_visible:
