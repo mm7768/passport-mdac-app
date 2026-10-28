@@ -24,6 +24,11 @@ import tkinter as tk
 from tkinter import ttk
 
 PYTHON_EXE = sys.executable
+if PYTHON_EXE.lower().endswith("pythonw.exe"):
+    cand = PYTHON_EXE[:-5] + ".exe"
+    if os.path.exists(cand):
+        PYTHON_EXE = cand
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
