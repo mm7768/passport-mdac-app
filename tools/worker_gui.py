@@ -18,6 +18,11 @@ from tkinter import ttk
 
 PYTHON_EXE = sys.executable
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+for p in [REPO_ROOT, TOOLS_DIR]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 WORKERS = [
     {
@@ -171,8 +176,6 @@ class MinimalistWorkerApp:
         self.root.minsize(500, 600)
         self.root.configure(bg=BG_COLOR)
 
-        self._enable_dark_titlebar()
-
         self.manager = WorkerManager(
             on_log=self._on_log_received,
             on_status_change=self._on_status_changed,
@@ -181,6 +184,7 @@ class MinimalistWorkerApp:
         self.log_visible = False
         self.worker_widgets = {}
         self._build_ui()
+        self._enable_dark_titlebar()
         self._start_breathing_animation()
 
         # Start workers
@@ -190,10 +194,14 @@ class MinimalistWorkerApp:
 
     def _enable_dark_titlebar(self):
         try:
+            self.root.update_idletasks()
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            # DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            if not hwnd:
+                hwnd = self.root.winfo_id()
             value = ctypes.c_int(2)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), 4)
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), 4)
+            if res != 0:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), 4)
         except Exception:
             pass
 
@@ -469,9 +477,22 @@ class MinimalistWorkerApp:
 
 
 def main():
-    root = tk.Tk()
-    app = MinimalistWorkerApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = MinimalistWorkerApp(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        log_dir = os.path.join(REPO_ROOT, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        crash_log = os.path.join(log_dir, "worker_gui_crash.log")
+        with open(crash_log, "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        try:
+            import tkinter.messagebox
+            tkinter.messagebox.showerror("MDAC Worker GUI 启动错误", f"错误详情:\n{e}\n\n详细崩溃日志已记录至: {crash_log}")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

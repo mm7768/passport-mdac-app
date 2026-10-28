@@ -519,11 +519,27 @@ async def fill_and_verify_page(
     if password_count:
         raise ManualReviewRequired("页面要求账号登录；当前服务不自动处理登录或验证码")
 
-    await _select_value(page, "#region", fields["#region"], timeout_ms)
+    # 1. 先选择国籍和出生地
+    # 说明：MDAC 官方网站前端在选择 #nationality 后，会自动触发 onChange 事件，
+    # 将电话区号 #region 重置为该国籍对应的默认区号（如 TWN -> 886）。
     await _select_value(page, "#nationality", fields["#nationality"], timeout_ms)
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(300)
     await _select_value(page, "#pob", fields["#pob"], timeout_ms)
+    await page.wait_for_timeout(200)
 
+    # 2. 在国籍选定后，再次主动将电话区号 #region 设回配置的区号（如 86）
+    # 覆盖官网脚本自动重置的区号，确保无论客源国籍为何，都强制采用预设的联系号码与区号
+    await _select_value(page, "#region", fields["#region"], timeout_ms)
+    await page.wait_for_timeout(200)
+    try:
+        cur_region = await _input_value(page, "#region")
+        if cur_region != fields["#region"]:
+            await page.locator("#region").select_option(value=fields["#region"])
+            await page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+    # 3. 填写邮箱与手机号
     await page.locator("#email").fill(settings["mdac_email"])
     await page.locator("#confirmEmail").fill(settings["mdac_email"])
     await page.locator("#mobile").fill(settings["mdac_phone"])
