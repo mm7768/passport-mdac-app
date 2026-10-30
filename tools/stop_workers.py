@@ -1,4 +1,4 @@
-"""Cleanly terminate existing MDAC & Passport automation workers."""
+"""Cleanly terminate existing MDAC & Passport automation workers and GUI."""
 from __future__ import annotations
 
 import os
@@ -13,10 +13,12 @@ except Exception:
 try:
     import psutil
 except ImportError:
-    print("未安装 psutil，正在尝试继续...")
+    print("??? psutil,??????...")
     psutil = None
 
 TARGET_SCRIPTS = [
+    "tools/worker_gui.py",
+    "tools/run_all_workers.py",
     "services/mdac-fill-preview/worker.py",
     "services/registration-check-worker/worker.py",
     "services/visit-pass-check-worker/worker.py",
@@ -47,25 +49,25 @@ def stop_workers() -> int:
             pass
 
     if not matched_procs:
-        print("未检测到运行中的旧版 Worker 进程。")
+        print("???????? Worker ? GUI ???")
         return 0
 
-    print(f"检测到 {len(matched_procs)} 个旧版 Worker 进程，正在安全终止...")
+    print(f"??? {len(matched_procs)} ? Worker / GUI ??,??????...")
     for proc in matched_procs:
         try:
             proc.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
-    # Wait up to 2.5 seconds for graceful shutdown
-    gone, alive = psutil.wait_procs(matched_procs, timeout=2.5)
+    # Wait up to 3.0 seconds for graceful shutdown
+    gone, alive = psutil.wait_procs(matched_procs, timeout=3.0)
     for proc in alive:
         try:
             proc.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
-    print(f"已成功清理 {len(matched_procs)} 个旧版 Worker 进程！")
+    print(f"????? {len(matched_procs)} ? Worker / GUI ???")
     return len(matched_procs)
 
 
