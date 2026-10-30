@@ -10,6 +10,7 @@ import base64
 import io
 import logging
 import random
+import threading
 from typing import Any, Callable
 
 import cv2
@@ -20,15 +21,14 @@ from playwright.async_api import Page
 
 LOG = logging.getLogger("mdac_slider_solver")
 
-_DETECTOR: ddddocr.DdddOcr | None = None
+_DETECTOR_LOCAL = threading.local()
 
 
 def get_detector() -> ddddocr.DdddOcr:
-    """Lazy-load and cache the ddddocr detector instance."""
-    global _DETECTOR
-    if _DETECTOR is None:
-        _DETECTOR = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
-    return _DETECTOR
+    """Lazy-load and cache the ddddocr detector instance per thread."""
+    if not hasattr(_DETECTOR_LOCAL, "detector"):
+        _DETECTOR_LOCAL.detector = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
+    return _DETECTOR_LOCAL.detector
 
 
 def generate_track(total_distance: float) -> list[float]:

@@ -18,6 +18,6 @@ if %ERRORLEVEL% EQU 1 (
 )
 
 echo [MDAC] Starting Worker GUI and 5 automation workers...
-start "" "%PYTHON_EXE%" tools\worker_gui.py
+start "" /d "%~dp0.." "%PYTHON_EXE%" "%~dp0worker_gui.py"
 echo [MDAC] Done.
 exit /b 0

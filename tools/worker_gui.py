@@ -71,10 +71,10 @@ WORKERS_CONFIG = [
         "id": "vp",
         "idx": "03",
         "name": "Visit Pass 电子入境签核验",
-        "desc": "官方电子准证查询，签发凭证自动存档",
-        "badge": "准证核验",
+        "desc": "官方电子准证查询，4并发多窗并行核验存档",
+        "badge": "4并发核验",
         "script": "services/visit-pass-check-worker/worker.py",
-        "args": ["--poll"],
+        "args": ["--poll", "--concurrency", "4"],
         "icon": "💳",
     },
     {

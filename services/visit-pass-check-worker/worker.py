@@ -18,6 +18,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -105,6 +106,7 @@ class WorkerConfig:
     screenshot_bucket: str
     screenshot_prefix: str
     log_level: str
+    concurrency: int = 4
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -172,6 +174,7 @@ class WorkerConfig:
                 or "visit-pass-check-previews"
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+            concurrency=bounded_int("VISIT_PASS_CHECK_CONCURRENCY", "4", 1, 8),
         )
 
 
@@ -375,19 +378,40 @@ class SupabaseAdminClient:
         status: str,
         batch_id: str | None = None,
         item_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        self._rpc(
-            "heartbeat_visit_pass_check",
-            {
-                "p_worker_id": self.config.worker_id,
-                "p_batch_id": batch_id,
-                "p_item_id": item_id,
-                "p_lease_seconds": self.config.lease_seconds,
-                "p_status": status,
-                "p_hostname": socket.gethostname(),
-                "p_version": "visit-pass-check-auto-2",
-            },
-        )
+        try:
+            self._rpc(
+                "heartbeat_visit_pass_check",
+                {
+                    "p_worker_id": self.config.worker_id,
+                    "p_batch_id": batch_id,
+                    "p_item_id": item_id,
+                    "p_lease_seconds": self.config.lease_seconds,
+                    "p_status": status,
+                    "p_hostname": socket.gethostname(),
+                    "p_version": "visit-pass-check-auto-2",
+                },
+            )
+        except Exception as exc:
+            LOG.debug("heartbeat_visit_pass_check RPC 异常: %s", exc)
+
+        meta = {
+            "execution_mode": "VISIT_PASS_CHECK",
+            "concurrency": getattr(self.config, "concurrency", 4),
+            "active_slots": 0,
+        }
+        if metadata:
+            meta.update(metadata)
+        try:
+            self.session.patch(
+                f"{self.rest_url}/worker_heartbeats",
+                params={"worker_id": f"eq.{self.config.worker_id}"},
+                json={"metadata": meta},
+                timeout=self.config.request_timeout_seconds,
+            )
+        except Exception:
+            pass
 
     def heartbeat_tick(
         self,
@@ -395,6 +419,7 @@ class SupabaseAdminClient:
         status: str = "ONLINE",
         batch_id: str | None = None,
         item_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
         force: bool = False,
         idle_interval: float = 60.0,
         busy_interval: float = 20.0,
@@ -408,7 +433,7 @@ class SupabaseAdminClient:
         interval = busy_interval if status == "BUSY" else idle_interval
         state_changed = (status != self._last_hb_status or batch_id != self._last_hb_batch_id)
         if force or state_changed or (now - self._last_heartbeat_at >= interval):
-            self.heartbeat(status=status, batch_id=batch_id, item_id=item_id)
+            self.heartbeat(status=status, batch_id=batch_id, item_id=item_id, metadata=metadata)
             self._last_heartbeat_at = now
             self._last_hb_status = status
             self._last_hb_batch_id = batch_id
@@ -777,6 +802,7 @@ async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
     target_entry_date: str | None = None,
+    slot_id: int = 1,
 ) -> tuple[str, bytes, dict[str, Any]]:
     async with async_playwright() as playwright:
         browser_args = [
@@ -785,8 +811,22 @@ async def query_and_capture_page(
             "--disable-blink-features=AutomationControlled",
         ]
         if not config.headless:
-            window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
-            window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
+            env_pos = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_POSITION")
+            env_size = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_SIZE")
+            if env_pos and env_size:
+                window_pos, window_size = env_pos, env_size
+            elif getattr(config, "concurrency", 4) == 1 and os.getenv("BROWSER_WINDOW_POSITION"):
+                window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
+                window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
+            else:
+                default_grid = {
+                    1: ("645,10", "440,410"),
+                    2: ("1090,10", "440,410"),
+                    3: ("645,430", "440,410"),
+                    4: ("1090,430", "440,410"),
+                }
+                window_pos, window_size = default_grid.get(slot_id, ("645,10", "440,410"))
+
             browser_args.extend([
                 f"--window-size={window_size}",
                 f"--window-position={window_pos}",
@@ -1113,10 +1153,11 @@ async def preview_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
     target_entry_date: str | None = None,
+    slot_id: int = 1,
 ) -> tuple[bytes, str | None, dict[str, Any]]:
     """Legacy helper for backward compatibility."""
     outcome, screenshot, summary = await query_and_capture_page(
-        config, runtime_input, target_entry_date=target_entry_date
+        config, runtime_input, target_entry_date=target_entry_date, slot_id=slot_id
     )
     challenge_type = summary.get("challenge_type")
     return screenshot, challenge_type, summary
@@ -1127,173 +1168,259 @@ class VisitPassCheckWorker:
         self.config = config
         self.supabase = SupabaseAdminClient(config)
 
-    def process_batch(self, batch: dict[str, Any]) -> int:
-        batch_id = str(batch["id"])
-        self.supabase.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
-        log_event(
-            logging.INFO,
-            step="batch_claim",
-            status="running",
-            batch_id=batch_id,
-        )
-        processed = 0
-        while True:
-            item = self.supabase.claim_item(batch_id)
-            if item is None:
-                break
-            item_id = str(item["id"])
-            customer_id = str(item.get("customer_id") or "") or None
-            case_id = str(item.get("case_id") or "") or None
-            self.supabase.heartbeat_tick(status="BUSY", batch_id=batch_id, item_id=item_id)
-            log_event(
-                logging.INFO,
-                step="item_claim",
-                status="running",
-                batch_id=batch_id,
-                item_id=item_id,
-                customer_id=customer_id,
-                case_id=case_id,
+    def _process_single_item(
+        self,
+        *,
+        slot_supabase: SupabaseAdminClient,
+        batch_id: str,
+        item_id: str,
+        customer_id: str | None,
+        case_id: str | None,
+        slot_id: int,
+    ) -> None:
+        try:
+            runtime_input = slot_supabase.get_runtime_input(item_id, case_id=case_id)
+            if not case_id and runtime_input.get("case_id"):
+                case_id = runtime_input["case_id"]
+
+            # V1.2 Section 6: entry_date 必须按 Case 获取，禁止跨 Case / Customer-level 猜测
+            target_entry_date = runtime_input.get("entry_date")
+            if not target_entry_date:
+                if case_id:
+                    target_entry_date = slot_supabase.get_case_entry_date(case_id)
+                elif customer_id:
+                    target_entry_date = slot_supabase.get_customer_entry_date(customer_id)
+
+            outcome, screenshot, summary = asyncio.run(
+                query_and_capture_page(
+                    self.config,
+                    runtime_input,
+                    target_entry_date=target_entry_date,
+                    slot_id=slot_id,
+                )
             )
+
+            screenshot_path: str | None = None
             try:
-                runtime_input = self.supabase.get_runtime_input(item_id, case_id=case_id)
-                if not case_id and runtime_input.get("case_id"):
-                    case_id = runtime_input["case_id"]
-
-                # V1.2 Section 6: entry_date 必须按 Case 获取，禁止跨 Case / Customer-level 猜测
-                target_entry_date = runtime_input.get("entry_date")
-                if not target_entry_date:
-                    if case_id:
-                        target_entry_date = self.supabase.get_case_entry_date(case_id)
-                    elif customer_id:
-                        target_entry_date = self.supabase.get_customer_entry_date(customer_id)
-
-                outcome, screenshot, summary = asyncio.run(
-                    query_and_capture_page(self.config, runtime_input, target_entry_date=target_entry_date)
-                )
-
-                screenshot_path: str | None = None
-                try:
-                    screenshot_path = self.supabase.upload_screenshot(item_id, screenshot)
-                    summary["screenshot_path"] = screenshot_path
-                except Exception as upload_err:
-                    log_event(
-                        logging.WARNING,
-                        step="screenshot_upload",
-                        status="failed",
-                        batch_id=batch_id,
-                        item_id=item_id,
-                        customer_id=customer_id,
-                        case_id=case_id,
-                        error_code="SCREENSHOT_UPLOAD_FAILED",
-                        error_message=str(upload_err),
-                    )
-                    summary["screenshot_saved"] = False
-                    summary["screenshot_upload_failed"] = True
-
-                error_code = None
-                error_message = None
-                if outcome == "NEEDS_REVIEW":
-                    error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
-                    error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
-                elif outcome == "QUERY_TIMEOUT":
-                    outcome = "NEEDS_REVIEW"
-                    error_code = "QUERY_TIMEOUT"
-                    error_message = "官方页面无响应超时，未得出结论"
-                elif outcome == "NO_RECORD":
-                    error_code = "NO_MATCHING_RECORD"
-                    error_message = summary.get("note") or "未找到符合记录"
-                elif outcome == "PIN_INVALID":
-                    error_code = "PIN_INVALID"
-                    error_message = "官方页面提示 PIN 错误"
-
-                self.supabase.finish_visit_pass_worker(
-                    item_id=item_id,
-                    outcome=outcome,
-                    evidence_path=screenshot_path,
-                    raw_summary=summary,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-
-                # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
-                if outcome == "FOUND" and screenshot_path:
-                    try:
-                        if case_id:
-                            self.supabase.delete_case_old_visit_pass_evidence(
-                                case_id, current_screenshot_path=screenshot_path
-                            )
-                        elif customer_id:
-                            self.supabase.delete_customer_old_visit_pass_screenshots(
-                                customer_id, current_screenshot_path=screenshot_path
-                            )
-                    except Exception as clean_err:
-                        LOG.warning("清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", case_id, customer_id, clean_err)
-
-                processed += 1
-
+                screenshot_path = slot_supabase.upload_screenshot(item_id, screenshot)
+                summary["screenshot_path"] = screenshot_path
+            except Exception as upload_err:
                 log_event(
-                    logging.INFO,
-                    step="result_writeback",
-                    status="succeeded" if outcome == "FOUND" else "processed",
-                    batch_id=batch_id,
-                    item_id=item_id,
-                    customer_id=customer_id,
-                    case_id=case_id,
-                    result=outcome,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-            except Exception as exception:
-                error_code, error_message, retryable = classify_page_failure(exception)
-                log_event(
-                    logging.ERROR,
-                    step="page_preview",
+                    logging.WARNING,
+                    step="screenshot_upload",
                     status="failed",
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
                     case_id=case_id,
-                    result="RESULT_UNKNOWN",
+                    error_code="SCREENSHOT_UPLOAD_FAILED",
+                    error_message=str(upload_err),
+                )
+                summary["screenshot_saved"] = False
+                summary["screenshot_upload_failed"] = True
+
+            error_code = None
+            error_message = None
+            if outcome == "NEEDS_REVIEW":
+                error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
+                error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
+            elif outcome == "QUERY_TIMEOUT":
+                outcome = "NEEDS_REVIEW"
+                error_code = "QUERY_TIMEOUT"
+                error_message = "官方页面无响应超时，未得出结论"
+            elif outcome == "NO_RECORD":
+                error_code = "NO_MATCHING_RECORD"
+                error_message = summary.get("note") or "未找到符合记录"
+            elif outcome == "PIN_INVALID":
+                error_code = "PIN_INVALID"
+                error_message = "官方页面提示 PIN 错误"
+
+            slot_supabase.finish_visit_pass_worker(
+                item_id=item_id,
+                outcome=outcome,
+                evidence_path=screenshot_path,
+                raw_summary=summary,
+                error_code=error_code,
+                error_message=error_message,
+            )
+
+            # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
+            if outcome == "FOUND" and screenshot_path:
+                try:
+                    if case_id:
+                        slot_supabase.delete_case_old_visit_pass_evidence(
+                            case_id, current_screenshot_path=screenshot_path
+                        )
+                    elif customer_id:
+                        slot_supabase.delete_customer_old_visit_pass_screenshots(
+                            customer_id, current_screenshot_path=screenshot_path
+                        )
+                except Exception as clean_err:
+                    LOG.warning("[槽位 %d] 清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", slot_id, case_id, customer_id, clean_err)
+
+            log_event(
+                logging.INFO,
+                step="result_writeback",
+                status="succeeded" if outcome == "FOUND" else "processed",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+                case_id=case_id,
+                result={"outcome": outcome, "slot": slot_id},
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except Exception as exception:
+            error_code, error_message, retryable = classify_page_failure(exception)
+            log_event(
+                logging.ERROR,
+                step="page_preview",
+                status="failed",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+                case_id=case_id,
+                result="RESULT_UNKNOWN",
+                error_code=error_code,
+                error_message=error_message,
+            )
+            try:
+                slot_supabase.finish_visit_pass_worker(
+                    item_id=item_id,
+                    outcome="NEEDS_REVIEW",
+                    evidence_path=None,
+                    raw_summary={
+                        "source": "MDAC_CHECK_VISIT_PASS",
+                        "mode": self.config.mode,
+                        "submitted": False,
+                        "result_confirmed": False,
+                        "captcha_bypass": False,
+                        "screenshot_saved": False,
+                        "error": error_code,
+                    },
                     error_code=error_code,
                     error_message=error_message,
                 )
+            except Exception:
+                log_event(
+                    logging.ERROR,
+                    step="result_writeback",
+                    status="failed",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    result="FAILED",
+                    error_code="SUPABASE_WRITEBACK_FAILED",
+                    error_message="Visit Pass Check failure writeback failed",
+                )
+
+    def process_batch(self, batch: dict[str, Any]) -> int:
+        batch_id = str(batch["id"])
+        concurrency = getattr(self.config, "concurrency", 4)
+        log_event(
+            logging.INFO,
+            step="batch_claim",
+            status="running",
+            batch_id=batch_id,
+            result={"concurrency": concurrency},
+        )
+
+        processed_counter = {"count": 0}
+        counter_lock = threading.Lock()
+        active_slots: dict[int, dict[str, Any]] = {}
+        active_lock = threading.Lock()
+        stop_batch = threading.Event()
+
+        def batch_heartbeat_worker() -> None:
+            hb_client = getattr(self, "supabase", None) or SupabaseAdminClient(self.config)
+            while not stop_batch.is_set():
                 try:
-                    self.supabase.finish_visit_pass_worker(
-                        item_id=item_id,
-                        outcome="NEEDS_REVIEW",
-                        evidence_path=None,
-                        raw_summary={
-                            "source": "MDAC_CHECK_VISIT_PASS",
-                            "mode": self.config.mode,
-                            "submitted": False,
-                            "result_confirmed": False,
-                            "captcha_bypass": False,
-                            "screenshot_saved": False,
-                            "error": error_code,
-                        },
-                        error_code=error_code,
-                        error_message=error_message,
+                    with active_lock:
+                        active_count = len(active_slots)
+                        active_items = [v.get("item_id") for v in active_slots.values() if v.get("item_id")]
+                    status = "BUSY" if active_count > 0 else "ONLINE"
+                    meta = {
+                        "execution_mode": "VISIT_PASS_CHECK",
+                        "concurrency": concurrency,
+                        "active_slots": active_count,
+                        "active_items": active_items,
+                    }
+                    hb_client.heartbeat(
+                        status=status,
+                        batch_id=batch_id if active_count > 0 else None,
+                        metadata=meta,
                     )
                 except Exception:
-                    log_event(
-                        logging.ERROR,
-                        step="result_writeback",
-                        status="failed",
+                    pass
+                stop_batch.wait(15.0)
+
+        def slot_worker(slot_id: int) -> None:
+            slot_supabase = getattr(self, "supabase", None) or SupabaseAdminClient(self.config)
+            while not stop_batch.is_set():
+                item = slot_supabase.claim_item(batch_id)
+                if item is None:
+                    break
+
+                item_id = str(item["id"])
+                customer_id = str(item.get("customer_id") or "") or None
+                case_id = str(item.get("case_id") or "") or None
+
+                with active_lock:
+                    active_slots[slot_id] = {
+                        "item_id": item_id,
+                        "case_id": case_id,
+                        "customer_id": customer_id,
+                    }
+
+                log_event(
+                    logging.INFO,
+                    step="item_claim",
+                    status="running",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    case_id=case_id,
+                    result={"slot": slot_id},
+                )
+
+                try:
+                    self._process_single_item(
+                        slot_supabase=slot_supabase,
                         batch_id=batch_id,
                         item_id=item_id,
                         customer_id=customer_id,
-                        result="FAILED",
-                        error_code="SUPABASE_WRITEBACK_FAILED",
-                        error_message="Visit Pass Check failure writeback failed",
+                        case_id=case_id,
+                        slot_id=slot_id,
                     )
+                    with counter_lock:
+                        processed_counter["count"] += 1
+                finally:
+                    with active_lock:
+                        active_slots.pop(slot_id, None)
 
+        hb_thread = threading.Thread(target=batch_heartbeat_worker, daemon=True, name="vp-batch-hb")
+        hb_thread.start()
+
+        threads: list[threading.Thread] = []
+        for slot_id in range(1, concurrency + 1):
+            t = threading.Thread(target=slot_worker, args=(slot_id,), daemon=True, name=f"vp-slot-{slot_id}")
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
+
+        stop_batch.set()
+        hb_thread.join(timeout=2.0)
+
+        processed = processed_counter["count"]
         self.supabase.heartbeat_tick(status="ONLINE", force=True)
         log_event(
             logging.INFO,
             step="batch_complete",
             status="completed",
             batch_id=batch_id,
-            result={"processed_count": processed},
+            result={"processed_count": processed, "concurrency": concurrency},
         )
         return processed
 
@@ -1370,14 +1497,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run one queue pass")
     parser.add_argument("--poll", action="store_true", help="run the polling loop")
+    parser.add_argument("--concurrency", type=int, default=None, help="并发槽位数 (默认 4)")
     args = parser.parse_args()
     config = WorkerConfig.from_env()
+    if args.concurrency is not None:
+        if args.concurrency < 1 or args.concurrency > 8:
+            parser.error("--concurrency 必须在 1 到 8 之间")
+        import dataclasses
+        config = dataclasses.replace(config, concurrency=args.concurrency)
     configure_logging(config.log_level)
     print("========================================================")
-    print("   Check Visit Pass Worker 已启动（本地服务）")
+    print("   Check Visit Pass Worker 已启动（本地并发服务）")
     print(f"  Worker ID: {config.worker_id}")
+    print(f"  并发槽位: {config.concurrency}")
     print(f"  运行模式: {config.mode} (允许真实查询: {config.allow_real_submit})")
-    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
+    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台多窗网格'}")
     print("  正在监听 Supabase Visit Pass Check 队列...")
     print("========================================================")
     worker = VisitPassCheckWorker(config)

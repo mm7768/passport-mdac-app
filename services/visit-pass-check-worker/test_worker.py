@@ -202,6 +202,62 @@ class VisitPassWorkerTests(unittest.TestCase):
         self.assertNotIn("passport_number", str(events))
         self.assertNotIn("pin_value", str(events))
 
+    def test_process_batch_concurrent_4_slots(self) -> None:
+        import threading
+        supabase = _FakeSupabase()
+        supabase.items = [
+            {"id": f"item-{i}", "customer_id": f"cust-{i}", "case_id": f"case-{i}"}
+            for i in range(1, 5)
+        ]
+        instance = MODULE.VisitPassCheckWorker.__new__(MODULE.VisitPassCheckWorker)
+        instance.config = SimpleNamespace(mode="AUTO_SEARCH", concurrency=4)
+        instance.supabase = supabase
+
+        slots_used = []
+        slot_lock = threading.Lock()
+
+        async def fake_query_and_capture(config, runtime_input, *args, **kwargs):
+            slot = kwargs.get("slot_id") or 1
+            with slot_lock:
+                slots_used.append(slot)
+            return (
+                "FOUND",
+                b"png",
+                {
+                    "source": "MDAC_CHECK_VISIT_PASS",
+                    "mode": "AUTO_SEARCH",
+                    "outcome": "FOUND",
+                    "slider_solved": True,
+                    "submitted": True,
+                    "result_confirmed": True,
+                },
+            )
+
+        with patch.object(MODULE, "query_and_capture_page", side_effect=fake_query_and_capture):
+            processed = instance.process_batch({"id": "batch-concurrent"})
+
+        self.assertEqual(processed, 4)
+        self.assertEqual(len(supabase.finished), 4)
+        self.assertEqual(set(slots_used), {1, 2, 3, 4})
+
+    def test_config_reads_concurrency_default_and_env(self) -> None:
+        base_env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-placeholder",
+            "VISIT_PASS_CHECK_WORKER_ID": "test-worker",
+            "VISIT_PASS_CHECK_MODE": "AUTO_SEARCH",
+            "ALLOW_REAL_SUBMIT": "true",
+            "VISIT_PASS_CHECK_HEADLESS": "false",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            cfg_default = MODULE.WorkerConfig.from_env()
+            self.assertEqual(cfg_default.concurrency, 4)
+
+        env_custom = dict(base_env, VISIT_PASS_CHECK_CONCURRENCY="2")
+        with patch.dict(os.environ, env_custom, clear=True):
+            cfg_custom = MODULE.WorkerConfig.from_env()
+            self.assertEqual(cfg_custom.concurrency, 2)
+
     def test_entry_window_candidates_covers_0_to_4_days(self) -> None:
         candidates = MODULE.entry_window_candidates("2026-09-24")
 
