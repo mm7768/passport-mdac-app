@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -148,14 +149,14 @@ class SupabaseAdminClient:
         return rows[0]
 
     def claim_next_batch(self) -> dict[str, Any] | None:
-        """Atomically claim the oldest uploaded OCR batch through PostgREST."""
+        """Atomically claim the oldest uploaded OCR batch through PostgREST with optimistic concurrency."""
         response = self.session.get(
             f"{self.rest_url}/ocr_batches",
             params={
                 "status": "eq.UPLOADED",
                 "select": "id,file_path,source_type,status,total_results,processed_results,metadata",
                 "order": "created_at.asc",
-                "limit": "1",
+                "limit": "10",
             },
             timeout=self.config.request_timeout,
         )
@@ -163,20 +164,22 @@ class SupabaseAdminClient:
         rows = response.json()
         if not rows:
             return None
-        candidate = rows[0]
-        claim = self.session.patch(
-            f"{self.rest_url}/ocr_batches",
-            params={
-                "id": f"eq.{candidate['id']}",
-                "status": "eq.UPLOADED",
-            },
-            headers={"Prefer": "return=representation"},
-            json={"status": "PROCESSING", "error_message": None},
-            timeout=self.config.request_timeout,
-        )
-        self._raise(claim, "领取 OCR 批次")
-        claimed_rows = claim.json()
-        return claimed_rows[0] if claimed_rows else None
+        for candidate in rows:
+            claim = self.session.patch(
+                f"{self.rest_url}/ocr_batches",
+                params={
+                    "id": f"eq.{candidate['id']}",
+                    "status": "eq.UPLOADED",
+                },
+                headers={"Prefer": "return=representation"},
+                json={"status": "PROCESSING", "error_message": None},
+                timeout=self.config.request_timeout,
+            )
+            self._raise(claim, "领取 OCR 批次")
+            claimed_rows = claim.json()
+            if claimed_rows:
+                return claimed_rows[0]
+        return None
 
     def download_private_file(self, file_path: str) -> bytes:
         safe_path = "/".join(quote(part, safe="") for part in PurePosixPath(file_path).parts)
@@ -229,15 +232,19 @@ class SupabaseAdminClient:
         worker_id: str,
         status: str = "ONLINE",
         batch_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
+        meta = {"execution_mode": "AZURE_OCR"}
+        if metadata:
+            meta.update(metadata)
         payload = {
             "worker_id": worker_id,
             "hostname": socket.gethostname(),
-            "version": "azure-ocr-1",
+            "version": "azure-ocr-2-concurrent",
             "status": status,
             "current_batch_id": batch_id,
             "last_seen_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": {"execution_mode": "AZURE_OCR"},
+            "metadata": meta,
         }
         try:
             self.session.post(
@@ -507,67 +514,124 @@ def run_poll_loop(
     config: WorkerConfig,
     *,
     worker_id: str,
-    queue_poll_seconds: float = 15.0,
+    concurrency: int = 3,
+    queue_poll_seconds: float = 2.0,
     once: bool = False,
 ) -> int:
-    """Continuously claim and process uploaded OCR batches for Railway."""
-    supabase = SupabaseAdminClient(config)
-    azure = AzureIdentityDocumentClient(config)
-    interval = max(queue_poll_seconds, 5.0)
-    LOG.info("OCR Worker 已启动：worker_id=%s，初始轮询间隔 %.1fs", worker_id, interval)
-    last_hb_time = 0.0
-    backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
-    backoff_idx = 0
-    while True:
-        try:
-            now_mono = time.monotonic()
-            if now_mono - last_hb_time >= 45.0:
-                supabase.heartbeat(worker_id=worker_id, status="ONLINE")
-                last_hb_time = now_mono
-
-            batch = supabase.claim_next_batch()
-            if batch is None:
-                if once:
-                    return 0
-                sleep_sec = backoff_steps[backoff_idx]
-                if backoff_idx < len(backoff_steps) - 1:
-                    backoff_idx += 1
-                time.sleep(sleep_sec)
-                continue
-            backoff_idx = 0
-            batch_id = str(batch["id"])
-            supabase.heartbeat(worker_id=worker_id, status="BUSY", batch_id=batch_id)
-            LOG.info("Worker %s 开始处理批次 %s", worker_id, batch_id)
+    """Continuously claim and process uploaded OCR batches with multi-threading concurrency."""
+    LOG.info("Azure OCR Worker 并发版已启动：worker_id=%s，并发槽位数=%d", worker_id, concurrency)
+    
+    stop_event = threading.Event()
+    active_slots: dict[int, str] = {}
+    active_lock = threading.Lock()
+    
+    def heartbeat_worker():
+        supabase = SupabaseAdminClient(config)
+        while not stop_event.is_set():
             try:
-                result = process_batch(
-                    batch_id,
-                    config,
-                    supabase=supabase,
-                    azure=azure,
+                with active_lock:
+                    active_count = len(active_slots)
+                    active_batches = list(active_slots.values())
+                status = "BUSY" if active_count > 0 else "ONLINE"
+                meta = {
+                    "execution_mode": "AZURE_OCR",
+                    "concurrency": concurrency,
+                    "active_slots": active_count,
+                    "active_batches": active_batches,
+                }
+                supabase.heartbeat(
+                    worker_id=worker_id,
+                    status=status,
+                    batch_id=active_batches[0] if active_batches else None,
+                    metadata=meta,
                 )
-                LOG.info(
-                    "批次 %s 完成：status=%s confidence=%s",
-                    batch_id,
-                    result.get("status"),
-                    result.get("confidence"),
-                )
-            except (AzureAnalyzeError, SupabaseError, requests.RequestException) as exc:
-                LOG.exception("批次 %s 处理失败", batch_id)
+            except Exception:
+                pass
+            stop_event.wait(20.0 if status == "BUSY" else 45.0)
+
+    hb_thread = threading.Thread(target=heartbeat_worker, daemon=True, name="ocr-heartbeat")
+    hb_thread.start()
+
+    def slot_worker(slot_id: int):
+        supabase = SupabaseAdminClient(config)
+        azure = AzureIdentityDocumentClient(config)
+        backoff_steps = [1.0, 2.0, 5.0, 10.0, 15.0]
+        backoff_idx = 0
+        
+        while not stop_event.is_set():
+            try:
+                batch = supabase.claim_next_batch()
+                if batch is None:
+                    if once:
+                        break
+                    sleep_sec = backoff_steps[backoff_idx]
+                    if backoff_idx < len(backoff_steps) - 1:
+                        backoff_idx += 1
+                    stop_event.wait(sleep_sec)
+                    continue
+
+                backoff_idx = 0
+                batch_id = str(batch["id"])
+                
+                with active_lock:
+                    active_slots[slot_id] = batch_id
+                
+                LOG.info("Worker %s [槽位 %d] 开始处理批次 %s", worker_id, slot_id, batch_id)
                 try:
-                    supabase.set_batch_status(
+                    result = process_batch(
                         batch_id,
-                        "FAILED",
-                        error_message=str(exc),
+                        config,
+                        supabase=supabase,
+                        azure=azure,
                     )
-                except (SupabaseError, requests.RequestException):
-                    LOG.exception("批次 %s 失败状态回写也失败", batch_id)
-            if once:
-                return 0
-        except (SupabaseError, requests.RequestException) as exc:
-            LOG.error("Worker 轮询失败：%s", exc)
-            if once:
-                return 1
-            time.sleep(interval)
+                    LOG.info(
+                        "[槽位 %d] 批次 %s 完成：status=%s confidence=%s",
+                        slot_id,
+                        batch_id,
+                        result.get("status"),
+                        result.get("confidence"),
+                    )
+                except (AzureAnalyzeError, SupabaseError, requests.RequestException) as exc:
+                    LOG.exception("[槽位 %d] 批次 %s 处理失败: %s", slot_id, batch_id, exc)
+                    try:
+                        supabase.set_batch_status(
+                            batch_id,
+                            "FAILED",
+                            error_message=str(exc),
+                        )
+                    except (SupabaseError, requests.RequestException):
+                        LOG.exception("[槽位 %d] 批次 %s 失败状态回写失败", slot_id, batch_id)
+                finally:
+                    with active_lock:
+                        active_slots.pop(slot_id, None)
+
+            except Exception as exc:
+                LOG.error("[槽位 %d] 异常：%s", slot_id, exc)
+                stop_event.wait(2.0)
+
+    # Spawn worker threads
+    threads: list[threading.Thread] = []
+    for i in range(1, concurrency + 1):
+        t = threading.Thread(target=slot_worker, args=(i,), daemon=True, name=f"ocr-slot-{i}")
+        t.start()
+        threads.append(t)
+
+    # Main monitoring loop
+    try:
+        if once:
+            for t in threads:
+                t.join()
+            stop_event.set()
+            return 0
+        else:
+            while not stop_event.is_set():
+                time.sleep(1.0)
+    except KeyboardInterrupt:
+        LOG.info("收到退出信号，正在停止 OCR Worker...")
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=2.0)
+    return 0
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -577,9 +641,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true", help="poll once and exit when no batch remains")
     parser.add_argument("--worker-id", default=os.getenv("OCR_WORKER_ID", "azure-ocr-worker"))
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.getenv("OCR_CONCURRENCY", "3")),
+        help="Number of concurrent worker slots (default: 3)",
+    )
+    parser.add_argument(
         "--queue-poll-seconds",
         type=float,
-        default=float(os.getenv("OCR_QUEUE_POLL_SECONDS", "15")),
+        default=float(os.getenv("OCR_QUEUE_POLL_SECONDS", "2")),
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -598,6 +668,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return run_poll_loop(
             config,
             worker_id=args.worker_id,
+            concurrency=max(args.concurrency, 1),
             queue_poll_seconds=args.queue_poll_seconds,
             once=args.once,
         )

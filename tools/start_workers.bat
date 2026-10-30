@@ -10,8 +10,8 @@ if not exist "%PYTHON_EXE%" (
 :: Run log maintenance in background
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0maintenance_logs.ps1" >nul 2>&1
 
-:: Check if worker_gui.py is already running
-powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%%worker_gui.py%%'\"; if ($p) { exit 1 } else { exit 0 }"
+:: Check if worker_gui.py is already running (only match python processes)
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter \"name LIKE 'python%%' AND CommandLine LIKE '%%worker_gui.py%%'\"; if ($p) { exit 1 } else { exit 0 }"
 if %ERRORLEVEL% EQU 1 (
     echo [MDAC] Worker GUI is already running. Skipping startup.
     exit /b 0
