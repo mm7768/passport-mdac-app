@@ -427,6 +427,94 @@ class VisitPassWorkerTests(unittest.TestCase):
                 self.assertNotIn("/rest/v1/visit_pass_checks", url)
 
 
+    def test_local_retry_recovers_from_transient_query_timeout(self) -> None:
+        supabase = _FakeSupabase()
+        supabase.items = [{"id": "item-retry-1", "customer_id": "cust-1", "case_id": "case-1", "claim_token": "token-1"}]
+        instance = MODULE.VisitPassCheckWorker.__new__(MODULE.VisitPassCheckWorker)
+        instance.config = SimpleNamespace(mode="AUTO_SEARCH", concurrency=1, max_local_attempts=2, slot_stagger_seconds=0.0)
+        instance.supabase = supabase
+
+        call_count = 0
+
+        async def mock_query_capt(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ("QUERY_TIMEOUT", b"", {"source": "MDAC_CHECK_VISIT_PASS", "outcome": "QUERY_TIMEOUT"})
+            return (
+                "FOUND",
+                b"evidence-png",
+                {
+                    "source": "MDAC_CHECK_VISIT_PASS",
+                    "mode": "AUTO_SEARCH",
+                    "outcome": "FOUND",
+                    "slider_solved": True,
+                    "submitted": True,
+                    "result_confirmed": True,
+                },
+            )
+
+        with patch.object(MODULE, "query_and_capture_page", side_effect=mock_query_capt), patch("time.sleep"):
+            processed = instance.process_batch({"id": "batch-retry", "claim_token": "b-tok"})
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(call_count, 2)
+        self.assertEqual(len(supabase.finished), 1)
+        self.assertEqual(supabase.finished[0]["outcome"], "FOUND")
+        self.assertEqual(supabase.finished[0]["evidence_path"], "private/path.png")
+
+    def test_local_retry_recovers_from_page_timeout_exception(self) -> None:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        supabase = _FakeSupabase()
+        supabase.items = [{"id": "item-retry-2", "customer_id": "cust-2", "case_id": "case-2", "claim_token": "token-2"}]
+        instance = MODULE.VisitPassCheckWorker.__new__(MODULE.VisitPassCheckWorker)
+        instance.config = SimpleNamespace(mode="AUTO_SEARCH", concurrency=1, max_local_attempts=2, slot_stagger_seconds=0.0)
+        instance.supabase = supabase
+
+        call_count = 0
+
+        async def mock_query_capt(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise PlaywrightTimeoutError("Official Check Visit Pass page did not become ready in time")
+            return (
+                "NO_RECORD",
+                b"evidence-png",
+                {
+                    "source": "MDAC_CHECK_VISIT_PASS",
+                    "mode": "AUTO_SEARCH",
+                    "outcome": "NO_RECORD",
+                    "slider_solved": True,
+                    "submitted": True,
+                    "result_confirmed": True,
+                },
+            )
+
+        with patch.object(MODULE, "query_and_capture_page", side_effect=mock_query_capt), patch("time.sleep"):
+            processed = instance.process_batch({"id": "batch-retry-2", "claim_token": "b-tok"})
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(call_count, 2)
+        self.assertEqual(len(supabase.finished), 1)
+        self.assertEqual(supabase.finished[0]["outcome"], "NO_RECORD")
+
+    def test_config_reads_fault_tolerance_defaults(self) -> None:
+        base_env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-placeholder",
+            "VISIT_PASS_CHECK_WORKER_ID": "test-worker",
+            "VISIT_PASS_CHECK_MODE": "AUTO_SEARCH",
+            "ALLOW_REAL_SUBMIT": "true",
+            "VISIT_PASS_CHECK_HEADLESS": "false",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            cfg = MODULE.WorkerConfig.from_env()
+            self.assertEqual(cfg.slot_stagger_seconds, 1.5)
+            self.assertEqual(cfg.query_wait_seconds, 45)
+            self.assertEqual(cfg.query_grace_seconds, 15)
+            self.assertEqual(cfg.max_local_attempts, 2)
+
 class _FakeSupabase:
     def __init__(self) -> None:
         self.items = [{"id": "item-1", "customer_id": "customer-1", "case_id": "case-1"}]

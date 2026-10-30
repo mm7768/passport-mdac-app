@@ -107,6 +107,10 @@ class WorkerConfig:
     screenshot_prefix: str
     log_level: str
     concurrency: int = 4
+    slot_stagger_seconds: float = 1.5
+    query_wait_seconds: int = 45
+    query_grace_seconds: int = 15
+    max_local_attempts: int = 2
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -175,6 +179,10 @@ class WorkerConfig:
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
             concurrency=bounded_int("VISIT_PASS_CHECK_CONCURRENCY", "4", 1, 8),
+            slot_stagger_seconds=positive_float("VISIT_PASS_SLOT_STAGGER_SECONDS", "1.5", 0.0),
+            query_wait_seconds=bounded_int("VISIT_PASS_QUERY_WAIT_SECONDS", "45", 15, 120),
+            query_grace_seconds=bounded_int("VISIT_PASS_QUERY_GRACE_SECONDS", "15", 0, 60),
+            max_local_attempts=bounded_int("VISIT_PASS_MAX_LOCAL_ATTEMPTS", "2", 1, 5),
         )
 
 
@@ -987,7 +995,10 @@ async def query_and_capture_page(
             has_vp_table = False
 
             # 等待长达 35 秒，确保官方移民局服务器充分响应
-            for _ in range(35):
+            query_wait_seconds = getattr(config, "query_wait_seconds", 45)
+            query_grace_seconds = getattr(config, "query_grace_seconds", 15)
+            # 等待基础响应时间（默认 45 秒），确保官方移民局服务器充分响应
+            for sec in range(query_wait_seconds):
                 await page.wait_for_timeout(1000)
 
                 all_dialog_text = " ".join(dialog_messages).lower()
@@ -1020,6 +1031,41 @@ async def query_and_capture_page(
                     break
 
             # 关键保障：等候 2.5 秒，彻底清除加载遮罩/半透明淡出层，恢复所有元素 1.0 实色渲染
+            # 弹性宽限期：若尚未出明确结果，但页面仍在 loading，额外给予宽限期（默认 15 秒）
+            if not (explicit_invalid_pin or explicit_no_record or has_vp_table) and query_grace_seconds > 0:
+                is_still_loading = await page.evaluate("""() => {
+                    const loader = document.querySelector('.blockUI, .loading, .spinner, .overlay, .modal-backdrop');
+                    const tableDiv = document.querySelector('#div_maklumat, table#line');
+                    return Boolean(loader || (tableDiv && tableDiv.innerText && tableDiv.innerText.includes('Loading')));
+                }""")
+                if is_still_loading:
+                    LOG.info("[槽位 %d] 官网页面仍在处理加载中，启动弹性宽限期 (最长 %d 秒)...", slot_id, query_grace_seconds)
+                    for _ in range(query_grace_seconds):
+                        await page.wait_for_timeout(1000)
+                        all_dialog_text = " ".join(dialog_messages).lower()
+                        if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
+                            explicit_invalid_pin = True
+                            break
+                        if "no record" in all_dialog_text or "rekod tidak dijumpai" in all_dialog_text or "tiada rekod" in all_dialog_text:
+                            explicit_no_record = True
+                            break
+                        page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+                        lowered_text = page_text.lower()
+                        if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
+                            explicit_invalid_pin = True
+                            break
+                        if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text or "tiada rekod" in lowered_text:
+                            explicit_no_record = True
+                            break
+                        has_vp_table = await page.evaluate("""() => {
+                            const table = document.querySelector('table#line, table');
+                            if (!table) return false;
+                            const text = (table.innerText || '').toLowerCase();
+                            return text.includes('date') && (text.includes('pass') || text.includes('entry') || text.includes('location'));
+                        }""")
+                        if has_vp_table:
+                            break
+
             await page.wait_for_timeout(2500)
             await page.evaluate("""() => {
                 document.querySelectorAll('.blockUI, .loading, .spinner, .overlay, .modal-backdrop').forEach(el => el.remove());
@@ -1127,7 +1173,7 @@ async def query_and_capture_page(
                     outcome = "FOUND"
                     note = "官方查到 Visit Pass 记录"
             else:
-                LOG.error("官方页面在 35 秒内未返回有效记录或明确提示，标记为 QUERY_TIMEOUT (查询超时)")
+                LOG.error("官方页面在超时限制内未返回有效记录或明确提示，标记为 QUERY_TIMEOUT (查询超时)")
                 outcome = "QUERY_TIMEOUT"
                 note = "官方页面无响应超时，未得出结论"
 
@@ -1224,102 +1270,89 @@ class VisitPassCheckWorker:
         batch_claim_token: str | None = None,
         item_claim_token: str | None = None,
     ) -> None:
-        try:
-            runtime_input = slot_supabase.get_runtime_input(item_id, case_id=case_id)
-            if not case_id and runtime_input.get("case_id"):
-                case_id = runtime_input["case_id"]
+        runtime_input = slot_supabase.get_runtime_input(item_id, case_id=case_id)
+        if not case_id and runtime_input.get("case_id"):
+            case_id = runtime_input["case_id"]
 
-            # V1.2 Section 6: entry_date 必须按 Case 获取，禁止跨 Case / Customer-level 猜测
-            target_entry_date = runtime_input.get("entry_date")
-            if not target_entry_date:
-                if case_id:
-                    target_entry_date = slot_supabase.get_case_entry_date(case_id)
-                elif customer_id:
-                    target_entry_date = slot_supabase.get_customer_entry_date(customer_id)
+        # V1.2 Section 6: entry_date 必须按 Case 获取，禁止跨 Case / Customer-level 猜测
+        target_entry_date = runtime_input.get("entry_date")
+        if not target_entry_date:
+            if case_id:
+                target_entry_date = slot_supabase.get_case_entry_date(case_id)
+            elif customer_id:
+                target_entry_date = slot_supabase.get_customer_entry_date(customer_id)
 
-            outcome, screenshot, summary = asyncio.run(
-                query_and_capture_page(
-                    self.config,
-                    runtime_input,
-                    target_entry_date=target_entry_date,
-                    slot_id=slot_id,
-                )
-            )
+        max_local_attempts = getattr(self.config, "max_local_attempts", 2)
+        outcome = None
+        screenshot = None
+        summary = None
+        last_exception = None
 
-            screenshot_path: str | None = None
+        for attempt in range(1, max_local_attempts + 1):
             try:
-                screenshot_path = slot_supabase.upload_screenshot(item_id, screenshot)
-                summary["screenshot_path"] = screenshot_path
-            except Exception as upload_err:
-                log_event(
-                    logging.WARNING,
-                    step="screenshot_upload",
-                    status="failed",
-                    batch_id=batch_id,
-                    item_id=item_id,
-                    customer_id=customer_id,
-                    case_id=case_id,
-                    error_code="SCREENSHOT_UPLOAD_FAILED",
-                    error_message=str(upload_err),
+                outcome, screenshot, summary = asyncio.run(
+                    query_and_capture_page(
+                        self.config,
+                        runtime_input,
+                        target_entry_date=target_entry_date,
+                        slot_id=slot_id,
+                    )
                 )
-                summary["screenshot_saved"] = False
-                summary["screenshot_upload_failed"] = True
 
-            error_code = None
-            error_message = None
-            if outcome == "NEEDS_REVIEW":
-                error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
-                error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
-            elif outcome == "QUERY_TIMEOUT":
-                outcome = "NEEDS_REVIEW"
-                error_code = "QUERY_TIMEOUT"
-                error_message = "官方页面无响应超时，未得出结论"
-            elif outcome == "NO_RECORD":
-                error_code = "NO_MATCHING_RECORD"
-                error_message = summary.get("note") or "未找到符合记录"
-            elif outcome == "PIN_INVALID":
-                error_code = "PIN_INVALID"
-                error_message = "官方页面提示 PIN 错误"
+                # 检查是否为瞬态异常需要就地即时重试 (QUERY_TIMEOUT 或 SLIDER_SOLVER_FAILED)
+                is_transient_outcome = (
+                    outcome == "QUERY_TIMEOUT"
+                    or (outcome == "NEEDS_REVIEW" and summary.get("error") == "SLIDER_SOLVER_FAILED")
+                )
+                if is_transient_outcome and attempt < max_local_attempts:
+                    log_event(
+                        logging.WARNING,
+                        step="page_query_retry",
+                        status="retrying",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        case_id=case_id,
+                        result={
+                            "slot": slot_id,
+                            "attempt": attempt,
+                            "max_attempts": max_local_attempts,
+                            "reason": summary.get("error") or outcome,
+                        },
+                    )
+                    time.sleep(2.0)
+                    continue
 
-            slot_supabase.finish_visit_pass_worker(
-                item_id=item_id,
-                outcome=outcome,
-                evidence_path=screenshot_path,
-                raw_summary=summary,
-                error_code=error_code,
-                error_message=error_message,
-                batch_claim_token=batch_claim_token,
-                item_claim_token=item_claim_token,
-            )
+                last_exception = None
+                break
 
-            # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
-            if outcome == "FOUND" and screenshot_path:
-                try:
-                    if case_id:
-                        slot_supabase.delete_case_old_visit_pass_evidence(
-                            case_id, current_screenshot_path=screenshot_path
-                        )
-                    elif customer_id:
-                        slot_supabase.delete_customer_old_visit_pass_screenshots(
-                            customer_id, current_screenshot_path=screenshot_path
-                        )
-                except Exception as clean_err:
-                    LOG.warning("[槽位 %d] 清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", slot_id, case_id, customer_id, clean_err)
+            except Exception as exception:
+                last_exception = exception
+                error_code, error_message, retryable = classify_page_failure(exception)
+                is_transient_exc = error_code in ("PAGE_TIMEOUT", "TRANSIENT_REMOTE_ERROR") or retryable
+                if is_transient_exc and attempt < max_local_attempts:
+                    log_event(
+                        logging.WARNING,
+                        step="page_query_retry",
+                        status="retrying",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        case_id=case_id,
+                        result={
+                            "slot": slot_id,
+                            "attempt": attempt,
+                            "max_attempts": max_local_attempts,
+                            "error_code": error_code,
+                            "error_message": error_message,
+                        },
+                    )
+                    time.sleep(2.0)
+                    continue
+                break
 
-            log_event(
-                logging.INFO,
-                step="result_writeback",
-                status="succeeded" if outcome == "FOUND" else "processed",
-                batch_id=batch_id,
-                item_id=item_id,
-                customer_id=customer_id,
-                case_id=case_id,
-                result={"outcome": outcome, "slot": slot_id},
-                error_code=error_code,
-                error_message=error_message,
-            )
-        except Exception as exception:
-            error_code, error_message, retryable = classify_page_failure(exception)
+        if last_exception is not None:
+            error_code, error_message, retryable = classify_page_failure(last_exception)
             log_event(
                 logging.ERROR,
                 step="page_preview",
@@ -1363,6 +1396,80 @@ class VisitPassCheckWorker:
                     error_code="SUPABASE_WRITEBACK_FAILED",
                     error_message="Visit Pass Check failure writeback failed",
                 )
+            return
+
+        screenshot_path: str | None = None
+        try:
+            screenshot_path = slot_supabase.upload_screenshot(item_id, screenshot)
+            summary["screenshot_path"] = screenshot_path
+        except Exception as upload_err:
+            log_event(
+                logging.WARNING,
+                step="screenshot_upload",
+                status="failed",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+                case_id=case_id,
+                error_code="SCREENSHOT_UPLOAD_FAILED",
+                error_message=str(upload_err),
+            )
+            summary["screenshot_saved"] = False
+            summary["screenshot_upload_failed"] = True
+
+        error_code = None
+        error_message = None
+        if outcome == "NEEDS_REVIEW":
+            error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
+            error_message = summary.get("note") or "Check Visit Pass 需要人工审核"
+        elif outcome == "QUERY_TIMEOUT":
+            outcome = "NEEDS_REVIEW"
+            error_code = "QUERY_TIMEOUT"
+            error_message = "官方页面无响应超时，未得出结论"
+        elif outcome == "NO_RECORD":
+            error_code = "NO_MATCHING_RECORD"
+            error_message = summary.get("note") or "未找到符合记录"
+        elif outcome == "PIN_INVALID":
+            error_code = "PIN_INVALID"
+            error_message = "官方页面提示 PIN 错误"
+
+        slot_supabase.finish_visit_pass_worker(
+            item_id=item_id,
+            outcome=outcome,
+            evidence_path=screenshot_path,
+            raw_summary=summary,
+            error_code=error_code,
+            error_message=error_message,
+            batch_claim_token=batch_claim_token,
+            item_claim_token=item_claim_token,
+        )
+
+        # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
+        if outcome == "FOUND" and screenshot_path:
+            try:
+                if case_id:
+                    slot_supabase.delete_case_old_visit_pass_evidence(
+                        case_id, current_screenshot_path=screenshot_path
+                    )
+                elif customer_id:
+                    slot_supabase.delete_customer_old_visit_pass_screenshots(
+                        customer_id, current_screenshot_path=screenshot_path
+                    )
+            except Exception as clean_err:
+                LOG.warning("[槽位 %d] 清理 Case %s / 客户 %s 旧 Visit Pass 截图失败: %s", slot_id, case_id, customer_id, clean_err)
+
+        log_event(
+            logging.INFO,
+            step="result_writeback",
+            status="succeeded" if outcome == "FOUND" else "processed",
+            batch_id=batch_id,
+            item_id=item_id,
+            customer_id=customer_id,
+            case_id=case_id,
+            result={"outcome": outcome, "slot": slot_id},
+            error_code=error_code,
+            error_message=error_message,
+        )
 
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
@@ -1407,6 +1514,12 @@ class VisitPassCheckWorker:
                 stop_batch.wait(15.0)
 
         def slot_worker(slot_id: int) -> None:
+            stagger_unit = getattr(self.config, "slot_stagger_seconds", 0.0)
+            if stagger_unit > 0 and slot_id > 1:
+                stagger_delay = (slot_id - 1) * stagger_unit
+                LOG.info("[槽位 %d] 错峰冷启动等待 %.1f 秒...", slot_id, stagger_delay)
+                stop_batch.wait(stagger_delay)
+
             mock_client = getattr(self, "supabase", None)
             if mock_client and not isinstance(mock_client, SupabaseAdminClient):
                 slot_supabase = mock_client
