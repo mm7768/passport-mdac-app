@@ -90,29 +90,29 @@ class WorkerConfig:
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
-                raise WorkerError(f"缺少环境变量：{name}")
+                raise WorkerError(f"??????:{name}")
             return value
 
         def positive_float(name: str, default: str, minimum: float) -> float:
             value = float(os.getenv(name, default))
             if value < minimum:
-                raise WorkerError(f"{name} 必须大于或等于 {minimum}")
+                raise WorkerError(f"{name} ??????? {minimum}")
             return value
 
         def bounded_int(name: str, default: str, lower: int, upper: int) -> int:
             value = int(os.getenv(name, default))
             if value < lower or value > upper:
-                raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
+                raise WorkerError(f"{name} ??? {lower} ? {upper} ??")
             return value
 
         execution_mode = os.getenv("MDAC_EXECUTION_MODE", "AUTO_SUBMIT").strip().upper() or "AUTO_SUBMIT"
         if execution_mode not in {"AUTO_SUBMIT", "FILL_PREVIEW"}:
-            raise WorkerError("MDAC_EXECUTION_MODE 必须为 AUTO_SUBMIT 或 FILL_PREVIEW")
+            raise WorkerError("MDAC_EXECUTION_MODE ??? AUTO_SUBMIT ? FILL_PREVIEW")
 
         raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
         if execution_mode == "FILL_PREVIEW":
             if raw_allow_submit and raw_allow_submit != "false":
-                raise WorkerError("FILL_PREVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
+                raise WorkerError("FILL_PREVIEW ??? ALLOW_REAL_SUBMIT ??? false")
             allow_real_submit = False
         else:
             allow_real_submit = raw_allow_submit != "false"
@@ -152,7 +152,7 @@ class SupabaseAdminClient:
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}??:HTTP {response.status_code} {response.text[:400]}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
         response = self.session.post(
@@ -160,7 +160,7 @@ class SupabaseAdminClient:
             json=payload,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, f"调用 Supabase RPC {name}")
+        self._check(response, f"?? Supabase RPC {name}")
         if not response.content:
             return None
         return response.json()
@@ -177,7 +177,7 @@ class SupabaseAdminClient:
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_mdac_batch 返回格式不正确")
+            raise WorkerError("claim_mdac_batch ???????")
         return dict(rows[0]) if rows else None
 
     def claim_item(self, batch_id: str) -> dict[str, Any] | None:
@@ -193,7 +193,7 @@ class SupabaseAdminClient:
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_mdac_item 返回格式不正确")
+            raise WorkerError("claim_mdac_item ???????")
         return dict(rows[0]) if rows else None
 
     def heartbeat(
@@ -252,7 +252,7 @@ class SupabaseAdminClient:
             data=content,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, "上传 MDAC 预览截图")
+        self._check(response, "?? MDAC ????")
         return object_path
 
     def finish_fill_preview(
@@ -276,7 +276,7 @@ class SupabaseAdminClient:
             },
         )
         if not isinstance(result, dict):
-            raise WorkerError("finish_mdac_fill_preview 返回格式不正确")
+            raise WorkerError("finish_mdac_fill_preview ???????")
         return result
 
     def finish_registration(
@@ -309,7 +309,7 @@ class SupabaseAdminClient:
                 return result
         except Exception as exc:
             LOG.warning(
-                "调用 finish_mdac_registration_worker 异常，回退至 finish_mdac_fill_preview: %s",
+                "?? finish_mdac_registration_worker ??,??? finish_mdac_fill_preview: %s",
                 exc,
             )
         return self.finish_fill_preview(
@@ -328,7 +328,7 @@ def parse_date(value: Any) -> date:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"无法识别日期：{text}")
+    raise ValueError(f"??????:{text}")
 
 
 def format_mdac_date(value: Any) -> str:
@@ -337,61 +337,61 @@ def format_mdac_date(value: Any) -> str:
 
 def map_gender(value: Any) -> str:
     normalized = str(value or "").strip().upper()
-    if normalized in {"男", "MALE", "1"}:
+    if normalized in {"?", "MALE", "1"}:
         return "1"
-    if normalized in {"女", "FEMALE", "2"}:
+    if normalized in {"?", "FEMALE", "2"}:
         return "2"
-    raise ValueError(f"未知性别：{value}")
+    raise ValueError(f"????:{value}")
 
 
 def _required_snapshot(snapshot: dict[str, Any], key: str) -> str:
     value = str(snapshot.get(key) or "").strip()
     if not value:
-        raise ValueError(f"缺少必填字段：{key}")
+        raise ValueError(f"??????:{key}")
     return value
 
 
 def normalize_mdac_settings(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
-        raise WorkerError("批次缺少 mdac_settings_snapshot")
+        raise WorkerError("???? mdac_settings_snapshot")
 
     def value(key: str, *, required: bool = True) -> str:
         text = str(raw.get(key) or "").strip()
         if required and not text:
-            raise WorkerError(f"MDAC 设置快照缺少必填字段：{key}")
+            raise WorkerError(f"MDAC ??????????:{key}")
         return text
 
     email = value("mdac_email")
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-        raise WorkerError("MDAC 设置快照的邮箱格式不正确")
+        raise WorkerError("MDAC ????????????")
     phone = value("mdac_phone")
     region_code = value("region_code")
     if not re.fullmatch(r"[0-9]{1,4}", region_code):
-        raise WorkerError("MDAC 设置快照的地区代码必须是 1 到 4 位数字代码")
+        raise WorkerError("MDAC ???????????? 1 ? 4 ?????")
     travel_mode = value("travel_mode")
     if travel_mode not in {"1", "2", "3"}:
-        raise WorkerError("MDAC 设置快照的交通方式无效")
+        raise WorkerError("MDAC ???????????")
     embark_country = value("embark_country").upper()
     if not re.fullmatch(r"[A-Z]{3}", embark_country):
-        raise WorkerError("MDAC 设置快照的出发国家代码无效")
+        raise WorkerError("MDAC ?????????????")
     vessel = value("vessel")
     accommodation_stay = value("accommodation_stay")
     if accommodation_stay not in {"01", "02", "99"}:
-        raise WorkerError("MDAC 设置快照的住宿类型无效")
+        raise WorkerError("MDAC ???????????")
     address1 = value("address1")
     address2 = value("address2", required=False)
     state_code = value("state_code")
     city_code = value("city_code")
     postcode = value("postcode")
     if not re.fullmatch(r"[0-9]{2}", state_code):
-        raise WorkerError("MDAC 设置快照的州代码无效")
+        raise WorkerError("MDAC ??????????")
     if not re.fullmatch(r"[0-9]{4}", city_code):
-        raise WorkerError("MDAC 设置快照的城市代码无效")
+        raise WorkerError("MDAC ???????????")
     if not re.fullmatch(r"[0-9]{5}", postcode):
-        raise WorkerError("MDAC 设置快照的邮编无效")
+        raise WorkerError("MDAC ?????????")
     pob_mode = value("pob_mode").upper()
     if pob_mode not in {"NATIONALITY", "CUSTOMER"}:
-        raise WorkerError("MDAC 设置快照的 POB 映射无效")
+        raise WorkerError("MDAC ????? POB ????")
 
     return {
         "mdac_email": email,
@@ -421,19 +421,19 @@ def map_mdac_fields(
     place_of_birth = str(snapshot.get("place_of_birth") or "").strip().upper()
     pob = nationality if settings["pob_mode"] == "NATIONALITY" else place_of_birth
     if not pob:
-        raise ValueError("POB 映射为 CUSTOMER 时缺少 place_of_birth")
+        raise ValueError("POB ??? CUSTOMER ??? place_of_birth")
 
     date_of_birth = _required_snapshot(snapshot, "date_of_birth")
     passport_expiry_date = _required_snapshot(snapshot, "passport_expiry_date")
     entry_date = str(snapshot.get("entry_date") or batch.get("entry_date") or "").strip()
     exit_date = str(snapshot.get("exit_date") or batch.get("exit_date") or "").strip()
     if not entry_date or not exit_date:
-        raise ValueError("缺少入境或出境日期")
+        raise ValueError("?????????")
 
     entry = parse_date(entry_date)
     exit_date_value = parse_date(exit_date)
     if exit_date_value < entry:
-        raise ValueError("出境日期不能早于入境日期")
+        raise ValueError("????????????")
 
     return {
         "#region": settings["region_code"],
@@ -452,8 +452,8 @@ def map_mdac_fields(
 def mask_passport(value: str) -> str:
     value = value.strip()
     if len(value) <= 4:
-        return "••••"
-    return f"{value[:2]}••••{value[-2:]}"
+        return "...."
+    return f"{value[:2]}....{value[-2:]}"
 
 
 def _safe_text(value: Any, limit: int = 180) -> str:
@@ -488,7 +488,7 @@ async def _select_value(page: Page, selector: str, value: str, timeout_ms: int) 
     await locator.wait_for(state="visible", timeout=timeout_ms)
     element_id = await locator.get_attribute("id")
     if not element_id:
-        raise WorkerError(f"下拉控件缺少 id：{selector}")
+        raise WorkerError(f"?????? id:{selector}")
     await page.wait_for_function(
         """({selector, value}) => {
             const element = document.querySelector(selector);
@@ -517,18 +517,18 @@ async def fill_and_verify_page(
 
     password_count = await page.locator('input[type="password"]').count()
     if password_count:
-        raise ManualReviewRequired("页面要求账号登录；当前服务不自动处理登录或验证码")
+        raise ManualReviewRequired("????????;???????????????")
 
-    # 1. 先选择国籍和出生地
-    # 说明：MDAC 官方网站前端在选择 #nationality 后，会自动触发 onChange 事件，
-    # 将电话区号 #region 重置为该国籍对应的默认区号（如 TWN -> 886）。
+    # 1. ?????????
+    # ??:MDAC ????????? #nationality ?,????? onChange ??,
+    # ????? #region ?????????????(? TWN -> 886)?
     await _select_value(page, "#nationality", fields["#nationality"], timeout_ms)
     await page.wait_for_timeout(300)
     await _select_value(page, "#pob", fields["#pob"], timeout_ms)
     await page.wait_for_timeout(200)
 
-    # 2. 在国籍选定后，再次主动将电话区号 #region 设回配置的区号（如 86）
-    # 覆盖官网脚本自动重置的区号，确保无论客源国籍为何，都强制采用预设的联系号码与区号
+    # 2. ??????,????????? #region ???????(? 86)
+    # ?????????????,??????????,???????????????
     await _select_value(page, "#region", fields["#region"], timeout_ms)
     await page.wait_for_timeout(200)
     try:
@@ -539,7 +539,7 @@ async def fill_and_verify_page(
     except Exception:
         pass
 
-    # 3. 填写邮箱与手机号
+    # 3. ????????
     await page.locator("#email").fill(settings["mdac_email"])
     await page.locator("#confirmEmail").fill(settings["mdac_email"])
     await page.locator("#mobile").fill(settings["mdac_phone"])
@@ -606,9 +606,9 @@ async def fill_and_verify_page(
     captcha_present = captcha_canvas_count >= 2 and slider_container_present
     current_url = page.url
     if "/mdac/register" in current_url and not current_url.endswith("registerMain"):
-        raise ManualReviewRequired(f"填写期间页面发生非预期跳转：{current_url}")
+        raise ManualReviewRequired(f"?????????????:{current_url}")
     if mismatches:
-        raise WorkerError(f"页面字段回读不一致：{json.dumps(mismatches, ensure_ascii=False)[:800]}")
+        raise WorkerError(f"?????????:{json.dumps(mismatches, ensure_ascii=False)[:800]}")
 
     return {
         "page_url": current_url,
@@ -628,7 +628,7 @@ async def _block_form_posts(context: BrowserContext) -> None:
     async def route_handler(route: Any) -> None:
         request = route.request
         if request.method.upper() == "POST" and "/mdac/register" in request.url:
-            LOG.error("检测到 MDAC POST 请求，已在 fill-preview 防护层拦截")
+            LOG.error("??? MDAC POST ??,?? fill-preview ?????")
             await route.abort()
             return
         await route.continue_()
@@ -664,7 +664,7 @@ async def process_item(
     try:
         snapshot = item.get("customer_snapshot")
         if not isinstance(snapshot, dict):
-            raise ValueError("customer_snapshot 格式不正确")
+            raise ValueError("customer_snapshot ?????")
         settings = normalize_mdac_settings(batch.get("mdac_settings_snapshot"))
         fields = map_mdac_fields(snapshot, batch, settings)
         summary["settings_snapshot_present"] = True
@@ -679,7 +679,7 @@ async def process_item(
         if config.execution_mode == "AUTO_SUBMIT" and config.allow_real_submit:
             if page_summary.get("captcha_present"):
                 LOG.info(
-                    "批次 %s 项 %s 检测到 MDAC 滑块，调用 slider_solver 自动处理...",
+                    "?? %s ? %s ??? MDAC ??,?? slider_solver ????...",
                     batch_id,
                     item_id,
                 )
@@ -689,12 +689,12 @@ async def process_item(
                 summary["slider_solved"] = slider_ok
                 if not slider_ok:
                     error_code = "SLIDER_SOLVER_FAILED"
-                    error_message = "滑块自动识别重试超限，已安全降级为人工审核"
+                    error_message = "??????????,??????????"
                     summary["manual_review_required"] = True
                     final_status = "NEEDS_REVIEW"
                 else:
                     LOG.info(
-                        "批次 %s 项 %s 滑块验证通过，准备触发官方 Submit...",
+                        "?? %s ? %s ??????,?????? Submit...",
                         batch_id,
                         item_id,
                     )
@@ -705,11 +705,11 @@ async def process_item(
                         await page.wait_for_timeout(500)
 
                     if await submit_btn.is_disabled():
-                        raise WorkerError("滑块通过后 Submit 按钮仍处于禁用状态")
+                        raise WorkerError("????? Submit ?????????")
 
                     await submit_btn.click()
                     LOG.info(
-                        "批次 %s 项 %s 已点击官方 Submit，等待确认官方结果...",
+                        "?? %s ? %s ????? Submit,????????...",
                         batch_id,
                         item_id,
                     )
@@ -736,23 +736,23 @@ async def process_item(
 
                     if success_detected:
                         LOG.info(
-                            "批次 %s 项 %s 官方注册成功！注册编号: %s",
+                            "?? %s ? %s ??????!????: %s",
                             batch_id,
                             item_id,
-                            registration_no or "未提取到",
+                            registration_no or "????",
                         )
                         summary["result_confirmed"] = True
                         summary["registration_no"] = registration_no
                         final_status = "SUCCEEDED"
                     else:
                         LOG.warning(
-                            "批次 %s 项 %s 提交后未能在预期时间内确认到官方成功文字，标记为 RESULT_UNKNOWN 并降级人工审核",
+                            "?? %s ? %s ????????????????????,??? RESULT_UNKNOWN ???????",
                             batch_id,
                             item_id,
                         )
                         error_code = "RESULT_UNKNOWN"
                         error_message = (
-                            "已提交官方表单，但未能在超时时间内确认到 SUCCESS 文字"
+                            "???????,???????????? SUCCESS ??"
                         )
                         final_status = "NEEDS_REVIEW"
             else:
@@ -773,13 +773,13 @@ async def process_item(
                             break
                 else:
                     error_code = "SUBMIT_DISABLED_WITHOUT_CAPTCHA"
-                    error_message = "官方表单缺少滑块且 Submit 按钮被禁用"
+                    error_message = "????????? Submit ?????"
                     final_status = "NEEDS_REVIEW"
         else:
             if page_summary.get("manual_review_required"):
                 error_code = "NEEDS_HUMAN_INTERVENTION"
                 error_message = (
-                    "检测到 MDAC CAPTCHA/滑块；Worker 未拖动、未破解、未提交，等待人工审核"
+                    "??? MDAC CAPTCHA/??;Worker ???????????,??????"
                 )
             final_status = "NEEDS_REVIEW"
 
@@ -796,7 +796,7 @@ async def process_item(
         error_code = "UNEXPECTED_FILL_PREVIEW_ERROR"
         error_message = _safe_text(exc)
         final_status = "NEEDS_REVIEW"
-        LOG.exception("批次 %s 项 %s 未预期错误", batch_id, item_id)
+        LOG.exception("?? %s ? %s ?????", batch_id, item_id)
 
     try:
         screenshot = await page.screenshot(type="png", full_page=True)
@@ -830,7 +830,7 @@ async def process_item(
         error_message=error_message,
     )
     LOG.info(
-        "批次 %s 项 %s 已写回；status=%s submitted=%s error=%s",
+        "?? %s ? %s ???;status=%s submitted=%s error=%s",
         batch_id,
         item_id,
         final_status,
@@ -847,7 +847,7 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
     batch_id = str(batch["id"])
     client.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
     LOG.info(
-        "已领取 MDAC 批次 %s；模式=%s 允许提交=%s",
+        "??? MDAC ?? %s;??=%s ????=%s",
         batch_id,
         config.execution_mode,
         config.allow_real_submit,
@@ -904,14 +904,14 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
                     page = await context.new_page()
             await context.close()
         except Exception:
-            LOG.exception("批次 %s 浏览器阶段失败", batch_id)
+            LOG.exception("?? %s ???????", batch_id)
             raise
         finally:
             if browser is not None:
                 await browser.close()
 
     client.heartbeat_tick(status="ONLINE", force=True)
-    LOG.info("批次 %s 处理完成", batch_id)
+    LOG.info("?? %s ????", batch_id)
     return True
 
 
@@ -924,7 +924,7 @@ async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
             client.heartbeat_tick(status="ONLINE")
             processed = await run_once(config, client)
             if processed:
-                # 任务处理完成后重置退避计时，立即拉取下一批次连续处理
+                # ?????????????,????????????
                 backoff_idx = 0
                 continue
 
@@ -933,33 +933,26 @@ async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
                 backoff_idx += 1
             await asyncio.sleep(sleep_duration)
         except (WorkerError, requests.RequestException) as exc:
-            LOG.error("MDAC fill-preview Worker 错误：%s", exc)
+            LOG.error("MDAC fill-preview Worker ??:%s", exc)
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001 - keep poll loop alive
-                LOG.exception("错误状态心跳写入失败")
+                LOG.exception("??????????")
             await asyncio.sleep(5.0)
         except Exception:
-            LOG.exception("MDAC fill-preview Worker 未预期错误")
+            LOG.exception("MDAC fill-preview Worker ?????")
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001
-                LOG.exception("未预期错误心跳写入失败")
-            await asyncio.sleep(5.0)
-        except Exception:
-            LOG.exception("MDAC fill-preview Worker 未预期错误")
-            try:
-                client.heartbeat(status="ERROR")
-            except Exception:  # noqa: BLE001
-                LOG.exception("未预期错误心跳写入失败")
+                LOG.exception("???????????")
             await asyncio.sleep(5.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MDAC fill-preview Worker; never submits")
-    parser.add_argument("--once", action="store_true", help="处理一个队列批次后退出")
-    parser.add_argument("--poll", action="store_true", help="持续轮询 Supabase 队列")
-    parser.add_argument("--verbose", action="store_true", help="启用 DEBUG 日志")
+    parser.add_argument("--once", action="store_true", help="???????????")
+    parser.add_argument("--poll", action="store_true", help="???? Supabase ??")
+    parser.add_argument("--verbose", action="store_true", help="?? DEBUG ??")
     return parser
 
 
@@ -975,11 +968,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     print("========================================================")
-    print("        MDAC 办公室 Worker 已启动（本地服务）")
+    print("        MDAC ??? Worker ???(????)")
     print(f"  Worker ID: {config.worker_id}")
-    print(f"  运行模式: {config.execution_mode} (允许真实提交: {config.allow_real_submit})")
-    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
-    print("  正在监听 Supabase 批次任务队列...")
+    print(f"  ????: {config.execution_mode} (??????: {config.allow_real_submit})")
+    print(f"  ?????: {'????' if config.headless else '????'}")
+    print("  ???? Supabase ??????...")
     print("========================================================")
     client = SupabaseAdminClient(config)
     if args.once:
