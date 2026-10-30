@@ -196,10 +196,19 @@ class SupabaseAdminClient:
         if not response.ok:
             raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
 
-    def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+    def _rpc(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        req_headers = {"x-mdac-protocol": "2"}
+        if headers:
+            req_headers.update(headers)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
+            headers=req_headers,
             timeout=self.config.request_timeout_seconds,
         )
         self._check(response, f"调用 Supabase RPC {name}")
@@ -222,7 +231,15 @@ class SupabaseAdminClient:
             raise WorkerError("claim_visit_pass_check_batch 返回格式不正确")
         return dict(rows[0])
 
-    def claim_item(self, batch_id: str) -> dict[str, Any] | None:
+    def claim_item(
+        self,
+        batch_id: str,
+        batch_claim_token: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
         rows = self._rpc(
             "claim_visit_pass_check_item",
             {
@@ -231,6 +248,7 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_max_attempts": self.config.max_attempts,
             },
+            headers=headers,
         )
         if not rows:
             return None
@@ -379,7 +397,14 @@ class SupabaseAdminClient:
         batch_id: str | None = None,
         item_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
     ) -> None:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
         try:
             self._rpc(
                 "heartbeat_visit_pass_check",
@@ -392,6 +417,7 @@ class SupabaseAdminClient:
                     "p_hostname": socket.gethostname(),
                     "p_version": "visit-pass-check-auto-2",
                 },
+                headers=headers,
             )
         except Exception as exc:
             LOG.debug("heartbeat_visit_pass_check RPC 异常: %s", exc)
@@ -467,7 +493,15 @@ class SupabaseAdminClient:
         retryable: bool,
         error_code: str | None,
         error_message: str | None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
         result = self._rpc(
             "finish_visit_pass_check_item",
             {
@@ -485,6 +519,7 @@ class SupabaseAdminClient:
                 "p_error_code": error_code,
                 "p_error_message": error_message,
             },
+            headers=headers,
         )
         if not isinstance(result, dict):
             raise WorkerError("finish_visit_pass_check_item 返回格式不正确")
@@ -499,7 +534,15 @@ class SupabaseAdminClient:
         raw_summary: dict[str, Any] | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
         result = self._rpc(
             "finish_visit_pass_check_worker",
             {
@@ -511,6 +554,7 @@ class SupabaseAdminClient:
                 "p_error_code": error_code,
                 "p_error_message": error_message,
             },
+            headers=headers,
         )
         if not isinstance(result, dict):
             raise WorkerError("finish_visit_pass_check_worker 返回格式不正确")
@@ -1177,6 +1221,8 @@ class VisitPassCheckWorker:
         customer_id: str | None,
         case_id: str | None,
         slot_id: int,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
     ) -> None:
         try:
             runtime_input = slot_supabase.get_runtime_input(item_id, case_id=case_id)
@@ -1242,6 +1288,8 @@ class VisitPassCheckWorker:
                 raw_summary=summary,
                 error_code=error_code,
                 error_message=error_message,
+                batch_claim_token=batch_claim_token,
+                item_claim_token=item_claim_token,
             )
 
             # V1.2 Section 8: 找到新记录后只清理该 Case (Order) 以往的旧截图及证据，严禁删除同客户其他 Case 的证据
@@ -1300,6 +1348,8 @@ class VisitPassCheckWorker:
                     },
                     error_code=error_code,
                     error_message=error_message,
+                    batch_claim_token=batch_claim_token,
+                    item_claim_token=item_claim_token,
                 )
             except Exception:
                 log_event(
@@ -1316,6 +1366,7 @@ class VisitPassCheckWorker:
 
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
+        batch_claim_token = str(batch.get("claim_token") or "")
         concurrency = getattr(self.config, "concurrency", 4)
         log_event(
             logging.INFO,
@@ -1349,19 +1400,25 @@ class VisitPassCheckWorker:
                         status=status,
                         batch_id=batch_id if active_count > 0 else None,
                         metadata=meta,
+                        batch_claim_token=batch_claim_token if active_count > 0 else None,
                     )
                 except Exception:
                     pass
                 stop_batch.wait(15.0)
 
         def slot_worker(slot_id: int) -> None:
-            slot_supabase = getattr(self, "supabase", None) or SupabaseAdminClient(self.config)
+            mock_client = getattr(self, "supabase", None)
+            if mock_client and not isinstance(mock_client, SupabaseAdminClient):
+                slot_supabase = mock_client
+            else:
+                slot_supabase = SupabaseAdminClient(self.config)
             while not stop_batch.is_set():
-                item = slot_supabase.claim_item(batch_id)
+                item = slot_supabase.claim_item(batch_id, batch_claim_token=batch_claim_token)
                 if item is None:
                     break
 
                 item_id = str(item["id"])
+                item_claim_token = str(item.get("claim_token") or "")
                 customer_id = str(item.get("customer_id") or "") or None
                 case_id = str(item.get("case_id") or "") or None
 
@@ -1391,6 +1448,8 @@ class VisitPassCheckWorker:
                         customer_id=customer_id,
                         case_id=case_id,
                         slot_id=slot_id,
+                        batch_claim_token=batch_claim_token,
+                        item_claim_token=item_claim_token,
                     )
                     with counter_lock:
                         processed_counter["count"] += 1

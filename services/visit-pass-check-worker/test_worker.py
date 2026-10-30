@@ -206,7 +206,7 @@ class VisitPassWorkerTests(unittest.TestCase):
         import threading
         supabase = _FakeSupabase()
         supabase.items = [
-            {"id": f"item-{i}", "customer_id": f"cust-{i}", "case_id": f"case-{i}"}
+            {"id": f"item-{i}", "customer_id": f"cust-{i}", "case_id": f"case-{i}", "claim_token": f"item-token-{i}"}
             for i in range(1, 5)
         ]
         instance = MODULE.VisitPassCheckWorker.__new__(MODULE.VisitPassCheckWorker)
@@ -234,11 +234,15 @@ class VisitPassWorkerTests(unittest.TestCase):
             )
 
         with patch.object(MODULE, "query_and_capture_page", side_effect=fake_query_and_capture):
-            processed = instance.process_batch({"id": "batch-concurrent"})
+            processed = instance.process_batch({"id": "batch-concurrent", "claim_token": "batch-token-123"})
 
         self.assertEqual(processed, 4)
         self.assertEqual(len(supabase.finished), 4)
         self.assertEqual(set(slots_used), {1, 2, 3, 4})
+        for fin in supabase.finished:
+            self.assertEqual(fin.get("batch_claim_token"), "batch-token-123")
+            expected_item_token = fin["item_id"].replace("item-", "item-token-")
+            self.assertEqual(fin.get("item_claim_token"), expected_item_token)
 
     def test_config_reads_concurrency_default_and_env(self) -> None:
         base_env = {
@@ -435,7 +439,7 @@ class _FakeSupabase:
     def heartbeat_tick(self, **kwargs) -> None:
         return None
 
-    def claim_item(self, batch_id: str) -> dict | None:
+    def claim_item(self, batch_id: str, **kwargs) -> dict | None:
         return self.items.pop(0) if self.items else None
 
     def get_case_entry_date(self, case_id: str) -> str | None:

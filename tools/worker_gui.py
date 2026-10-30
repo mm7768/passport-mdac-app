@@ -39,6 +39,10 @@ if PYTHON_EXE.lower().endswith("pythonw.exe"):
     if os.path.exists(cand):
         PYTHON_EXE = cand
 
+_VENV_PYTHON = r"C:\Users\Administrator\Documents\Codex\2026-10-25\qi\outputs\mdac-local\.venv\Scripts\python.exe"
+if os.path.exists(_VENV_PYTHON):
+    PYTHON_EXE = _VENV_PYTHON
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1117,6 +1121,16 @@ class CyberHudApp:
 
 
 def main():
+    # Enforce single instance via named mutex on Windows
+    mutex = None
+    try:
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MDAC_Worker_GUI_Mutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            print("Another instance of MDAC Worker GUI is already running. Exiting.")
+            sys.exit(0)
+    except Exception:
+        pass
+
     try:
         root = tk.Tk()
         app = CyberHudApp(root)
