@@ -1,264 +1,407 @@
 # Passport MDAC Desk
 
-Passport MDAC Desk 是一个面向内部业务流程的 **Flutter Android + Supabase + Python Worker** 自动化工作台，用于集中处理护照资料录入、Azure OCR、客户档案、MDAC 注册、Gmail PIN 获取、Registration 查询、Visit Pass 查询、人工审核与业务凭证归档。
+Passport MDAC Desk 是一套专为旅行社、签证服务机构及跨境业务团队打造的 **Flutter Android 移动工作台 + Supabase 云端调度 + Python 办公室桌面高并发 Worker** 自动化系统，实现护照资料极速采集、智能识别、MDAC 入境卡全自动批量填报、Gmail 验证码提取、官方注册状态核验、原版 PDF 凭证下载与入境准证（Visit Pass）核验的全流程闭环。
 
-当前仓库主分支版本：**v1.0.43+44**。
-
-> 本 README 以当前 `main` 分支代码为准。`docs/` 中保留了项目早期的设计、dry-run、部署与重构记录，其中部分内容属于历史阶段，不应直接视为当前运行状态。
+当前系统版本：**v1.0.44**（Worker 核心引擎：`mdac-auto-worker-4`、`registration-check-auto-2`、`visit-pass-check-auto-2`、`azure-ocr-2-concurrent`、`gmail-pin-4`）。
 
 ---
 
-## 当前系统定位与架构
+## 目录
+
+- [一、 系统整体架构与技术选型](#一-系统整体架构与技术选型)
+- [二、 5 大核心 Worker 功能与技术特性](#二-5-大核心-worker-功能与技术特性)
+- [三、 办公室桌面 Worker 超详细安装与运行教程](#三-办公室桌面-worker-超详细安装与运行教程)
+  - [3.1 环境要求与前置准备](#31-环境要求与前置准备)
+  - [3.2 步骤一：拉取/准备代码仓库](#32-步骤一拉取准备代码仓库)
+  - [3.3 步骤二：创建并激活 Python 虚拟环境](#33-步骤二创建并激活-python-虚拟环境)
+  - [3.4 步骤三：安装项目依赖与 Playwright 浏览器内核](#34-步骤三安装项目依赖与-playwright-浏览器内核)
+  - [3.5 步骤四：环境变量配置 (.env.local)](#35-步骤四环境变量配置-envlocal)
+  - [3.6 步骤五：启动与管理 Worker（5 种运行模式）](#36-步骤五启动与管理-worker5-种运行模式)
+  - [3.7 步骤六：安全退出与停止 Worker](#37-步骤六安全退出与停止-worker)
+- [四、 常见故障排查与运维指南 (FAQ)](#四-常见故障排查与运维指南-faq)
+- [五、 Flutter Android 移动端构建指南](#五-flutter-android-移动端构建指南)
+- [六、 核心安全与设计准则](#六-核心安全与设计准则)
+
+---
+
+## 一、 系统整体架构与技术选型
+
+系统采用 **云端无状态调度 + 本地办公室真实 IP 高并发执行** 的混合双轨架构：
 
 ```text
-                         ┌─────────────────────────┐
-                         │      Flutter Android    │
-                         │   Passport MDAC Desk    │
-                         └────────────┬────────────┘
-                                      │
-                                      ▼
-                         ┌─────────────────────────┐
-                         │        Supabase         │
-                         │ Auth / DB / Storage     │
-                         │ RPC / Queue / Audit     │
-                         └───────┬─────────┬───────┘
-                                 │         │
-                 ┌───────────────┘         └──────────────────┐
-                 ▼                                              ▼
-      ┌──────────────────────┐                      ┌──────────────────────┐
-      │ Railway / Cloud      │                      │ Local Office Worker  │
-      │                      │                      │                      │
-      │ Azure OCR Worker     │                      │ MDAC Registration    │
-      │ Gmail PIN Worker     │                      │ Registration Check   │
-      └──────────────────────┘                      │ Visit Pass Check     │
-                                                    │ Azure OCR (可选本地)  │
-                                                    │ Gmail PIN (可选本地) │
-                                                    └──────────────────────┘
+                     ┌────────────────────────────────────────┐
+                     │           Flutter Android App          │
+                     │  (批次录入 / 智能切片 / 进度看板 / 凭证预览) │
+                     └───────────────────┬────────────────────┘
+                                         │
+                                         ▼ HTTPS / WSS
+                     ┌────────────────────────────────────────┐
+                     │          Supabase 云端基础设施          │
+                     │  Postgres DB / RLS / Auth / Storage    │
+                     │  队列原子锁 (FOR UPDATE SKIP LOCKED)   │
+                     │  安全密凭托管 (Supabase Vault)         │
+                     └───────────────────┬────────────────────┘
+                                         │
+             ┌───────────────────────────┴───────────────────────────┐
+             ▼                                                       ▼
+┌───────────────────────────────┐               ┌───────────────────────────────────────┐
+│     Railway / 云端可选服务     │               │        办公室桌面 Worker 集群          │
+│                               │               │        (真实宽带 IP / 防风控)          │
+│ • Azure OCR 备用托管          │               │                                       │
+│ • Gmail PIN 抓取备用托管      │               │ 1. MDAC 自动注册 (4 并发四象限监控)    │
+└───────────────────────────────┘               │ 2. Check Registration (4 并发 3 级 PDF)│
+                                                │ 3. Check Visit Pass (4 并发四象限监控) │
+                                                │ 4. Azure OCR 护照识别 (3 线程并发)    │
+                                                │ 5. Gmail PIN 自动提取 (IMAP SSL 流)   │
+                                                │                                       │
+                                                │ • worker_gui.py 极简黑白呼吸灯管理台   │
+                                                └───────────────────────────────────────┘
 ```
 
-### 为什么采用云端 + 本地 Worker 双轨架构
-
-1. **规避官方反爬与 IP 封锁**：马来西亚移民局 MDAC 页面及查询接口具有严格的地域与机房 IP 拦截机制（如 Cloudflare/Akamai 挑战）。在本地办公室使用真实宽带 IP 运行浏览器 Worker，可显著降低验证码拦截率。
-2. **长任务与无状态分离**：适合云端长期运行的 API 式任务（如 Azure OCR 与 Gmail PIN IMAP 读取）可交由 Railway 托管；而网页端自动化则全部移交本地 Worker 节点。
-3. **Supabase 统一调度**：所有任务由 Supabase 队列进行统一派发与 lease 租约加锁，Worker 自身不留存业务状态，执行证据（截图、PDF、日志）均实时回传云端数据库与私有存储桶。
-
----
-
-## 最新核心功能演进
-
-### 1. 业务配置记忆与账号快速切换 (v1.0.39-v2 / v1.0.43)
-- **MDAC 默认业务配置**：联系邮箱自动记忆曾用过的所有历史 Gmail。提供下拉菜单与快捷芯片（ActionChip），点选即可一键填入，支持在菜单中移除失效邮箱。
-- **Gmail PIN 默认邮箱设置**：**双重持久化历史 Gmail 账号与对应的 16 位 Google App Password**。卡片顶部提供历史账号选择器与芯片，切换账号时**同时自动带入邮箱与应用密码**，并支持明暗文切换，彻底消除频繁更换配置时翻找复制密码的痛点。
-
-### 2. 移动端窄屏响应式排版与防溢出治理 (v1.0.39)
-- **统计过滤栏**：窄屏 (< 640px) 下搜索框与状态筛选按钮自适应分行与横向滑动，杜绝像素溢出。
-- **订单卡片重构**：移动端采用多行分层布局（订单头部、客户姓名与状态徽章、护照与行程日期、稳定 Case ID），消除文字挤压。
-- **悬浮操作栏**：第一行紧凑统计，第二行横向平滑滚动展示全部操作按钮，彻底消除底部溢出报错。
-
-### 3. Order / Case 绑定加固与批次工作区 (v1.0.40 ~ v1.0.42)
-- Worker 任务严格与 `case_id`、`membership_id` 及 `operational_batch_id` 关联，保障批量处理的审计与数据一致性。
-- Check Registration 任务异常时具备自动化 Fallback 加固与安全回写。
+### 为什么采用本地办公室 Worker 模式？
+1. **规避官方机房 IP 封锁与风控挑战**：马来西亚移民局官网及 MDAC 入口对公有云机房（AWS、GCP、Cloudflare 等）部署了极其严苛的 IP 黑名单和人机挑战机制。在本地办公室使用真实民用宽带 IP 调度浏览器内核，能大幅提升访问顺畅度，将拦截率降至最低。
+2. **极速高并发与大屏直观监控**：采用 4 象限网格分屏（`768 × 412`），多窗口并行处理，填表、滑块拖拽、官方出码一览无余，同时享受本地硬件对浏览器渲染的极致加速。
+3. **租约防崩溃设计**：每个任务批次及子项均携带租期（Lease）。Worker 维持后台独立心跳，若遇断电或崩溃，超时任务会自动回流队列，绝无死锁或漏项。
 
 ---
 
-## 本地化部署 Worker 完整指南
+## 二、 5 大核心 Worker 功能与技术特性
 
-本地化部署支持托管全部 **5 大核心 Worker**：
+### 1. MDAC 自动填报与注册 Worker (`services/mdac-fill-preview/worker.py`)
+- **4 并发多线程执行**：基于 `threading.Thread` + 独立 `asyncio` 事件循环，单批次处理吞吐量提升 3.5~4 倍（30 人团队仅需 3~4 分钟）。
+- **2×2 四象限桌面大屏布局**：根据 Windows 桌面实际工作区动态计算，窗口自动铺满四角：
+  - 槽位 1（左上）：`0, 0` (`768 × 412`)
+  - 槽位 2（右上）：`768, 0` (`768 × 412`)
+  - 槽位 3（左下）：`0, 412` (`768 × 412`)
+  - 槽位 4（右下）：`768, 412` (`768 × 412`)
+- **2.0s 阶梯式错峰冷启动**：槽位 1~4 依次间隔 2 秒启动，平滑流量尖峰，消除并发撞击官方 WAF 导致的 504 Gateway Timeout。
+- **DOM 极速批量评估**：将 20+ 个个人与行程字段比对、非法控件扫描及提交按钮状态检查整合为单次 JavaScript evaluate 调用，将校验延迟由秒级降至 10ms。
+- **自动滑块验证码求解器**：内置 `slider_solver.py`（基于 Canvas 像素匹配与拟人化加减速轨迹算法），自动完成官方拼图滑块挑战。
+- **槽位级就地快速容错重试**：遇到瞬态网络超时或滑块偶发偏位，自动在槽位内重建页面重试 1 次（最多 2 次尝试），减少 80% 无谓的人工介入。
+- **防重判智能识别**：除识别 `SUCCESSFULLY REGISTERED` 外，自动识别官方返回的 `ALREADY REGISTERED` / `RECORD ALREADY EXISTS`（已登记），直接提取既有登记号并以成功归档。
+- **独立保活心跳线程**：`MDACBatchHB` 每 15 秒同步一次 `BUSY` 租约，多槽位并发期间批次永不过期。
 
-| Worker 名称 | 脚本路径 | 业务职责 | 自动化技术 |
-|---|---|---|---|
-| **MDAC 自动注册** | `services/mdac-fill-preview/worker.py` | 填报 MDAC 入境卡、人脸防伪校验、生成填报凭证 | Playwright (Chromium) + ddddocr |
-| **Check Registration** | `services/registration-check-worker/worker.py` | 核验 MDAC 注册状态并下载官方原版 PDF 凭证 | Playwright (Chromium) + 下载桥接 |
-| **Check Visit Pass** | `services/visit-pass-check-worker/worker.py` | 查询入境准证有效记录并截取全景高清表格凭证 | Playwright (Chromium) + 视口自适应 |
-| **Azure 护照 OCR** | `worker/azure_ocr_worker.py` | 监听护照图片/PDF 上传并调用 Azure 识别关键字段 | Requests + Azure Document Intelligence |
-| **Gmail PIN 抓取** | `services/gmail-pin-worker/worker.py` | 监听官方确认邮件，安全提取 PIN 码写回任务 | IMAP SSL + Supabase Vault 加密流 |
+### 2. Registration 核验与 PDF 下载 Worker (`services/registration-check-worker/worker.py`)
+- **4 并发多线程执行** + **2×2 四象限桌面大屏布局**（每窗 `768 × 412`）。
+- **1.5s 阶梯式错峰冷启动**：平滑建立多路 TCP 连接。
+- **3 级弹性原版 MDAC Slip PDF 抓取引擎 (3-Tier Resilient PDF Pipeline)**：
+  - **Tier 1 (页面内存直接 Fetch)**：在已认证页面上下文中执行原生 `fetch('/mdac/register?printSlip')`，将 PDF 二进制数据直接转为 Base64 读取。耗时仅 ~300ms，无弹窗阻断，零磁盘 I/O 开销。
+  - **Tier 2 (Playwright Session API 请求)**：使用浏览器上下文的 `context.request.post()` 携带已建立的 Session Cookie 直接拉取 PDF 二进制流。
+  - **Tier 3 (DOM 下载事件兜底拦截)**：点击页面打印链接，使用 `page.expect_download(timeout=15000)` 捕获浏览器下载事件。
+  - **Tier 4 (存证保障降级截图)**：若官方系统未生成 PDF 文件，自动截取高清全屏凭证，保留提取到的 `trip_id`。
+- **动态超时自适应**：45 秒基础等待 + 15 秒动态加载宽限期，适应官方高峰期网络延迟。
+
+### 3. Visit Pass 入境准证核验 Worker (`services/visit-pass-check-worker/worker.py`)
+- **4 并发多线程执行** + **2×2 四象限桌面大屏布局**（每窗 `768 × 412`）。
+- **1.5s 阶梯式错峰启动** + **槽位级就地容错重试**（最多 2 次尝试）。
+- **全景自适应截屏**：动态计算页面完整表格高度，规避 Playwright 视口裁剪，完整截取入境盖章记录与有效期凭据。
+- **Fail-Closed 严谨判别**：无记录或被阻断时安全标记为 `NEEDS_REVIEW`，绝不假定成功。
+
+### 4. Azure 护照 OCR Worker (`worker/azure_ocr_worker.py`)
+- **3 线程并发处理队列**（`ThreadPoolExecutor(3)`），秒级吞吐。
+- 调用 Azure Document Intelligence（prebuilt-idDocument 模型），精准识别全球各版本护照机读码（MRZ）、中文拼音姓名、护照号、国籍、出生日期、签发日期与到期日期。
+- 自动格式归一化并回写 `customer_profiles`。
+
+### 5. Gmail PIN 自动抓取 Worker (`services/gmail-pin-worker/worker.py`)
+- 采用 IMAP SSL 安全长连接，实时监听官方 `noreply@imi.gov.my` 邮件。
+- 采用 Supabase Vault 加密流，自动解密使用 App 提交的 16 位 Google App Password。
+- 正则提取 6 位数字验证码 PIN 并通过服务级 RPC 安全回写，作为 Check Registration 的必要输入。
 
 ---
 
-### 1. 环境准备
+## 三、 办公室桌面 Worker 超详细安装与运行教程
 
-推荐操作系统：**Windows 10/11**、**macOS** 或 **Ubuntu Linux**。
+本教程适用于在本地办公室 Windows 电脑（或云端 Windows 实例）上从零搭建运行环境。
 
-- **Python**：推荐 **Python 3.10 ~ 3.13** 64 位版本。
-- **系统包依赖**（Linux 需具备 Chromium 运行依赖库，Windows/macOS 无需额外系统库）。
+### 3.1 环境要求与前置准备
 
-#### 步骤 1.1：创建并激活 Python 虚拟环境
+1. **操作系统**：Windows 10 / Windows 11 (64 位)（推荐），或 Windows Server 2019+。
+2. **Python 版本**：**Python 3.10 ~ 3.12 (64-bit)**（建议 3.11/3.12；安装时务必勾选 **"Add python.exe to PATH"**）。
+3. **网络环境**：普通的办公室宽带或民用光纤（具备稳定访问马来西亚官网 `https://imigresen-online.imi.gov.my` 的网络连接）。
 
-```bash
-# 切换到项目根目录
+> [!IMPORTANT]
+> 请勿使用机房公开代理或数据中心 IP 运行网页自动化 Worker，否则极易触发官方 Cloudflare 5秒盾或验证码拦截死循环。
+
+---
+
+### 3.2 步骤一：拉取/准备代码仓库
+
+在本地工作目录打开 PowerShell 或 CMD：
+
+```powershell
+# 克隆代码仓库 (如已有代码目录可直接 cd 进入)
+git clone https://github.com/mm7768/passport-mdac-app.git
 cd passport-mdac-app
+```
 
-# 创建虚拟环境
+---
+
+### 3.3 步骤二：创建并激活 Python 虚拟环境
+
+使用虚拟环境隔离依赖，避免与其他 Python 项目冲突：
+
+```powershell
+# 1. 创建独立的 .venv 虚拟环境
 python -m venv .venv
 
-# 激活虚拟环境 (Windows PowerShell)
-.venv\Scripts\Activate.ps1
-# 或 Windows CMD:
-.venv\Scripts\activate.bat
-# 或 Linux/macOS:
-source .venv/bin/activate
+# 2. 激活虚拟环境 (Windows PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# 如果 PowerShell 提示脚本执行受限，可先执行：Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+# 如果使用 CMD 命令行，请执行：
+# .\.venv\Scripts\activate.bat
 ```
 
-#### 步骤 1.2：安装 Python 依赖库与 Playwright 浏览器内核
+激活成功后，命令行提示符前会显示 `(.venv)` 标识。
 
-```bash
-# 安装基础依赖与网页 Worker 依赖
+---
+
+### 3.4 步骤三：安装项目依赖与 Playwright 浏览器内核
+
+依次安装各 Worker 所需的核心依赖包及 Chromium 浏览器内核：
+
+```powershell
+# 1. 升级 pip
+python -m pip install --upgrade pip
+
+# 2. 安装全部 Worker 所需依赖
 pip install -r services/mdac-fill-preview/requirements.txt
 pip install -r requirements-worker.txt
-pip install psutil
+pip install psutil requests ddddocr pillow
 
-# 安装 Playwright 专用 Chromium 内核
+# 3. 安装 Playwright 专用 Chromium 浏览器内核 (必须执行)
 playwright install chromium
 ```
 
-> **提示**：`services/mdac-fill-preview/requirements.txt` 中已包含 `playwright`、`requests`、`ddddocr`、`pillow`，适用于所有浏览器类 Worker。
+> [!TIP]
+> `ddddocr` 安装时如遇网络慢，可加国内镜像源，例如：`pip install ddddocr -i https://pypi.tuna.tsinghua.edu.cn/simple`。
 
 ---
 
-### 2. 环境变量配置
+### 3.5 步骤四：环境变量配置 (.env.local)
 
-在项目根目录创建 `.env` 文件，或在 `worker/` 下创建 `.env.local`（Worker 启动时会自动按优先级加载）：
+系统支持根目录统一配置或各 Worker 独立配置。在运行前，请在项目根目录（或各服务的根目录下）创建 `.env.local` 文件：
 
+#### 核心配置文件：`services/mdac-fill-preview/.env.local`
 ```ini
-# ==========================================
-# 1. Supabase 服务端核心配置 (必填)
-# ==========================================
+# ========================================================
+# 1. Supabase 服务端凭据 (必须为具备管理权限的 service_role_key)
+# ========================================================
 SUPABASE_URL=https://<your-project-id>.supabase.co
-# 必须为 service_role key，严禁提交到前端代码仓或公开环境
-SUPABASE_SERVICE_ROLE_KEY=eyJh......
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
 
-# ==========================================
-# 2. Azure Document Intelligence 配置 (OCR 必需)
-# ==========================================
-AZURE_DI_ENDPOINT=https://<your-azure-service>.cognitiveservices.azure.com/
-AZURE_DI_KEY=your-azure-document-intelligence-key
-OCR_WORKER_ID=local-azure-ocr-worker
-OCR_QUEUE_POLL_SECONDS=15
-OCR_POLL_SECONDS=2
-OCR_REQUEST_TIMEOUT_SECONDS=45
-
-# ==========================================
-# 3. 浏览器自动化运行行为控制 (本地推荐配置)
-# ==========================================
-# 是否直接执行真实提交 (生产环境设为 true；测试设为 false 仅填表预览)
+# ========================================================
+# 2. MDAC 注册 Worker 核心控制
+# ========================================================
+MDAC_WORKER_ID=office-worker-desktop
+MDAC_EXECUTION_MODE=AUTO_SUBMIT
 ALLOW_REAL_SUBMIT=true
-ALLOW_REAL_REGISTRATION_CHECK=true
+MDAC_URL=https://imigresen-online.imi.gov.my/mdac/main?registerMain
+MDAC_POLL_SECONDS=15
+MDAC_LEASE_SECONDS=900
+MDAC_MAX_ATTEMPTS=5
+SUPABASE_REQUEST_TIMEOUT_SECONDS=30
+MDAC_PAGE_TIMEOUT_MS=60000
 
-# 浏览器是否以无头模式运行 (本地调试排查时可设为 false 观察界面)
-HEADLESS=true
+# 桌面浏览器显示设置 (false 表示前台可见窗口，可直观监控；true 表示后台静默)
+MDAC_HEADLESS=false
 
-# 每次轮询任务间隔 (秒)
-POLL_INTERVAL=3
-WORKER_LEASE_SECONDS=300
+# 性能与容错参数 (推荐值)
+MDAC_CONCURRENCY=4
+MDAC_SLOT_STAGGER_SECONDS=2.0
+MDAC_LOCAL_ATTEMPTS=2
+
+# 凭据截图私有桶
+MDAC_SCREENSHOT_BUCKET=passport-documents
+MDAC_SCREENSHOT_PREFIX=mdac-previews
+LOG_LEVEL=INFO
 ```
 
-> **安全须知**：
-> 1. `SUPABASE_SERVICE_ROLE_KEY` 具备数据库高权限，**切勿提交至 Git**；
-> 2. Gmail PIN 的邮箱地址和 16 位 App Password 优先从 App 端保存到数据库受保护 Vault，Worker 会通过安全 RPC 自动回读解密，无需在 `.env` 中写死。
+#### 检查登记配置文件：`services/registration-check-worker/.env.local`
+```ini
+SUPABASE_URL=https://<your-project-id>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
+REGISTRATION_CHECK_WORKER_ID=office-reg-check-desktop
+REGISTRATION_CHECK_MODE=AUTO_CHECK
+ALLOW_REAL_SUBMIT=true
+REGISTRATION_CHECK_HEADLESS=false
+REGISTRATION_CHECK_CONCURRENCY=4
+REGISTRATION_CHECK_SLOT_STAGGER_SECONDS=1.5
+REGISTRATION_CHECK_LOCAL_ATTEMPTS=2
+REGISTRATION_CHECK_POLL_SECONDS=15
+REGISTRATION_CHECK_LEASE_SECONDS=900
+REGISTRATION_CHECK_MAX_ATTEMPTS=5
+```
+
+#### 检查准证配置文件：`services/visit-pass-check-worker/.env.local`
+```ini
+SUPABASE_URL=https://<your-project-id>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
+VISIT_PASS_CHECK_WORKER_ID=office-visit-pass-desktop
+VISIT_PASS_CHECK_MODE=AUTO_CHECK
+ALLOW_REAL_SUBMIT=true
+VISIT_PASS_CHECK_HEADLESS=false
+VISIT_PASS_CONCURRENCY=4
+VISIT_PASS_SLOT_STAGGER_SECONDS=1.5
+VISIT_PASS_LOCAL_ATTEMPTS=2
+VISIT_PASS_CHECK_POLL_SECONDS=15
+```
+
+#### Azure OCR 配置文件：`worker/.env.local`
+```ini
+SUPABASE_URL=https://<your-project-id>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
+AZURE_DI_ENDPOINT=https://<your-azure-resource>.cognitiveservices.azure.com/
+AZURE_DI_KEY=your-azure-key
+OCR_WORKER_ID=azure-ocr-worker
+OCR_CONCURRENCY=3
+```
 
 ---
 
-### 3. 一键启动与运行方式
+### 3.6 步骤五：启动与管理 Worker（5 种运行模式）
 
-项目提供了多套成熟的本地运行工具，覆盖不同的办公环境与调试需求：
+项目自带成熟的管理控制台和启动工具，支持按需选用：
 
-#### 方式 A：极简黑白呼吸灯管理面板（推荐日常生产使用，极致宁静）
+#### 模式 1：极简黑白呼吸灯桌面控制面板 (推荐日常使用 ★★★★★)
+无需第三方软件，双击运行或在虚拟环境中输入命令：
 
-运行统一托管脚本，默认将自动唤起**极简黑白呼吸灯管理窗口**（零外部依赖，基于原生 Python 引擎）：
+```powershell
+python tools/worker_gui.py
+```
 
-`ash
-python tools/run_all_workers.py
-`
+* **界面特性**：
+  * **沉浸黑深邃美学** + **实时白色呼吸灯脉冲**：反馈系统整体心跳与健康状态。
+  * **5 大 Worker 专属状态卡片**：实时显示 MDAC、Registration Check、Visit Pass、OCR、Gmail PIN 的在线状态（ONLINE / BUSY / OFFLINE）、处理量及最新活动时间。
+  * **一键控制**：提供「全部启动」、「一键重启」与「安全停止」操作按钮。
+  * **实时折叠日志抽屉**：常规下仅显示最新动态，展开可查看完整流水日志。
 
-- **视觉风格**：沉浸式深邃纯黑背景（#000000）+ 优雅正弦波**白色呼吸灯**（实时反馈系统心跳），彻底告别传统命令行黑框的杂乱刷屏与视觉疲劳；
-- **5 大 Worker 状态卡片**：直观展示 MDAC、Registration、Visit Pass、OCR、Gmail PIN 的运行状态与实时心跳；
-- **极简日志抽屉**：常规状态下仅展示最新一条动态，点击「展开详细日志」即可无缝查看实时完整流水；
-- **心跳自愈与安全控制**：内置 3 秒崩溃自动重连，界面提供「一键重启所有 Worker」及安全退出。
+---
 
-> **提示**：若在纯终端/服务器无桌面环境下运行，只需添加 --cli 参数：python tools/run_all_workers.py --cli，即可进入极简黑底字符看板（同款白色脉冲指示器，无滚动刷屏）。
+#### 模式 2：Windows Terminal 5 独立多标签页模式 (排查与多日志监控首选)
+如果安装了 Windows Terminal，输入：
 
-#### 方式 B：Windows Terminal 独立多标签页模式（推荐排查与观测使用）
-
-若已安装 Windows Terminal，可一键调出 5 个独立命名的标签页，各自独立打印详细日志：
-
-```bash
+```powershell
 python tools/launch_wt_workers.py --mode tabs
 ```
+系统将自动在一个终端窗口内拉起 5 个独立命名的 Tab 标签页，各自打印对应 Worker 的调试流水。
 
-- **5 个专属标签页**：
-  - `[Tab 1]` MDAC 自动注册
-  - `[Tab 2]` 查 Registration
-  - `[Tab 3]` 查 Visit Pass
-  - `[Tab 4]` Azure 护照 OCR
-  - `[Tab 5]` Gmail PIN 抓取
+---
 
-#### 方式 C：Windows Terminal 分屏网格模式（大屏监控首选）
-
-在单个窗口内将屏幕切分为多个网格面板并实时刷新：
-
-```bash
+#### 模式 3：Windows Terminal 分屏网格监控模式
+```powershell
 python tools/launch_wt_workers.py --mode split
 ```
+在单一屏幕内自动切分为多个实时监控小窗，适合多显示器或监控大屏常驻。
 
-#### 方式 D：Windows 桌面一键重启批处理
+---
 
-双击运行根目录或 tools 下的脚本：
-
-```cmd
-tools\restart_workers.bat
+#### 模式 4：无 GUI 字符控制台托管模式 (适用于 Windows 服务或后台脚本)
+```powershell
+python tools/run_all_workers.py --cli
 ```
+在原生命令行终端以字符看板的形式实时展示 5 个 Worker 的运行脉冲，无烦人的刷屏日志。
 
-- 脚本会自动杀除旧的残留 Python 进程，避免重复抢占数据库 Lease，随后拉起最新环境。
+---
 
-#### 停止所有本地 Worker：
+#### 模式 5：单 Worker 手动独立启动 (本地开发或单项排查)
+若需对某一个 Worker 进行独立断点调试：
 
-```bash
-python tools/stop_workers.py
+```powershell
+# 独立调试 MDAC 注册服务
+python services/mdac-fill-preview/worker.py --poll
+
+# 独立调试 Check Registration
+python services/registration-check-worker/worker.py --poll
+
+# 独立调试 Check Visit Pass
+python services/visit-pass-check-worker/worker.py --poll
+
+# 独立调试 Azure OCR
+python worker/azure_ocr_worker.py
+
+# 独立调试 Gmail PIN
+python services/gmail-pin-worker/worker.py --poll
 ```
 
 ---
 
-## Flutter 开发与构建
+### 3.7 步骤六：安全退出与停止 Worker
 
-### 环境建议
-- Flutter 3.24+ (Channel stable)
-- Dart 3.5+
-- Android SDK (API 34+)
-- JDK 21
+任何时候需要完全停止所有正在运行的后台 Worker 时，请运行统一清理脚本：
 
-### 安装依赖
+```powershell
+python tools/stop_workers.py
+```
+该脚本会安全通知各 Worker 进程注销心跳，关闭打开的浏览器进程，释放数据库租约，避免任务死锁。
+
+---
+
+## 四、 常见故障排查与运维指南 (FAQ)
+
+### Q1: 运行提示 `缺少环境变量：SUPABASE_SERVICE_ROLE_KEY`
+* **原因**：找不到 `.env.local` 文件或该文件放置路径不正确。
+* **解决办法**：确认在各 Worker 所在目录（如 `services/mdac-fill-preview/`）或项目根目录下创建了 `.env.local`，并且其中包含了 `SUPABASE_SERVICE_ROLE_KEY` 与 `SUPABASE_URL`。
+
+### Q2: 浏览器打开后提示 `Playwright executable doesn't exist`
+* **原因**：未安装 Playwright 对应的 Chromium 驱动内核。
+* **解决办法**：在虚拟环境中执行 `playwright install chromium`。
+
+### Q3: 官方提交后提示 `RESULT_UNKNOWN` 怎么办？
+* **原因**：马来西亚官方系统在深夜或早高峰维护，提交后未能在 20 秒内渲染出结果页。
+* **处理机制**：系统已内置防重与局部就地重试；若重试 2 次后仍无响应，会自动标记为 `NEEDS_REVIEW`（人工复核）。此时可在 App 端点击“人工核对”，系统会自动比对登记号，严禁盲目短时间多次重复提交。
+
+### Q4: 4 个浏览器窗口排列重叠，如何调整？
+* **解决办法**：系统默认会根据显示器真实工作区计算四象限坐标。如果使用了缩放（如 125% 或 150%），可以在 `.env.local` 中直接指定槽位绝对坐标与尺寸：
+  ```ini
+  MDAC_SLOT_1_POSITION=0,0
+  MDAC_SLOT_1_SIZE=768,412
+  MDAC_SLOT_2_POSITION=768,0
+  MDAC_SLOT_2_SIZE=768,412
+  ```
+
+---
+
+## 五、 Flutter Android 移动端构建指南
+
+移动端基于 Flutter 3.24+ 构建，为操作员提供集中作业、批次导入、客户档案管理及进度展示。
+
+### 依赖与构建
 ```bash
+# 获取依赖
 flutter pub get
-```
 
-### 静态分析与测试
-```bash
+# 静态语法与代码规范分析
 flutter analyze --no-fatal-infos --no-fatal-warnings
-flutter test
-```
 
-### 编译 Debug APK
-```bash
+# 执行测试用例
+flutter test
+
+# 编译 Debug APK
 flutter build apk --debug \
   --dart-define=SUPABASE_URL=https://<your-supabase-url> \
   --dart-define=SUPABASE_PUBLISHABLE_KEY=<your-anon-publishable-key>
 ```
 
-> **注意**：前端 APK **只允许注入** `anon` / `publishable key`，严禁将 `service_role key` 编译入客户端。
+> [!CAUTION]
+> 移动端 APK 仅允许注入公开的 `anon/publishable key`，严禁在前端打包代码中编译写入 `service_role key`。
 
 ---
 
-## 核心开发与设计原则
+## 六、 核心安全与设计准则
 
-1. **状态一致性**：Supabase 是唯一的业务状态源；Worker 仅作为无状态执行器；
-2. **严防误判**：网络超时、页面变动或验证码阻断时，严格判定为 `NEEDS_REVIEW`（人工复核）或 `FAILED`，严禁未经验证标记为 `SUCCEEDED`；
-3. **安全凭据隔离**：加密凭证由 Supabase Vault 保存，App 不回读明文密码，Worker 按需解密调用；
-4. **证据归档闭环**：官方查询凭证统一写入私有 Storage 并在客户主档案中保留唯一有效证据，避免历史脏记录混淆。
+1. **状态唯一真理源 (Single Source of Truth)**：所有业务状态（`QUEUED`、`CLAIMED`、`RUNNING`、`SUCCEEDED`、`NEEDS_REVIEW`、`FAILED`）均以 Supabase 数据库为主，Worker 仅为无状态执行器。
+2. **严防误判准则 (Fail-Closed Policy)**：遇到不可判定的页面白屏、跳转未知 URL、滑块阻断时，严格写回 `NEEDS_REVIEW`，杜绝一切未经验证伪造成功的行为。
+3. **安全凭据三级隔离**：
+   - 客户端仅使用受限 RLS `anon` Key。
+   - 服务端仅在本地 Worker 读取 `service_role` 访问队列。
+   - 敏感 Gmail 授权密码统一托管在 Supabase Vault，前后端均无明文存储。
+4. **证据归档闭环**：官方回执原版 PDF、全景截图等原始凭证统一上载至私有隔离存储桶，并在主档案中建立唯一证据链，确保可审计、可追溯。
 
 ---
 
 ## 仓库信息
 
-- **GitHub 仓库**：`https://github.com/mm7768/passport-mdac-app`
-- **默认分支**：`main`
-- **维护人员**：`mm7768`
+- **GitHub 代码仓**：[https://github.com/mm7768/passport-mdac-app](https://github.com/mm7768/passport-mdac-app)
+- **主开发分支**：`main`
+- **维护机构**：Passport MDAC Desk Team

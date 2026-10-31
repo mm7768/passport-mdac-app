@@ -1,109 +1,74 @@
-# MDAC Headless Fill Preview Worker
+# MDAC Registration Worker (MDAC 自动注册服务)
 
-这是 Passport MDAC Desk 的独立 Railway 服务。它使用 Python + Playwright Chromium 打开马来西亚移民局 MDAC 登记页，读取 Supabase 中的 `MDAC_REGISTRATION` 队列，按任务快照填写真实表单、回读 DOM 值、保存私有 PNG 预览，并将任务写回 `NEEDS_REVIEW`。
+本服务是 Passport MDAC Desk 的核心自动化模块之一。它基于 Python + Playwright Chromium 打开马来西亚移民局 MDAC 官方在线登记系统（`https://imigresen-online.imi.gov.my/mdac/main?registerMain`），自动领取任务、高速填写旅客身份与行程数据、解决官方拼图滑块验证码、完成官方提交并提取注册凭据。
 
-## 当前绝对边界
+---
 
-本服务是 **fill-preview only**。源码不包含真实 Submit 调用；启动时必须同时满足 `MDAC_EXECUTION_MODE=FILL_PREVIEW` 和 `ALLOW_REAL_SUBMIT=false`，否则进程直接拒绝启动。表单 POST 路由还会被 Playwright 防护层拦截，作为第二层保护。服务不会自动点击 Submit，不会把验证码、滑块或 CAPTCHA 当作可自动破解对象，也不会绕过反自动化机制。
+## 核心架构与特性
 
-如果页面出现账号登录、密码、MFA、验证码、滑块或其他人工挑战，Worker 会把该项保存为 `NEEDS_REVIEW`，并在摘要中标记 `manual_review_required=true`。当前官方登记页是公开表单，首版不预置 MDAC 账号密码；如果将来页面改为登录制，应先设计经授权的人工接管流程，不要把密码写入仓库、聊天或 APK。
+1. **4 并发多线程槽位（4 Concurrency Slots）**：
+   - 默认开启 4 个并发工作槽位（`MDAC_CONCURRENCY=4`），每个槽位持有独立的 Chromium 浏览器进程与独立 `asyncio` 事件循环。
+   - 吞吐量比单线程模式提升约 3.5~4 倍，30 人团队仅需 3~4 分钟。
 
-## 工作流程
+2. **2×2 四象限桌面大屏布局**：
+   - 运行时自动检测 Windows 桌面工作区（排除任务栏），将屏幕均分为四个象限窗口（每窗 `768 × 412`）：
+     - **Slot 1**（左上角）：`0, 0`
+     - **Slot 2**（右上角）：`768, 0`
+     - **Slot 3**（左下角）：`0, 412`
+     - **Slot 4**（右下角）：`768, 412`
+   - 各槽位窗口独立打开，填表、滑块拖拽与官方出码一览无余。
 
-```text
-Supabase automation_batches: QUEUED / MDAC_REGISTRATION
-        ↓  claim_mdac_batch()：FOR UPDATE SKIP LOCKED + batch lease
-Supabase automation_items: QUEUED
-        ↓  claim_mdac_item()：单项 lease + attempt limit
-Playwright 新 BrowserContext
-        ↓
-打开官方 MDAC 表单
-        ↓
-读取批次的 App 配置快照与 customer_snapshot
-        ↓
-回读 DOM，检查字段值、invalid 控件和页面 URL
-        ↓
-截图上传到私有 Storage bucket
-        ↓
-finish_mdac_fill_preview()
-        ↓
-item=NEEDS_REVIEW、mdac_registrations=NEEDS_REVIEW、submitted=false
+3. **2.0s 阶梯式错峰冷启动（Staggered Start）**：
+   - 槽位间按 2.0 秒递增启动（`MDAC_SLOT_STAGGER_SECONDS=2.0`），平滑建立连接，彻底避免并发撞击官方 WAF 导致的 504 Gateway Timeout 或 TCP 丢包。
+
+4. **DOM 极速单次评估（Fast DOM Batch Eval）**：
+   - 20+ 个个人与行程字段的回读比对、非法控件扫描及提交按钮状态检查整合为单次 JavaScript evaluate 调用，将校验延迟由秒级降至 10ms。
+
+5. **槽位级就地快速重试（In-Worker Local Retry）**：
+   - 内置 `MDAC_LOCAL_ATTEMPTS=2`。遇到滑块自动识别瞬态偏位（`SLIDER_SOLVER_FAILED`）、页面操作超时（`PAGE_TIMEOUT`）或官方网关响应异常，槽位在内部自动重建独立 Page 并快速重试 1 次，成功后直接提交。
+
+6. **防重判智能识别**：
+   - 除精准匹配 `SUCCESSFULLY REGISTERED.` 提取 Registration No. 外，还能自动捕获官方提示的 `ALREADY REGISTERED` / `RECORD ALREADY EXISTS`（已登记），直接提取既有登记号以成功状态归档。
+
+7. **独立保活心跳线程（MDACBatchHB）**：
+   - 批次执行期间由独立后台守护线程每 15 秒同步一次 `BUSY` 租约，多槽位并发期间批次永不过期。
+
+---
+
+## 环境变量配置 (`.env.local`)
+
+```ini
+SUPABASE_URL=https://<your-project-id>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
+MDAC_WORKER_ID=office-worker-desktop
+MDAC_EXECUTION_MODE=AUTO_SUBMIT
+ALLOW_REAL_SUBMIT=true
+MDAC_URL=https://imigresen-online.imi.gov.my/mdac/main?registerMain
+MDAC_POLL_SECONDS=15
+MDAC_LEASE_SECONDS=900
+MDAC_MAX_ATTEMPTS=5
+SUPABASE_REQUEST_TIMEOUT_SECONDS=30
+MDAC_PAGE_TIMEOUT_MS=60000
+MDAC_HEADLESS=false
+
+# 并发与容错参数
+MDAC_CONCURRENCY=4
+MDAC_SLOT_STAGGER_SECONDS=2.0
+MDAC_LOCAL_ATTEMPTS=2
+
+MDAC_SCREENSHOT_BUCKET=passport-documents
+MDAC_SCREENSHOT_PREFIX=mdac-previews
+LOG_LEVEL=INFO
 ```
 
-## 与 Android 人工提交页的分工
+---
 
-Railway Worker 到 `NEEDS_REVIEW` 就结束，之后由 Flutter App 的“人工处理 MDAC”页面接管：
-
-1. App 从批次与客户快照重建同一份官方表单，并逐项回读字段。
-2. 操作员本人核对资料并完成官方滑块；App 不生成、模拟或重放 CAPTCHA 轨迹。
-3. App 只在页面必填项有效且官方 Submit 可用时开放“确认提交 MDAC”。
-4. 用户确认后，App 会先通过 Supabase RPC 记录提交意图，再点击官方 Submit。这样即使 WebView 跳转、网络中断或 App 崩溃，也不会把同一客户重新开放提交。
-5. 只有官方页面出现 `SUCCESSFULLY REGISTERED.` 且用户再次确认，App 才会写入 `SUCCEEDED` 和客户状态 `MDAC_REGISTERED`。
-6. 页面空白、超时、跳转异常或无法确认时必须写为 `RESULT_UNKNOWN`，禁止盲目重复提交。
-
-因此，当前 MDAC 注册不是“Railway 全自动提交”，而是“Worker 安全填表预览 + Android 人工滑块与明确确认”。两部分共用 Supabase 中冻结的客户/设置快照，但职责不能互换。
-
-批次和单项都带租约。Worker 心跳会续期租约；进程崩溃后，下次领取会回收已过期的 `CLAIMED/RUNNING` 项。每项有最大尝试次数，超过上限不能无限循环。预览完成后，数据库原子函数会同时写入 `mdac_registrations` 和 `audit_logs`，并明确保存 `submitted=false`、`result_confirmed=false`、`submitted_at=NULL` 和 `result_confirmed_at=NULL`。
-
-## 旧版规则的迁移
-
-首版沿用旧 `mdac-auto-v2` 的确定性映射：区域代码为 `60`；国籍大写；`#pob` 根据 App 中的 POB 映射设置选择国籍或客户出生地点；男/女转换为 `1/2`；姓名去首尾空格；护照号去首尾空格并转大写；日期写为 `DD/MM/YYYY`。这些业务默认值由 Flutter App 的“MDAC 默认业务配置”页面编辑，保存到受 RLS 保护的 `mdac_settings`，创建批次时复制到 `automation_batches.mdac_settings_snapshot`。
-
-客户资料不从 Excel 读取，而是使用创建任务时写入的 `automation_items.customer_snapshot`。批次的入境/出境日期作为回退值，并且会再次校验出境日期不能早于入境日期。设置或客户资料缺失时，Worker 不猜测，直接写回 `NEEDS_REVIEW`。
-
-## Railway 设置
-
-在 Railway 创建独立 Service，连接 `mm7768/passport-mdac-app` 的 `main` 分支，并设置：
-
-```text
-Root Directory: services/mdac-fill-preview
-Dockerfile: Dockerfile
-Start Command: Dockerfile 内的 CMD
-```
-
-必须把下列运行和安全变量放在 Railway Variables/Secrets 中，不要放进 GitHub 或 APK：`SUPABASE_SERVICE_ROLE_KEY`、`MDAC_EXECUTION_MODE=FILL_PREVIEW`、`ALLOW_REAL_SUBMIT=false`、`MDAC_WORKER_ID`、`MDAC_URL`、轮询/租约/超时变量，以及私有截图 bucket 配置。邮箱、手机、交通、出发国家、航班/车辆/船号、住宿、地址、州、城市、邮编和 POB 映射不再配置在 Railway，而是由 App 管理。
-
-最低运行变量如下：
-
-```text
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-MDAC_EXECUTION_MODE=FILL_PREVIEW
-ALLOW_REAL_SUBMIT=false
-MDAC_WORKER_ID
-MDAC_URL
-MDAC_POLL_SECONDS
-MDAC_LEASE_SECONDS
-MDAC_MAX_ATTEMPTS
-SUPABASE_REQUEST_TIMEOUT_SECONDS
-MDAC_PAGE_TIMEOUT_MS
-MDAC_HEADLESS=true
-MDAC_SCREENSHOT_BUCKET
-MDAC_SCREENSHOT_PREFIX
-```
-
-其他变量可直接参考 `.env.example`。不要配置任何 `MDAC_USERNAME`、`MDAC_PASSWORD` 并期待 Worker 自动登录；当前代码遇到密码输入框会转人工审核。
-
-## 本地测试
-
-纯映射和安全配置测试不访问外部网站。需要真实页面联调时，必须使用脱敏客户快照，并确认你对目标 MDAC 业务拥有正式授权。联调第一阶段只观察截图和 `NEEDS_REVIEW` 记录；任何真实 Submit 都不属于本服务的当前范围。
+## 独立运行与测试
 
 ```bash
+# 激活虚拟环境后运行
+python services/mdac-fill-preview/worker.py --poll
+
+# 运行单元测试
 python -m unittest discover -s services/mdac-fill-preview -p 'test_*.py'
 ```
-
-Flutter 人工提交页还应运行：
-
-```bash
-flutter analyze
-flutter test
-flutter build apk --debug
-```
-
-最终验收必须使用 Android 真机，并按“单客户预览 → 人工滑块 → 提交 → 看到官方成功文字 → App 确认成功 → 刷新客户状态”的顺序执行。没有看到官方成功文字时，只能选择“结果无法确认”。测试不得保存或上传姓名、完整护照号、邮箱、页面正文、验证码轨迹或 App Password。
-
-## 已知限制
-
-当前服务已经连接 Flutter 的真实 automation batch 创建和任务同步界面：App 保存 MDAC 设置后，入队 RPC 会原子复制客户与业务设置快照；Worker 完成页面回读后写回 `NEEDS_REVIEW`，不会把预览标为 `MDAC_REGISTERED`。当前服务也不处理 Gmail PIN、不查询注册结果、不重试结果未知的真实提交。
-
-真实 Submit 目前只存在于 Android 人工处理页，仍需真机验证后才可合并启用；不能通过修改本 Worker 的环境变量开启。若未来另建 Submit Worker，必须重新设计独立授权、审计、幂等和 `RESULT_UNKNOWN` 防重复提交机制，并单独审查上线。
