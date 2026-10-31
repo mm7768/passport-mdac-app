@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -636,6 +637,125 @@ def compute_slot_window_geometry(slot_id: int) -> tuple[str, str]:
     return grid.get(slot_id, (f"{origin_x},{origin_y}", f"{w2},{h2}"))
 
 
+async def fetch_official_pdf_with_fallbacks(
+    page: Page,
+    context: Any,
+    target_trip_id: str | None,
+    link_locator: Any = None,
+    slot_id: int = 1,
+) -> bytes | None:
+    """Download official MDAC Slip PDF using a resilient 3-tier strategy.
+
+    Tier 1 (In-Page Fetch): Directly fetches from origin /mdac/register?printSlip in browser context.
+    Tier 2 (Context Request): Uses Playwright APIRequestContext with browser session cookies.
+    Tier 3 (DOM Download Event): Clicks printSlip DOM element and awaits page.expect_download.
+    """
+    # 1. 尝试从页面全局补充提取 target_trip_id
+    if not target_trip_id:
+        try:
+            target_trip_id = await page.evaluate(r"""() => {
+                const a = document.querySelector("a[onclick*='printSlip']");
+                if (a) {
+                    const m = (a.getAttribute('onclick') || '').match(/printSlip\(['"]?([^'"]+)['"]?\)/);
+                    if (m) return m[1];
+                }
+                const h = document.getElementById('hTripId') || document.querySelector("input[name='hTripId']");
+                if (h && h.value) return h.value;
+                const inputs = Array.from(document.querySelectorAll("input[type='hidden']"));
+                for (const el of inputs) {
+                    if (el.value && /^[A-Z0-9_-]{10,40}$/i.test(el.value)) return el.value;
+                }
+                return null;
+            }""")
+        except Exception:
+            pass
+
+    # Tier 1: In-Page Fetch via FormData
+    if target_trip_id:
+        try:
+            LOG.info("[槽位 %d] 尝试策略 A: 浏览器页面上下文内部极速 Fetch (Trip ID: %s)...", slot_id, target_trip_id)
+            pdf_b64 = await page.evaluate("""async (tripId) => {
+                try {
+                    const fd = new FormData();
+                    fd.append('hTripId', tripId);
+                    const resp = await fetch('https://imigresen-online.imi.gov.my/mdac/register?printSlip', {
+                        method: 'POST',
+                        body: fd,
+                        credentials: 'include'
+                    });
+                    if (!resp.ok) return null;
+                    const buf = await resp.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    if (bytes.length < 4 || bytes[0] !== 0x25 || bytes[1] !== 0x50 || bytes[2] !== 0x44 || bytes[3] !== 0x46) {
+                        return null;
+                    }
+                    let binary = '';
+                    const chunk = 8192;
+                    for (let i = 0; i < bytes.length; i += chunk) {
+                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+                    }
+                    return btoa(binary);
+                } catch (e) {
+                    return null;
+                }
+            }""", target_trip_id)
+            if pdf_b64:
+                pdf_bytes = base64.b64decode(pdf_b64)
+                if len(pdf_bytes) >= 4 and pdf_bytes.startswith(b"%PDF"):
+                    LOG.info("[槽位 %d] 策略 A 成功获取官方 MDAC Slip PDF (%d 字节)", slot_id, len(pdf_bytes))
+                    return pdf_bytes
+        except Exception as tier1_err:
+            LOG.warning("[槽位 %d] 策略 A 获取 PDF 异常: %s", slot_id, tier1_err)
+
+    # Tier 2: Context Request with Cookies
+    if target_trip_id and hasattr(context, "request"):
+        try:
+            LOG.info("[槽位 %d] 尝试策略 B: Playwright 上下文 Session API 拉取 (Trip ID: %s)...", slot_id, target_trip_id)
+            api_res = await context.request.post(
+                "https://imigresen-online.imi.gov.my/mdac/register?printSlip",
+                form={"hTripId": target_trip_id},
+                timeout=15000,
+            )
+            if api_res.ok:
+                pdf_bytes = await api_res.body()
+                if len(pdf_bytes) >= 4 and pdf_bytes.startswith(b"%PDF"):
+                    LOG.info("[槽位 %d] 策略 B 成功获取官方 MDAC Slip PDF (%d 字节)", slot_id, len(pdf_bytes))
+                    return pdf_bytes
+        except Exception as tier2_err:
+            LOG.warning("[槽位 %d] 策略 B 获取 PDF 异常: %s", slot_id, tier2_err)
+
+    # Tier 3: DOM Click with expect_download
+    for dl_attempt in range(1, 3):
+        try:
+            LOG.info("[槽位 %d] 尝试策略 C: 触发 DOM 下载事件 (第 %d 次尝试)...", slot_id, dl_attempt)
+            await asyncio.sleep(0.5)
+            async with page.expect_download(timeout=15000) as dl_info:
+                if link_locator and await link_locator.count() > 0:
+                    await link_locator.click()
+                elif target_trip_id:
+                    await page.evaluate("""ti => {
+                        if (window.printSlip) {
+                            window.printSlip(ti);
+                        } else {
+                            const h = document.getElementById('hTripId');
+                            if (h) h.value = ti;
+                            const c = document.getElementById('cetakSlip');
+                            if (c) c.click();
+                        }
+                    }""", target_trip_id)
+            dl = await dl_info.value
+            temp_path = await dl.path()
+            with open(temp_path, "rb") as f:
+                pdf_bytes = f.read()
+            if len(pdf_bytes) >= 4 and pdf_bytes.startswith(b"%PDF"):
+                LOG.info("[槽位 %d] 策略 C 成功获取官方 MDAC Slip PDF (%d 字节)", slot_id, len(pdf_bytes))
+                return pdf_bytes
+        except Exception as tier3_err:
+            LOG.warning("[槽位 %d] 策略 C 第 %d 次下载失败: %s", slot_id, dl_attempt, tier3_err)
+
+    return None
+
+
 async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
@@ -832,6 +952,7 @@ async def query_and_capture_page(
                     # 尝试定位对应行程并下载官方 MDAC Slip PDF
                     pdf_downloaded: bytes | None = None
                     target_trip_id: str | None = None
+                    link_locator = None
                     try:
                         rows = await page.locator("table tr:has(td)").all()
                         target_row = None
@@ -847,7 +968,6 @@ async def query_and_capture_page(
                             target_row = rows[0]
 
                         if target_row is not None:
-                            # 优先从目标行的 onclick="return printSlip('...');" 提取完整的官方 Trip ID（包含护照前缀字母）
                             link_locator = target_row.locator("a[onclick*='printSlip']").first
                             if await link_locator.count() > 0:
                                 onclick_attr = await link_locator.get_attribute("onclick") or ""
@@ -861,45 +981,13 @@ async def query_and_capture_page(
                                 if trip_match:
                                     target_trip_id = trip_match.group(1)
 
-                            # 稳健下载循环：优先直接点击目标行的官方 PDF 链接，若失败再回退 JS 触发
-                            for dl_attempt in range(1, 3):
-                                try:
-                                    LOG.info(
-                                        "[槽位 %d] 触发官方 PDF 下载 (第 %d 次尝试, Trip ID: %s)...",
-                                        slot_id,
-                                        dl_attempt,
-                                        target_trip_id or "首行",
-                                    )
-                                    await asyncio.sleep(0.5)
-                                    async with page.expect_download(timeout=20000) as dl_info:
-                                        if await link_locator.count() > 0:
-                                            await link_locator.click()
-                                        elif target_trip_id:
-                                            await page.evaluate("""ti => {
-                                                if (window.printSlip) {
-                                                    window.printSlip(ti);
-                                                } else {
-                                                    const h = document.getElementById('hTripId');
-                                                    if (h) h.value = ti;
-                                                    const c = document.getElementById('cetakSlip');
-                                                    if (c) c.click();
-                                                }
-                                            }""", target_trip_id)
-                                    dl = await dl_info.value
-                                    temp_path = await dl.path()
-                                    with open(temp_path, "rb") as f:
-                                        content = f.read()
-                                    if len(content) >= 4 and content.startswith(b"%PDF"):
-                                        pdf_downloaded = content
-                                        LOG.info("[槽位 %d] 官方 PDF 下载成功 (%d 字节)", slot_id, len(content))
-                                        break
-                                except Exception as single_dl_err:
-                                    LOG.warning(
-                                        "[槽位 %d] 第 %d 次下载官方 PDF 失败: %s",
-                                        slot_id,
-                                        dl_attempt,
-                                        single_dl_err,
-                                    )
+                        pdf_downloaded = await fetch_official_pdf_with_fallbacks(
+                            page=page,
+                            context=context,
+                            target_trip_id=target_trip_id,
+                            link_locator=link_locator,
+                            slot_id=slot_id,
+                        )
                     except Exception as dl_err:
                         LOG.warning("[槽位 %d] 定位或下载官方 MDAC PDF 异常: %s，将回退全页截图", slot_id, dl_err)
 

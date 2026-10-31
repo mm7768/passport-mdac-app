@@ -258,6 +258,128 @@ class RegistrationCheckWorkerTests(unittest.TestCase):
         self.assertEqual(len(supabase.finished), 1)
         self.assertEqual(supabase.finished[0]["outcome"], "FOUND")
 
+    def test_fetch_official_pdf_tier1_in_page_fetch(self) -> None:
+        import asyncio, base64
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_page = AsyncMock()
+        fake_pdf = b"%PDF-1.4 Official Slip Content"
+        mock_page.evaluate.return_value = base64.b64encode(fake_pdf).decode("utf-8")
+        mock_context = MagicMock()
+
+        pdf_bytes = asyncio.run(
+            worker.fetch_official_pdf_with_fallbacks(
+                page=mock_page,
+                context=mock_context,
+                target_trip_id="TRIP123456",
+                slot_id=1,
+            )
+        )
+        self.assertEqual(pdf_bytes, fake_pdf)
+        self.assertTrue(mock_page.evaluate.called)
+
+    def test_fetch_official_pdf_tier2_context_request(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_page = AsyncMock()
+        # Tier 1 returns None
+        mock_page.evaluate.return_value = None
+
+        mock_resp = AsyncMock()
+        mock_resp.ok = True
+        fake_pdf = b"%PDF-1.4 Tier 2 Content"
+        mock_resp.body.return_value = fake_pdf
+
+        mock_context = MagicMock()
+        mock_context.request = AsyncMock()
+        mock_context.request.post.return_value = mock_resp
+
+        pdf_bytes = asyncio.run(
+            worker.fetch_official_pdf_with_fallbacks(
+                page=mock_page,
+                context=mock_context,
+                target_trip_id="TRIP789",
+                slot_id=2,
+            )
+        )
+        self.assertEqual(pdf_bytes, fake_pdf)
+        self.assertTrue(mock_context.request.post.called)
+
+    def test_fetch_official_pdf_tier3_expect_download(self) -> None:
+        import asyncio, tempfile
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_page = AsyncMock()
+        # Tier 1 returns None
+        mock_page.evaluate.return_value = None
+
+        mock_context = MagicMock()
+        # Tier 2 fails
+        mock_context.request = AsyncMock()
+        mock_context.request.post.side_effect = Exception("API error")
+
+        fake_pdf = b"%PDF-1.4 Tier 3 Content"
+        temp_f = tempfile.NamedTemporaryFile(delete=False)
+        temp_f.write(fake_pdf)
+        temp_f.close()
+
+        mock_dl = AsyncMock()
+        mock_dl.path.return_value = temp_f.name
+
+        class FakeEventInfo:
+            def __init__(self, dl):
+                f = asyncio.Future()
+                f.set_result(dl)
+                self.value = f
+
+        class FakeDownloadContext:
+            def __init__(self, dl):
+                self.dl = dl
+            async def __aenter__(self):
+                return FakeEventInfo(self.dl)
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_page.expect_download = MagicMock(return_value=FakeDownloadContext(mock_dl))
+
+        mock_link = AsyncMock()
+        mock_link.count.return_value = 1
+
+        pdf_bytes = asyncio.run(
+            worker.fetch_official_pdf_with_fallbacks(
+                page=mock_page,
+                context=mock_context,
+                target_trip_id="TRIP000",
+                link_locator=mock_link,
+                slot_id=3,
+            )
+        )
+        self.assertEqual(pdf_bytes, fake_pdf)
+        os.unlink(temp_f.name)
+
+    def test_fetch_official_pdf_all_fail_returns_none(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_page = AsyncMock()
+        mock_page.evaluate.return_value = None
+        mock_page.expect_download = MagicMock(side_effect=Exception("Download failed"))
+
+        mock_context = MagicMock()
+        mock_context.request = AsyncMock()
+        mock_context.request.post.side_effect = Exception("Network error")
+
+        pdf_bytes = asyncio.run(
+            worker.fetch_official_pdf_with_fallbacks(
+                page=mock_page,
+                context=mock_context,
+                target_trip_id="TRIP_FAIL",
+                slot_id=4,
+            )
+        )
+        self.assertIsNone(pdf_bytes)
+
 class _FakeSupabase:
     def __init__(self) -> None:
         self.items = [{"id": "item-1", "customer_id": "customer-1"}]
