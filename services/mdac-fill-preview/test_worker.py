@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker import (
     WorkerConfig,
     WorkerError,
+    _TransientRetryableError,
+    compute_slot_window_geometry,
     map_gender,
     map_mdac_fields,
     normalize_mdac_settings,
@@ -235,6 +237,68 @@ class FillPreviewWorkerTests(unittest.TestCase):
                     "p_error_message": None,
                 },
             )
+
+    def test_compute_slot_window_geometry_grid(self) -> None:
+        pos1, size1 = compute_slot_window_geometry(1)
+        pos2, size2 = compute_slot_window_geometry(2)
+        pos3, size3 = compute_slot_window_geometry(3)
+        pos4, size4 = compute_slot_window_geometry(4)
+
+        self.assertTrue("," in pos1 and "," in size1)
+        self.assertTrue("," in pos2 and "," in size2)
+        self.assertTrue("," in pos3 and "," in size3)
+        self.assertTrue("," in pos4 and "," in size4)
+
+        # Env override test
+        with patch.dict(os.environ, {"MDAC_SLOT_1_POSITION": "100,200", "MDAC_SLOT_1_SIZE": "800,600"}):
+            c_pos, c_size = compute_slot_window_geometry(1)
+            self.assertEqual(c_pos, "100,200")
+            self.assertEqual(c_size, "800,600")
+
+    def test_worker_config_concurrency_stagger_and_retry(self) -> None:
+        env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-only",
+            "MDAC_WORKER_ID": "test-worker",
+            "MDAC_EXECUTION_MODE": "AUTO_SUBMIT",
+            "ALLOW_REAL_SUBMIT": "true",
+            "MDAC_CONCURRENCY": "3",
+            "MDAC_SLOT_STAGGER_SECONDS": "2.5",
+            "MDAC_LOCAL_ATTEMPTS": "3",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = WorkerConfig.from_env()
+            self.assertEqual(config.concurrency, 3)
+            self.assertEqual(config.slot_stagger_seconds, 2.5)
+            self.assertEqual(config.max_local_attempts, 3)
+
+    def test_response_detection_patterns(self) -> None:
+        import re
+
+        # Success match
+        text_success = "Thank you. Your MDAC has been SUCCESSFULLY REGISTERED. Registration No: 241031-123456"
+        self.assertTrue(re.search(r"SUCCESSFULLY\s+REGISTERED\.", text_success, re.IGNORECASE))
+        match = re.search(r"(?:REGISTRATION\s+NO|NO\s+PENDAFTARAN)[:\s]+([A-Z0-9\-]+)", text_success, re.IGNORECASE)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), "241031-123456")
+
+        # Already registered match
+        text_already = "Alert: RECORD ALREADY REGISTERED for passport E12345678. Registration No: 241030-999999"
+        self.assertTrue(re.search(r"(?:ALREADY\s+REGISTERED|RECORD\s+ALREADY\s+EXISTS|TELAH\s+DIDAFTARKAN)", text_already, re.IGNORECASE))
+        match_already = re.search(r"(?:REGISTRATION\s+NO|NO\s+PENDAFTARAN)[:\s]+([A-Z0-9\-]+)", text_already, re.IGNORECASE)
+        self.assertIsNotNone(match_already)
+        self.assertEqual(match_already.group(1), "241030-999999")
+
+        # 502/504 Bad Gateway match
+        text_gateway = "<html><body><h1>504 Gateway Time-out</h1>The server didn't respond in time.</body></html>"
+        self.assertTrue(re.search(r"(?:502\s+Bad\s+Gateway|504\s+Gateway\s+Time-out|Internal\s+Server\s+Error)", text_gateway, re.IGNORECASE))
+
+    def test_transient_retryable_error_properties(self) -> None:
+        err = _TransientRetryableError("SLIDER_SOLVER_FAILED", "滑块识别失败重试")
+        self.assertEqual(err.code, "SLIDER_SOLVER_FAILED")
+        self.assertEqual(err.message, "滑块识别失败重试")
+        self.assertIn("SLIDER_SOLVER_FAILED: 滑块识别失败重试", str(err))
+
 
 
 if __name__ == "__main__":

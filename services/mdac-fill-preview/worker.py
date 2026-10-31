@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -41,6 +42,15 @@ class WorkerError(RuntimeError):
 
 class ManualReviewRequired(WorkerError):
     """A human must intervene; the worker must not guess or bypass a challenge."""
+
+
+class _TransientRetryableError(WorkerError):
+    """Internal error signaling that the current item can be retried locally within the slot."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
 
 
 def _load_env_file() -> None:
@@ -82,6 +92,9 @@ class WorkerConfig:
     screenshot_prefix: str
     headless: bool
     log_level: str
+    concurrency: int = 4
+    slot_stagger_seconds: float = 2.0
+    max_local_attempts: int = 2
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -90,32 +103,36 @@ class WorkerConfig:
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
-                raise WorkerError(f"??????:{name}")
+                raise WorkerError(f"缺少环境变量：{name}")
             return value
 
         def positive_float(name: str, default: str, minimum: float) -> float:
             value = float(os.getenv(name, default))
             if value < minimum:
-                raise WorkerError(f"{name} ??????? {minimum}")
+                raise WorkerError(f"{name} 必须大于或等于 {minimum}")
             return value
 
         def bounded_int(name: str, default: str, lower: int, upper: int) -> int:
             value = int(os.getenv(name, default))
             if value < lower or value > upper:
-                raise WorkerError(f"{name} ??? {lower} ? {upper} ??")
+                raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
         execution_mode = os.getenv("MDAC_EXECUTION_MODE", "AUTO_SUBMIT").strip().upper() or "AUTO_SUBMIT"
         if execution_mode not in {"AUTO_SUBMIT", "FILL_PREVIEW"}:
-            raise WorkerError("MDAC_EXECUTION_MODE ??? AUTO_SUBMIT ? FILL_PREVIEW")
+            raise WorkerError("MDAC_EXECUTION_MODE 必须为 AUTO_SUBMIT 或 FILL_PREVIEW")
 
         raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
         if execution_mode == "FILL_PREVIEW":
             if raw_allow_submit and raw_allow_submit != "false":
-                raise WorkerError("FILL_PREVIEW ??? ALLOW_REAL_SUBMIT ??? false")
+                raise WorkerError("FILL_PREVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
             allow_real_submit = False
         else:
             allow_real_submit = raw_allow_submit != "false"
+
+        concurrency = bounded_int("MDAC_CONCURRENCY", "4", 1, 8)
+        slot_stagger = positive_float("MDAC_SLOT_STAGGER_SECONDS", "2.0", 0.0)
+        max_local_attempts = bounded_int("MDAC_LOCAL_ATTEMPTS", "2", 1, 5)
 
         return cls(
             supabase_url=required("SUPABASE_URL").rstrip("/"),
@@ -133,6 +150,9 @@ class WorkerConfig:
             screenshot_prefix=os.getenv("MDAC_SCREENSHOT_PREFIX", "mdac-previews").strip("/ ") or "mdac-previews",
             headless=os.getenv("MDAC_HEADLESS", "true").strip().lower() == "true",
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+            concurrency=concurrency,
+            slot_stagger_seconds=slot_stagger,
+            max_local_attempts=max_local_attempts,
         )
 
 
@@ -152,7 +172,7 @@ class SupabaseAdminClient:
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}??:HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
         response = self.session.post(
@@ -160,7 +180,7 @@ class SupabaseAdminClient:
             json=payload,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, f"?? Supabase RPC {name}")
+        self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
         return response.json()
@@ -177,7 +197,7 @@ class SupabaseAdminClient:
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_mdac_batch ???????")
+            raise WorkerError("claim_mdac_batch 返回格式不正确")
         return dict(rows[0]) if rows else None
 
     def claim_item(self, batch_id: str) -> dict[str, Any] | None:
@@ -193,7 +213,7 @@ class SupabaseAdminClient:
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_mdac_item ???????")
+            raise WorkerError("claim_mdac_item 返回格式不正确")
         return dict(rows[0]) if rows else None
 
     def heartbeat(
@@ -252,7 +272,7 @@ class SupabaseAdminClient:
             data=content,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, "?? MDAC ????")
+        self._check(response, "上传 MDAC 预览截图")
         return object_path
 
     def finish_fill_preview(
@@ -276,7 +296,7 @@ class SupabaseAdminClient:
             },
         )
         if not isinstance(result, dict):
-            raise WorkerError("finish_mdac_fill_preview ???????")
+            raise WorkerError("finish_mdac_fill_preview 返回格式不正确")
         return result
 
     def finish_registration(
@@ -309,7 +329,7 @@ class SupabaseAdminClient:
                 return result
         except Exception as exc:
             LOG.warning(
-                "?? finish_mdac_registration_worker ??,??? finish_mdac_fill_preview: %s",
+                "调用 finish_mdac_registration_worker 异常，回退至 finish_mdac_fill_preview: %s",
                 exc,
             )
         return self.finish_fill_preview(
@@ -328,7 +348,7 @@ def parse_date(value: Any) -> date:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"??????:{text}")
+    raise ValueError(f"无法识别日期：{text}")
 
 
 def format_mdac_date(value: Any) -> str:
@@ -337,61 +357,61 @@ def format_mdac_date(value: Any) -> str:
 
 def map_gender(value: Any) -> str:
     normalized = str(value or "").strip().upper()
-    if normalized in {"?", "MALE", "1"}:
+    if normalized in {"男", "MALE", "1"}:
         return "1"
-    if normalized in {"?", "FEMALE", "2"}:
+    if normalized in {"女", "FEMALE", "2"}:
         return "2"
-    raise ValueError(f"????:{value}")
+    raise ValueError(f"未知性别：{value}")
 
 
 def _required_snapshot(snapshot: dict[str, Any], key: str) -> str:
     value = str(snapshot.get(key) or "").strip()
     if not value:
-        raise ValueError(f"??????:{key}")
+        raise ValueError(f"缺少必填字段：{key}")
     return value
 
 
 def normalize_mdac_settings(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
-        raise WorkerError("???? mdac_settings_snapshot")
+        raise WorkerError("批次缺少 mdac_settings_snapshot")
 
     def value(key: str, *, required: bool = True) -> str:
         text = str(raw.get(key) or "").strip()
         if required and not text:
-            raise WorkerError(f"MDAC ??????????:{key}")
+            raise WorkerError(f"MDAC 设置快照缺少必填字段：{key}")
         return text
 
     email = value("mdac_email")
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-        raise WorkerError("MDAC ????????????")
+        raise WorkerError("MDAC 设置快照的邮箱格式不正确")
     phone = value("mdac_phone")
     region_code = value("region_code")
     if not re.fullmatch(r"[0-9]{1,4}", region_code):
-        raise WorkerError("MDAC ???????????? 1 ? 4 ?????")
+        raise WorkerError("MDAC 设置快照的地区代码必须是 1 到 4 位数字代码")
     travel_mode = value("travel_mode")
     if travel_mode not in {"1", "2", "3"}:
-        raise WorkerError("MDAC ???????????")
+        raise WorkerError("MDAC 设置快照的交通方式无效")
     embark_country = value("embark_country").upper()
     if not re.fullmatch(r"[A-Z]{3}", embark_country):
-        raise WorkerError("MDAC ?????????????")
+        raise WorkerError("MDAC 设置快照的出发国家代码无效")
     vessel = value("vessel")
     accommodation_stay = value("accommodation_stay")
     if accommodation_stay not in {"01", "02", "99"}:
-        raise WorkerError("MDAC ???????????")
+        raise WorkerError("MDAC 设置快照的住宿类型无效")
     address1 = value("address1")
     address2 = value("address2", required=False)
     state_code = value("state_code")
     city_code = value("city_code")
     postcode = value("postcode")
     if not re.fullmatch(r"[0-9]{2}", state_code):
-        raise WorkerError("MDAC ??????????")
+        raise WorkerError("MDAC 设置快照的州代码无效")
     if not re.fullmatch(r"[0-9]{4}", city_code):
-        raise WorkerError("MDAC ???????????")
+        raise WorkerError("MDAC 设置快照的城市代码无效")
     if not re.fullmatch(r"[0-9]{5}", postcode):
-        raise WorkerError("MDAC ?????????")
+        raise WorkerError("MDAC 设置快照的邮编无效")
     pob_mode = value("pob_mode").upper()
     if pob_mode not in {"NATIONALITY", "CUSTOMER"}:
-        raise WorkerError("MDAC ????? POB ????")
+        raise WorkerError("MDAC 设置快照的 POB 映射无效")
 
     return {
         "mdac_email": email,
@@ -421,19 +441,19 @@ def map_mdac_fields(
     place_of_birth = str(snapshot.get("place_of_birth") or "").strip().upper()
     pob = nationality if settings["pob_mode"] == "NATIONALITY" else place_of_birth
     if not pob:
-        raise ValueError("POB ??? CUSTOMER ??? place_of_birth")
+        raise ValueError("POB 映射为 CUSTOMER 时缺少 place_of_birth")
 
     date_of_birth = _required_snapshot(snapshot, "date_of_birth")
     passport_expiry_date = _required_snapshot(snapshot, "passport_expiry_date")
     entry_date = str(snapshot.get("entry_date") or batch.get("entry_date") or "").strip()
     exit_date = str(snapshot.get("exit_date") or batch.get("exit_date") or "").strip()
     if not entry_date or not exit_date:
-        raise ValueError("?????????")
+        raise ValueError("缺少入境或出境日期")
 
     entry = parse_date(entry_date)
     exit_date_value = parse_date(exit_date)
     if exit_date_value < entry:
-        raise ValueError("????????????")
+        raise ValueError("出境日期不能早于入境日期")
 
     return {
         "#region": settings["region_code"],
@@ -452,12 +472,62 @@ def map_mdac_fields(
 def mask_passport(value: str) -> str:
     value = value.strip()
     if len(value) <= 4:
-        return "...."
-    return f"{value[:2]}....{value[-2:]}"
+        return "••••"
+    return f"{value[:2]}••••{value[-2:]}"
 
 
 def _safe_text(value: Any, limit: int = 180) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())[:limit]
+
+
+def compute_slot_window_geometry(slot_id: int) -> tuple[str, str]:
+    """Compute 2x2 quadrant window position and size for concurrent slots.
+
+    Dynamically queries Windows desktop working area (excluding taskbar)
+    to cleanly divide the screen into 4 quadrants:
+      - Slot 1: Top-Left (左上角, e.g. 0,0 768x412)
+      - Slot 2: Top-Right (右上角, e.g. 768,0 768x412)
+      - Slot 3: Bottom-Left (左下角, e.g. 0,412 768x412)
+      - Slot 4: Bottom-Right (右下角, e.g. 768,412 768x412)
+    """
+    env_pos = os.getenv(f"MDAC_SLOT_{slot_id}_POSITION")
+    env_size = os.getenv(f"MDAC_SLOT_{slot_id}_SIZE")
+    if env_pos and env_size:
+        return env_pos, env_size
+
+    work_w, work_h = 1536, 824
+    origin_x, origin_y = 0, 0
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            rect = RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+                work_w = rect.right - rect.left
+                work_h = rect.bottom - rect.top
+                origin_x = rect.left
+                origin_y = rect.top
+        except Exception:
+            pass
+
+    w2 = work_w // 2
+    h2 = work_h // 2
+    grid = {
+        1: (f"{origin_x},{origin_y}", f"{w2},{h2}"),
+        2: (f"{origin_x + w2},{origin_y}", f"{work_w - w2},{h2}"),
+        3: (f"{origin_x},{origin_y + h2}", f"{w2},{work_h - h2}"),
+        4: (f"{origin_x + w2},{origin_y + h2}", f"{work_w - w2},{work_h - h2}"),
+    }
+    return grid.get(slot_id, (f"{origin_x},{origin_y}", f"{w2},{h2}"))
 
 
 async def _set_readonly_date(locator: Any, value: str) -> None:
@@ -488,7 +558,7 @@ async def _select_value(page: Page, selector: str, value: str, timeout_ms: int) 
     await locator.wait_for(state="visible", timeout=timeout_ms)
     element_id = await locator.get_attribute("id")
     if not element_id:
-        raise WorkerError(f"?????? id:{selector}")
+        raise WorkerError(f"下拉控件缺少 id：{selector}")
     await page.wait_for_function(
         """({selector, value}) => {
             const element = document.querySelector(selector);
@@ -509,6 +579,7 @@ async def fill_and_verify_page(
     fields: dict[str, str],
     config: WorkerConfig,
     settings: dict[str, str],
+    slot_id: int = 1,
 ) -> dict[str, Any]:
     timeout_ms = config.page_timeout_ms
     await page.goto(config.mdac_url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -517,29 +588,29 @@ async def fill_and_verify_page(
 
     password_count = await page.locator('input[type="password"]').count()
     if password_count:
-        raise ManualReviewRequired("????????;???????????????")
+        raise ManualReviewRequired("页面要求账号登录；当前服务不自动处理登录或验证码")
 
-    # 1. ?????????
-    # ??:MDAC ????????? #nationality ?,????? onChange ??,
-    # ????? #region ?????????????(? TWN -> 886)?
+    # 1. 先选择国籍和出生地
+    # 说明：MDAC 官方网站前端在选择 #nationality 后，会自动触发 onChange 事件，
+    # 将电话区号 #region 重置为该国籍对应的默认区号（如 TWN -> 886）。
     await _select_value(page, "#nationality", fields["#nationality"], timeout_ms)
-    await page.wait_for_timeout(300)
+    await page.wait_for_timeout(200)
     await _select_value(page, "#pob", fields["#pob"], timeout_ms)
-    await page.wait_for_timeout(200)
+    await page.wait_for_timeout(150)
 
-    # 2. ??????,????????? #region ???????(? 86)
-    # ?????????????,??????????,???????????????
+    # 2. 在国籍选定后，再次主动将电话区号 #region 设回配置的区号（如 86）
+    # 覆盖官网脚本自动重置的区号，确保无论客源国籍为何，都强制采用预设的联系号码与区号
     await _select_value(page, "#region", fields["#region"], timeout_ms)
-    await page.wait_for_timeout(200)
+    await page.wait_for_timeout(150)
     try:
         cur_region = await _input_value(page, "#region")
         if cur_region != fields["#region"]:
             await page.locator("#region").select_option(value=fields["#region"])
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(150)
     except Exception:
         pass
 
-    # 3. ????????
+    # 3. 填写邮箱与手机号
     await page.locator("#email").fill(settings["mdac_email"])
     await page.locator("#confirmEmail").fill(settings["mdac_email"])
     await page.locator("#mobile").fill(settings["mdac_phone"])
@@ -561,7 +632,7 @@ async def fill_and_verify_page(
     await _set_readonly_date(page.locator("#passExpDte"), fields["#passExpDte"])
     await _set_readonly_date(page.locator("#arrDt"), fields["#arrDt"])
     await _set_readonly_date(page.locator("#depDt"), fields["#depDt"])
-    await page.wait_for_timeout(800)
+    await page.wait_for_timeout(300)
 
     selectors = {
         "#region": fields["#region"],
@@ -587,9 +658,50 @@ async def fill_and_verify_page(
         "#accommodationCity": settings["city_code"],
         "#accommodationPostcode": settings["postcode"],
     }
+
+    # 极速单次评估：将 20+ 个字段的回读以及控件有效性、滑块状态合并为一次 evaluate 调用
+    try:
+        dom_state = await page.evaluate(
+            r"""(selectorKeys) => {
+                const values = {};
+                for (const s of selectorKeys) {
+                    const el = document.querySelector(s);
+                    values[s] = el ? (el.value || '').trim() : '';
+                }
+                const invalidCount = document.querySelectorAll('input:invalid, select:invalid').length;
+                const submitEl = document.querySelector('#submit');
+                const submitDisabled = submitEl ? submitEl.disabled : true;
+                const captchaCanvasCount = document.querySelectorAll('#captcha canvas').length;
+                const sliderPresent = Boolean(document.querySelector('#captcha .sliderContainer'));
+                return {
+                    values,
+                    invalidCount,
+                    submitDisabled,
+                    captchaCanvasCount,
+                    sliderPresent,
+                };
+            }""",
+            list(selectors.keys()),
+        )
+        actual_values = dom_state.get("values", {})
+        invalid_count = dom_state.get("invalidCount", 0)
+        submit_disabled = dom_state.get("submitDisabled", True)
+        captcha_canvas_count = dom_state.get("captchaCanvasCount", 0)
+        slider_container_present = dom_state.get("sliderPresent", False)
+    except Exception:
+        actual_values = {}
+        for sel in selectors:
+            actual_values[sel] = await _input_value(page, sel)
+        invalid_count = await page.locator("input:invalid, select:invalid").count()
+        submit_disabled = await page.locator("#submit").is_disabled()
+        captcha_canvas_count = await page.locator("#captcha canvas").count()
+        slider_container_present = await page.locator("#captcha .sliderContainer").count() > 0
+
+    captcha_present = captcha_canvas_count >= 2 and slider_container_present
+
     mismatches: dict[str, dict[str, str]] = {}
     for selector, expected in selectors.items():
-        actual = await _input_value(page, selector)
+        actual = actual_values.get(selector, "")
         a_norm = re.sub(r"\s+", " ", (actual or "").strip())
         e_norm = re.sub(r"\s+", " ", (expected or "").strip())
         if a_norm.upper() == e_norm.upper():
@@ -599,16 +711,11 @@ async def fill_and_verify_page(
             continue
         mismatches[selector] = {"expected": expected, "actual": actual}
 
-    invalid_count = await page.locator("input:invalid, select:invalid").count()
-    submit_disabled = await page.locator("#submit").is_disabled()
-    captcha_canvas_count = await page.locator("#captcha canvas").count()
-    slider_container_present = await page.locator("#captcha .sliderContainer").count() > 0
-    captcha_present = captcha_canvas_count >= 2 and slider_container_present
     current_url = page.url
     if "/mdac/register" in current_url and not current_url.endswith("registerMain"):
-        raise ManualReviewRequired(f"?????????????:{current_url}")
+        raise ManualReviewRequired(f"填写期间页面发生非预期跳转：{current_url}")
     if mismatches:
-        raise WorkerError(f"?????????:{json.dumps(mismatches, ensure_ascii=False)[:800]}")
+        raise WorkerError(f"页面字段回读不一致：{json.dumps(mismatches, ensure_ascii=False)[:800]}")
 
     return {
         "page_url": current_url,
@@ -628,7 +735,7 @@ async def _block_form_posts(context: BrowserContext) -> None:
     async def route_handler(route: Any) -> None:
         request = route.request
         if request.method.upper() == "POST" and "/mdac/register" in request.url:
-            LOG.error("??? MDAC POST ??,?? fill-preview ?????")
+            LOG.error("检测到 MDAC POST 请求，已在 fill-preview 防护层拦截")
             await route.abort()
             return
         await route.continue_()
@@ -636,13 +743,16 @@ async def _block_form_posts(context: BrowserContext) -> None:
     await context.route("**/mdac/register*", route_handler)
 
 
-async def process_item(
+async def _execute_fill_and_submit(
     *,
     page: Page,
     client: SupabaseAdminClient,
     config: WorkerConfig,
     batch: dict[str, Any],
     item: dict[str, Any],
+    slot_id: int = 1,
+    attempt: int = 1,
+    max_attempts: int = 2,
 ) -> None:
     batch_id = str(batch["id"])
     item_id = str(item["id"])
@@ -654,6 +764,8 @@ async def process_item(
         "batch_id": batch_id,
         "item_id": item_id,
         "mdac_url": config.mdac_url,
+        "slot_id": slot_id,
+        "attempt": attempt,
     }
     screenshot_path: str | None = None
     error_code: str | None = None
@@ -664,7 +776,7 @@ async def process_item(
     try:
         snapshot = item.get("customer_snapshot")
         if not isinstance(snapshot, dict):
-            raise ValueError("customer_snapshot ?????")
+            raise ValueError("customer_snapshot 格式不正确")
         settings = normalize_mdac_settings(batch.get("mdac_settings_snapshot"))
         fields = map_mdac_fields(snapshot, batch, settings)
         summary["settings_snapshot_present"] = True
@@ -673,28 +785,37 @@ async def process_item(
             key: value for key, value in fields.items() if key != "#passNo"
         }
         client.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
-        page_summary = await fill_and_verify_page(page, fields, config, settings)
+        page_summary = await fill_and_verify_page(page, fields, config, settings, slot_id=slot_id)
         summary.update(page_summary)
 
         if config.execution_mode == "AUTO_SUBMIT" and config.allow_real_submit:
             if page_summary.get("captcha_present"):
                 LOG.info(
-                    "?? %s ? %s ??? MDAC ??,?? slider_solver ????...",
+                    "[槽位 %d] 批次 %s 项 %s 检测到 MDAC 滑块，调用 slider_solver 自动处理...",
+                    slot_id,
                     batch_id,
                     item_id,
                 )
                 slider_ok = await solve_mdac_slider(
-                    page, log_func=LOG.info, max_retries=3
+                    page,
+                    log_func=lambda msg: LOG.info("[槽位 %d] %s", slot_id, msg),
+                    max_retries=3,
                 )
                 summary["slider_solved"] = slider_ok
                 if not slider_ok:
+                    if attempt < max_attempts:
+                        raise _TransientRetryableError(
+                            "SLIDER_SOLVER_FAILED",
+                            "滑块自动识别重试超限，准备就地重试",
+                        )
                     error_code = "SLIDER_SOLVER_FAILED"
-                    error_message = "??????????,??????????"
+                    error_message = "滑块自动识别重试超限，已安全降级为人工审核"
                     summary["manual_review_required"] = True
                     final_status = "NEEDS_REVIEW"
                 else:
                     LOG.info(
-                        "?? %s ? %s ??????,?????? Submit...",
+                        "[槽位 %d] 批次 %s 项 %s 滑块验证通过，准备触发官方 Submit...",
+                        slot_id,
                         batch_id,
                         item_id,
                     )
@@ -705,19 +826,27 @@ async def process_item(
                         await page.wait_for_timeout(500)
 
                     if await submit_btn.is_disabled():
-                        raise WorkerError("????? Submit ?????????")
+                        if attempt < max_attempts:
+                            raise _TransientRetryableError(
+                                "SUBMIT_DISABLED_AFTER_CAPTCHA",
+                                "滑块通过后 Submit 按钮未在预期时间内激活",
+                            )
+                        raise WorkerError("滑块通过后 Submit 按钮仍处于禁用状态")
 
                     await submit_btn.click()
                     LOG.info(
-                        "?? %s ? %s ????? Submit,????????...",
+                        "[槽位 %d] 批次 %s 项 %s 已点击官方 Submit，等待确认官方结果...",
+                        slot_id,
                         batch_id,
                         item_id,
                     )
                     summary["submitted"] = True
 
                     success_detected = False
-                    for _ in range(15):
-                        await page.wait_for_timeout(1000)
+                    already_registered = False
+                    gateway_timeout_detected = False
+                    for _ in range(20):
+                        await page.wait_for_timeout(800)
                         page_text = await page.evaluate(
                             "() => document.body ? document.body.innerText : ''"
                         )
@@ -734,25 +863,73 @@ async def process_item(
                                 registration_no = reg_match.group(1).strip()
                             break
 
+                        if re.search(
+                            r"(?:ALREADY\s+REGISTERED|RECORD\s+ALREADY\s+EXISTS|TELAH\s+DIDAFTARKAN)",
+                            page_text,
+                            re.IGNORECASE,
+                        ):
+                            already_registered = True
+                            reg_match = re.search(
+                                r"(?:REGISTRATION\s+NO|NO\s+PENDAFTARAN)[:\s]+([A-Z0-9\-]+)",
+                                page_text,
+                                re.IGNORECASE,
+                            )
+                            if reg_match:
+                                registration_no = reg_match.group(1).strip()
+                            break
+
+                        if re.search(
+                            r"(?:502\s+Bad\s+Gateway|504\s+Gateway\s+Time-out|Internal\s+Server\s+Error)",
+                            page_text,
+                            re.IGNORECASE,
+                        ):
+                            gateway_timeout_detected = True
+                            break
+
+                    if gateway_timeout_detected and attempt < max_attempts:
+                        raise _TransientRetryableError(
+                            "OFFICIAL_GATEWAY_TIMEOUT",
+                            "官方移民局网关 502/504 响应",
+                        )
+
                     if success_detected:
                         LOG.info(
-                            "?? %s ? %s ??????!????: %s",
+                            "[槽位 %d] 批次 %s 项 %s 官方注册成功！注册编号: %s",
+                            slot_id,
                             batch_id,
                             item_id,
-                            registration_no or "????",
+                            registration_no or "未提取到",
                         )
                         summary["result_confirmed"] = True
                         summary["registration_no"] = registration_no
                         final_status = "SUCCEEDED"
+                    elif already_registered:
+                        LOG.info(
+                            "[槽位 %d] 批次 %s 项 %s 官方提示记录已存在/已登记，按成功记录！注册编号: %s",
+                            slot_id,
+                            batch_id,
+                            item_id,
+                            registration_no or "未提取到",
+                        )
+                        summary["result_confirmed"] = True
+                        summary["already_registered"] = True
+                        summary["registration_no"] = registration_no
+                        final_status = "SUCCEEDED"
                     else:
+                        if attempt < max_attempts:
+                            raise _TransientRetryableError(
+                                "RESULT_UNKNOWN",
+                                "提交后未在预期时间内确认到官方文字",
+                            )
                         LOG.warning(
-                            "?? %s ? %s ????????????????????,??? RESULT_UNKNOWN ???????",
+                            "[槽位 %d] 批次 %s 项 %s 提交后未能在预期时间内确认到官方成功文字，标记为 RESULT_UNKNOWN 并降级人工审核",
+                            slot_id,
                             batch_id,
                             item_id,
                         )
                         error_code = "RESULT_UNKNOWN"
                         error_message = (
-                            "???????,???????????? SUCCESS ??"
+                            "已提交官方表单，但未能在超时时间内确认到 SUCCESS 或已登记文字"
                         )
                         final_status = "NEEDS_REVIEW"
             else:
@@ -773,22 +950,26 @@ async def process_item(
                             break
                 else:
                     error_code = "SUBMIT_DISABLED_WITHOUT_CAPTCHA"
-                    error_message = "????????? Submit ?????"
+                    error_message = "官方表单缺少滑块且 Submit 按钮被禁用"
                     final_status = "NEEDS_REVIEW"
         else:
             if page_summary.get("manual_review_required"):
                 error_code = "NEEDS_HUMAN_INTERVENTION"
                 error_message = (
-                    "??? MDAC CAPTCHA/??;Worker ???????????,??????"
+                    "检测到 MDAC CAPTCHA/滑块；Worker 未拖动、未破解、未提交，等待人工审核"
                 )
             final_status = "NEEDS_REVIEW"
 
+    except _TransientRetryableError:
+        raise
     except ManualReviewRequired as exc:
         error_code = "NEEDS_HUMAN_INTERVENTION"
         error_message = _safe_text(exc)
         summary["manual_review_required"] = True
         final_status = "NEEDS_REVIEW"
     except (ValueError, WorkerError, PlaywrightTimeoutError) as exc:
+        if attempt < max_attempts and isinstance(exc, PlaywrightTimeoutError):
+            raise _TransientRetryableError("PAGE_TIMEOUT", _safe_text(exc)) from exc
         error_code = "FILL_PREVIEW_FAILED"
         error_message = _safe_text(exc)
         final_status = "NEEDS_REVIEW"
@@ -796,7 +977,7 @@ async def process_item(
         error_code = "UNEXPECTED_FILL_PREVIEW_ERROR"
         error_message = _safe_text(exc)
         final_status = "NEEDS_REVIEW"
-        LOG.exception("?? %s ? %s ?????", batch_id, item_id)
+        LOG.exception("[槽位 %d] 批次 %s 项 %s 未预期错误", slot_id, batch_id, item_id)
 
     try:
         screenshot = await page.screenshot(type="png", full_page=True)
@@ -830,7 +1011,8 @@ async def process_item(
         error_message=error_message,
     )
     LOG.info(
-        "?? %s ? %s ???;status=%s submitted=%s error=%s",
+        "[槽位 %d] 批次 %s 项 %s 已写回；status=%s submitted=%s error=%s",
+        slot_id,
         batch_id,
         item_id,
         final_status,
@@ -839,39 +1021,176 @@ async def process_item(
     )
 
 
-async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
-    batch = client.claim_batch()
-    if not batch:
-        return False
-
-    batch_id = str(batch["id"])
-    client.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
-    LOG.info(
-        "??? MDAC ?? %s;??=%s ????=%s",
-        batch_id,
-        config.execution_mode,
-        config.allow_real_submit,
+async def process_item(
+    *,
+    page: Page,
+    client: SupabaseAdminClient,
+    config: WorkerConfig,
+    batch: dict[str, Any],
+    item: dict[str, Any],
+    slot_id: int = 1,
+    attempt: int = 1,
+    max_attempts: int = 1,
+) -> None:
+    """Backward-compatible entry point for processing a single item."""
+    return await _execute_fill_and_submit(
+        page=page,
+        client=client,
+        config=config,
+        batch=batch,
+        item=item,
+        slot_id=slot_id,
+        attempt=attempt,
+        max_attempts=max_attempts,
     )
 
-    async with async_playwright() as playwright:
-        browser: Browser | None = None
+
+async def _process_item_with_local_retry(
+    page_ref: dict[str, Any],
+    client: SupabaseAdminClient,
+    config: WorkerConfig,
+    batch: dict[str, Any],
+    item: dict[str, Any],
+    slot_id: int = 1,
+) -> None:
+    batch_id = str(batch["id"])
+    item_id = str(item["id"])
+    max_local_attempts = getattr(config, "max_local_attempts", 2)
+    last_error_code = None
+    last_error_message = None
+
+    for attempt in range(1, max_local_attempts + 1):
+        page: Page = page_ref["page"]
+        context = page_ref["context"]
         try:
-            browser_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-            if not config.headless:
-                window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
-                window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
-                browser_args.extend([
-                    f"--window-size={window_size}",
-                    f"--window-position={window_pos}",
-                ])
-            browser = await playwright.chromium.launch(
-                headless=config.headless,
-                args=browser_args,
+            await _execute_fill_and_submit(
+                page=page,
+                client=client,
+                config=config,
+                batch=batch,
+                item=item,
+                slot_id=slot_id,
+                attempt=attempt,
+                max_attempts=max_local_attempts,
             )
+            return  # Successfully completed and written back
+        except _TransientRetryableError as retryable_err:
+            last_error_code = retryable_err.code
+            last_error_message = retryable_err.message
+            if attempt < max_local_attempts:
+                LOG.warning(
+                    "[槽位 %d] 批次 %s 项 %s 第 %d 次尝试遇到瞬态异常 (%s)，准备就地重试...",
+                    slot_id,
+                    batch_id,
+                    item_id,
+                    attempt,
+                    retryable_err,
+                )
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                page_ref["page"] = await context.new_page()
+                await asyncio.sleep(1.5)
+                continue
+        except ManualReviewRequired as mr_err:
+            last_error_code = "NEEDS_HUMAN_INTERVENTION"
+            last_error_message = _safe_text(mr_err)
+            break
+        except (ValueError, WorkerError, PlaywrightTimeoutError) as exc:
+            last_error_code = "FILL_PREVIEW_FAILED"
+            last_error_message = _safe_text(exc)
+            if attempt < max_local_attempts and isinstance(exc, PlaywrightTimeoutError):
+                LOG.warning(
+                    "[槽位 %d] 批次 %s 项 %s 第 %d 次尝试超时 (%s)，准备就地重试...",
+                    slot_id,
+                    batch_id,
+                    item_id,
+                    attempt,
+                    exc,
+                )
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                page_ref["page"] = await context.new_page()
+                await asyncio.sleep(1.5)
+                continue
+            break
+        except Exception as exc:
+            last_error_code = "UNEXPECTED_FILL_PREVIEW_ERROR"
+            last_error_message = _safe_text(exc)
+            LOG.exception("[槽位 %d] 批次 %s 项 %s 未预期错误", slot_id, batch_id, item_id)
+            break
+
+    # If all retries failed without writeback:
+    page = page_ref["page"]
+    screenshot_path = None
+    try:
+        screenshot = await page.screenshot(type="png", full_page=True)
+        screenshot_path = client.upload_screenshot(
+            f"{config.screenshot_prefix}/{batch_id}/{item_id}/preview.png",
+            screenshot,
+        )
+    except Exception as sc_err:
+        LOG.warning("[槽位 %d] 错误状态截图保存失败: %s", slot_id, sc_err)
+
+    client.finish_registration(
+        item_id=item_id,
+        status="NEEDS_REVIEW",
+        registration_no=None,
+        screenshot_path=screenshot_path,
+        raw_summary={
+            "execution_mode": config.execution_mode,
+            "preview_only": not config.allow_real_submit,
+            "submitted": False,
+            "result_confirmed": False,
+            "batch_id": batch_id,
+            "item_id": item_id,
+            "slot_id": slot_id,
+            "attempts": max_local_attempts,
+        },
+        error_code=last_error_code or "FILL_PREVIEW_FAILED",
+        error_message=last_error_message or "表单填写或提交失败",
+    )
+    LOG.info(
+        "[槽位 %d] 批次 %s 项 %s 已写回；status=NEEDS_REVIEW error=%s",
+        slot_id,
+        batch_id,
+        item_id,
+        last_error_code or "none",
+    )
+
+
+async def _run_slot_browser(
+    slot_id: int,
+    batch: dict[str, Any],
+    config: WorkerConfig,
+    client: SupabaseAdminClient,
+    stop_batch: threading.Event,
+    active_slots: dict[int, dict[str, Any]],
+    active_lock: threading.Lock,
+    processed_counter: dict[str, int],
+    counter_lock: threading.Lock,
+) -> None:
+    batch_id = str(batch["id"])
+    async with async_playwright() as playwright:
+        browser_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ]
+        if not config.headless:
+            window_pos, window_size = compute_slot_window_geometry(slot_id)
+            browser_args.extend([
+                f"--window-size={window_size}",
+                f"--window-position={window_pos}",
+            ])
+        browser: Browser = await playwright.chromium.launch(
+            headless=config.headless,
+            args=browser_args,
+        )
+        try:
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 locale="en-MY",
@@ -885,74 +1204,165 @@ async def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
             await context.add_init_script("delete Object.getPrototypeOf(navigator).webdriver")
             if not config.allow_real_submit:
                 await _block_form_posts(context)
+
             page = await context.new_page()
-            while True:
+            page_ref = {"page": page, "context": context}
+            while not stop_batch.is_set():
                 item = client.claim_item(batch_id)
                 if not item:
                     break
-                client.heartbeat_tick(status="BUSY", batch_id=batch_id)
+
+                item_id = str(item["id"])
+                with active_lock:
+                    active_slots[slot_id] = {"item_id": item_id}
+
                 try:
-                    await process_item(
-                        page=page,
+                    await _process_item_with_local_retry(
+                        page_ref=page_ref,
                         client=client,
                         config=config,
                         batch=batch,
                         item=item,
+                        slot_id=slot_id,
                     )
+                    with counter_lock:
+                        processed_counter["count"] += 1
                 finally:
-                    await page.close()
-                    page = await context.new_page()
-            await context.close()
-        except Exception:
-            LOG.exception("?? %s ???????", batch_id)
-            raise
-        finally:
-            if browser is not None:
-                await browser.close()
+                    with active_lock:
+                        active_slots.pop(slot_id, None)
+                    try:
+                        await page_ref["page"].close()
+                    except Exception:
+                        pass
+                    page_ref["page"] = await context.new_page()
 
+            await context.close()
+        finally:
+            await browser.close()
+
+
+def run_once(config: WorkerConfig, client: SupabaseAdminClient) -> bool:
+    batch = client.claim_batch()
+    if not batch:
+        return False
+
+    batch_id = str(batch["id"])
+    client.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
+    concurrency = min(config.concurrency, 8)
+    LOG.info(
+        "已领取 MDAC 批次 %s；模式=%s 允许提交=%s 并发槽位=%d 错峰间隔=%.1fs",
+        batch_id,
+        config.execution_mode,
+        config.allow_real_submit,
+        concurrency,
+        config.slot_stagger_seconds,
+    )
+
+    stop_batch = threading.Event()
+    active_slots: dict[int, dict[str, Any]] = {}
+    active_lock = threading.Lock()
+    processed_counter = {"count": 0}
+    counter_lock = threading.Lock()
+
+    def batch_heartbeat_worker() -> None:
+        hb_client = SupabaseAdminClient(config)
+        while not stop_batch.is_set():
+            try:
+                with active_lock:
+                    active_count = len(active_slots)
+                status = "BUSY" if active_count > 0 else "ONLINE"
+                hb_client.heartbeat(
+                    status=status,
+                    batch_id=batch_id if active_count > 0 else None,
+                )
+            except Exception:
+                pass
+            stop_batch.wait(15.0)
+
+    def slot_worker(slot_id: int) -> None:
+        stagger_unit = config.slot_stagger_seconds
+        if stagger_unit > 0 and slot_id > 1:
+            stagger_delay = (slot_id - 1) * stagger_unit
+            LOG.info("[槽位 %d] 错峰冷启动等待 %.1f 秒...", slot_id, stagger_delay)
+            stop_batch.wait(stagger_delay)
+
+        slot_supabase = SupabaseAdminClient(config)
+        try:
+            asyncio.run(
+                _run_slot_browser(
+                    slot_id=slot_id,
+                    batch=batch,
+                    config=config,
+                    client=slot_supabase,
+                    stop_batch=stop_batch,
+                    active_slots=active_slots,
+                    active_lock=active_lock,
+                    processed_counter=processed_counter,
+                    counter_lock=counter_lock,
+                )
+            )
+        except Exception:
+            LOG.exception("[槽位 %d] 浏览器执行异常", slot_id)
+
+    hb_thread = threading.Thread(target=batch_heartbeat_worker, name="MDACBatchHB", daemon=True)
+    hb_thread.start()
+
+    threads: list[threading.Thread] = []
+    for s in range(1, concurrency + 1):
+        t = threading.Thread(target=slot_worker, args=(s,), name=f"MDACSlot-{s}", daemon=True)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    stop_batch.set()
+    hb_thread.join(timeout=2.0)
+
+    processed = processed_counter["count"]
     client.heartbeat_tick(status="ONLINE", force=True)
-    LOG.info("?? %s ????", batch_id)
+    LOG.info("批次 %s 处理完成，共完成 %d 项", batch_id, processed)
     return True
 
 
-async def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
+def run_poll(config: WorkerConfig, client: SupabaseAdminClient) -> None:
     client.heartbeat_tick(status="ONLINE", force=True)
     backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
     backoff_idx = 0
     while True:
         try:
             client.heartbeat_tick(status="ONLINE")
-            processed = await run_once(config, client)
+            processed = run_once(config, client)
             if processed:
-                # ?????????????,????????????
+                # 任务处理完成后重置退避计时，立即拉取下一批次连续处理
                 backoff_idx = 0
                 continue
 
             sleep_duration = backoff_steps[backoff_idx]
             if backoff_idx < len(backoff_steps) - 1:
                 backoff_idx += 1
-            await asyncio.sleep(sleep_duration)
+            time.sleep(sleep_duration)
         except (WorkerError, requests.RequestException) as exc:
-            LOG.error("MDAC fill-preview Worker ??:%s", exc)
+            LOG.error("MDAC 自动注册 Worker 错误：%s", exc)
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001 - keep poll loop alive
-                LOG.exception("??????????")
-            await asyncio.sleep(5.0)
+                LOG.exception("错误状态心跳写入失败")
+            time.sleep(5.0)
         except Exception:
-            LOG.exception("MDAC fill-preview Worker ?????")
+            LOG.exception("MDAC 自动注册 Worker 未预期错误")
             try:
                 client.heartbeat(status="ERROR")
             except Exception:  # noqa: BLE001
-                LOG.exception("???????????")
-            await asyncio.sleep(5.0)
+                LOG.exception("未预期错误心跳写入失败")
+            time.sleep(5.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MDAC fill-preview Worker; never submits")
-    parser.add_argument("--once", action="store_true", help="???????????")
-    parser.add_argument("--poll", action="store_true", help="???? Supabase ??")
-    parser.add_argument("--verbose", action="store_true", help="?? DEBUG ??")
+    parser.add_argument("--once", action="store_true", help="处理一个队列批次后退出")
+    parser.add_argument("--poll", action="store_true", help="持续轮询 Supabase 队列")
+    parser.add_argument("--verbose", action="store_true", help="启用 DEBUG 日志")
     return parser
 
 
@@ -968,17 +1378,18 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     print("========================================================")
-    print("        MDAC ??? Worker ???(????)")
+    print("        MDAC 办公室 Worker 已启动（本地服务）")
     print(f"  Worker ID: {config.worker_id}")
-    print(f"  ????: {config.execution_mode} (??????: {config.allow_real_submit})")
-    print(f"  ?????: {'????' if config.headless else '????'}")
-    print("  ???? Supabase ??????...")
+    print(f"  运行模式: {config.execution_mode} (允许真实提交: {config.allow_real_submit})")
+    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
+    print(f"  并发槽位: {config.concurrency} | 错峰冷启动: {config.slot_stagger_seconds}s | 本地重试: {config.max_local_attempts}次")
+    print("  正在监听 Supabase 批次任务队列...")
     print("========================================================")
     client = SupabaseAdminClient(config)
     if args.once:
-        asyncio.run(run_once(config, client))
+        run_once(config, client)
         return
-    asyncio.run(run_poll(config, client))
+    run_poll(config, client)
 
 
 if __name__ == "__main__":
