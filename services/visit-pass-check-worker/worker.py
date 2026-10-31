@@ -850,6 +850,56 @@ def classify_page_failure(exception: Exception) -> tuple[str, str, bool]:
     return ("VISIT_PASS_CHECK_WORKER_ERROR", "Check Visit Pass preview failed", True)
 
 
+def compute_slot_window_geometry(slot_id: int) -> tuple[str, str]:
+    """Compute 2x2 quadrant window position and size for concurrent slots.
+
+    Dynamically queries Windows desktop working area (excluding taskbar)
+    to cleanly divide the screen into 4 quadrants:
+      - Slot 1: Top-Left (左上角, e.g. 0,0 768x412)
+      - Slot 2: Top-Right (右上角, e.g. 768,0 768x412)
+      - Slot 3: Bottom-Left (左下角, e.g. 0,412 768x412)
+      - Slot 4: Bottom-Right (右下角, e.g. 768,412 768x412)
+    """
+    env_pos = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_POSITION")
+    env_size = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_SIZE")
+    if env_pos and env_size:
+        return env_pos, env_size
+
+    work_w, work_h = 1536, 824
+    origin_x, origin_y = 0, 0
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            rect = RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+                work_w = rect.right - rect.left
+                work_h = rect.bottom - rect.top
+                origin_x = rect.left
+                origin_y = rect.top
+        except Exception:
+            pass
+
+    w2 = work_w // 2
+    h2 = work_h // 2
+    grid = {
+        1: (f"{origin_x},{origin_y}", f"{w2},{h2}"),
+        2: (f"{origin_x + w2},{origin_y}", f"{work_w - w2},{h2}"),
+        3: (f"{origin_x},{origin_y + h2}", f"{w2},{work_h - h2}"),
+        4: (f"{origin_x + w2},{origin_y + h2}", f"{work_w - w2},{work_h - h2}"),
+    }
+    return grid.get(slot_id, (f"{origin_x},{origin_y}", f"{w2},{h2}"))
+
+
 async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
@@ -863,21 +913,11 @@ async def query_and_capture_page(
             "--disable-blink-features=AutomationControlled",
         ]
         if not config.headless:
-            env_pos = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_POSITION")
-            env_size = os.getenv(f"VISIT_PASS_SLOT_{slot_id}_SIZE")
-            if env_pos and env_size:
-                window_pos, window_size = env_pos, env_size
-            elif getattr(config, "concurrency", 4) == 1 and os.getenv("BROWSER_WINDOW_POSITION"):
+            if getattr(config, "concurrency", 4) == 1 and os.getenv("BROWSER_WINDOW_POSITION"):
                 window_pos = os.getenv("BROWSER_WINDOW_POSITION", "665,20")
                 window_size = os.getenv("BROWSER_WINDOW_SIZE", "840,820")
             else:
-                default_grid = {
-                    1: ("645,10", "440,410"),
-                    2: ("1090,10", "440,410"),
-                    3: ("645,430", "440,410"),
-                    4: ("1090,430", "440,410"),
-                }
-                window_pos, window_size = default_grid.get(slot_id, ("645,10", "440,410"))
+                window_pos, window_size = compute_slot_window_geometry(slot_id)
 
             browser_args.extend([
                 f"--window-size={window_size}",

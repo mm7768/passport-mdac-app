@@ -515,6 +515,27 @@ class VisitPassWorkerTests(unittest.TestCase):
             self.assertEqual(cfg.query_grace_seconds, 15)
             self.assertEqual(cfg.max_local_attempts, 2)
 
+    def test_compute_slot_window_geometry_quadrants(self) -> None:
+        # Verify 4 slots cover 4 quadrants without errors
+        for slot in (1, 2, 3, 4):
+            pos, size = MODULE.compute_slot_window_geometry(slot)
+            x, y = map(int, pos.split(","))
+            w, h = map(int, size.split(","))
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertGreater(w, 300)
+            self.assertGreater(h, 200)
+
+    def test_compute_slot_window_geometry_env_override(self) -> None:
+        env_override = {
+            "VISIT_PASS_SLOT_2_POSITION": "100,200",
+            "VISIT_PASS_SLOT_2_SIZE": "500,600",
+        }
+        with patch.dict(os.environ, env_override):
+            pos, size = MODULE.compute_slot_window_geometry(2)
+            self.assertEqual(pos, "100,200")
+            self.assertEqual(size, "500,600")
+
 class _FakeSupabase:
     def __init__(self) -> None:
         self.items = [{"id": "item-1", "customer_id": "customer-1", "case_id": "case-1"}]
