@@ -19,6 +19,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ def log_event(
     batch_id: str | None = None,
     item_id: str | None = None,
     customer_id: str | None = None,
+    case_id: str | None = None,
     result: Any = None,
     error_code: str | None = None,
     error_message: str | None = None,
@@ -55,6 +57,7 @@ def log_event(
         "batch_id": batch_id,
         "item_id": item_id,
         "customer_id": customer_id,
+        "case_id": case_id,
         "step": step,
         "status": status,
         "result": result,
@@ -106,6 +109,11 @@ class WorkerConfig:
     screenshot_bucket: str
     screenshot_prefix: str
     log_level: str
+    concurrency: int = 4
+    slot_stagger_seconds: float = 1.5
+    query_wait_seconds: int = 45
+    query_grace_seconds: int = 15
+    max_local_attempts: int = 2
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -113,35 +121,35 @@ class WorkerConfig:
         def required(name: str) -> str:
             value = os.getenv(name, "").strip()
             if not value:
-                raise WorkerError(f"??????:{name}")
+                raise WorkerError(f"缺少环境变量：{name}")
             return value
 
         def positive_float(name: str, default: str, minimum: float) -> float:
             try:
                 value = float(os.getenv(name, default))
             except ValueError as exc:
-                raise WorkerError(f"{name} ?????") from exc
+                raise WorkerError(f"{name} 必须是数字") from exc
             if value < minimum:
-                raise WorkerError(f"{name} ??????? {minimum}")
+                raise WorkerError(f"{name} 必须大于或等于 {minimum}")
             return value
 
         def bounded_int(name: str, default: str, lower: int, upper: int) -> int:
             try:
                 value = int(os.getenv(name, default))
             except ValueError as exc:
-                raise WorkerError(f"{name} ?????") from exc
+                raise WorkerError(f"{name} 必须是整数") from exc
             if value < lower or value > upper:
-                raise WorkerError(f"{name} ??? {lower} ? {upper} ??")
+                raise WorkerError(f"{name} 必须在 {lower} 到 {upper} 之间")
             return value
 
         mode = os.getenv("REGISTRATION_CHECK_MODE", "AUTO_SEARCH").strip().upper() or "AUTO_SEARCH"
         if mode not in {"AUTO_SEARCH", "FILL_REVIEW"}:
-            raise WorkerError("REGISTRATION_CHECK_MODE ??? AUTO_SEARCH ? FILL_REVIEW")
+            raise WorkerError("REGISTRATION_CHECK_MODE 必须为 AUTO_SEARCH 或 FILL_REVIEW")
 
         raw_allow_submit = os.getenv("ALLOW_REAL_SUBMIT", "").strip().lower()
         if mode == "FILL_REVIEW":
             if raw_allow_submit and raw_allow_submit != "false":
-                raise WorkerError("FILL_REVIEW ??? ALLOW_REAL_SUBMIT ??? false")
+                raise WorkerError("FILL_REVIEW 模式下 ALLOW_REAL_SUBMIT 必须为 false")
             allow_real_submit = False
         else:
             allow_real_submit = raw_allow_submit != "false"
@@ -173,6 +181,11 @@ class WorkerConfig:
                 or "registration-check-previews"
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+            concurrency=bounded_int("REGISTRATION_CHECK_CONCURRENCY", "4", 1, 8),
+            slot_stagger_seconds=positive_float("REGISTRATION_CHECK_SLOT_STAGGER_SECONDS", "1.5", 0.0),
+            query_wait_seconds=bounded_int("REGISTRATION_CHECK_QUERY_WAIT_SECONDS", "45", 15, 120),
+            query_grace_seconds=bounded_int("REGISTRATION_CHECK_QUERY_GRACE_SECONDS", "15", 0, 60),
+            max_local_attempts=bounded_int("REGISTRATION_CHECK_MAX_LOCAL_ATTEMPTS", "2", 1, 5),
         )
 
 
@@ -192,15 +205,24 @@ class SupabaseAdminClient:
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}??:HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
 
-    def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
+    def _rpc(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        h = {}
+        if headers:
+            h.update(headers)
         response = self.session.post(
             f"{self.rest_url}/rpc/{name}",
             json=payload,
+            headers=h or None,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, f"?? Supabase RPC {name}")
+        self._check(response, f"调用 Supabase RPC {name}")
         if not response.content:
             return None
         return response.json()
@@ -217,10 +239,18 @@ class SupabaseAdminClient:
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_registration_check_batch ???????")
+            raise WorkerError("claim_registration_check_batch 返回格式不正确")
         return dict(rows[0])
 
-    def claim_item(self, batch_id: str) -> dict[str, Any] | None:
+    def claim_item(
+        self,
+        batch_id: str,
+        batch_claim_token: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
         rows = self._rpc(
             "claim_registration_check_item",
             {
@@ -229,11 +259,12 @@ class SupabaseAdminClient:
                 "p_lease_seconds": self.config.lease_seconds,
                 "p_max_attempts": self.config.max_attempts,
             },
+            headers=headers,
         )
         if not rows:
             return None
         if not isinstance(rows, list):
-            raise WorkerError("claim_registration_check_item ???????")
+            raise WorkerError("claim_registration_check_item 返回格式不正确")
         return dict(rows[0])
 
     def get_runtime_input(self, item_id: str) -> dict[str, str]:
@@ -242,13 +273,13 @@ class SupabaseAdminClient:
             {"p_item_id": item_id, "p_worker_id": self.config.worker_id},
         )
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            raise WorkerError("Check Registration ????????????")
+            raise WorkerError("Check Registration 运行时输入返回格式不正确")
         row = dict(rows[0])
         passport_number = normalize_passport(row.get("passport_number"))
         nationality = normalize_nationality(row.get("nationality"))
         pin_value = normalize_pin(row.get("pin_value"))
         if not passport_number or not nationality or not pin_value:
-            raise WorkerError("Check Registration ???????")
+            raise WorkerError("Check Registration 运行时输入缺失")
         return {
             "passport_number": passport_number,
             "nationality": nationality,
@@ -261,19 +292,48 @@ class SupabaseAdminClient:
         status: str,
         batch_id: str | None = None,
         item_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
     ) -> None:
-        self._rpc(
-            "heartbeat_registration_check",
-            {
-                "p_worker_id": self.config.worker_id,
-                "p_batch_id": batch_id,
-                "p_item_id": item_id,
-                "p_lease_seconds": self.config.lease_seconds,
-                "p_status": status,
-                "p_hostname": socket.gethostname(),
-                "p_version": "registration-check-auto-2",
-            },
-        )
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
+        try:
+            self._rpc(
+                "heartbeat_registration_check",
+                {
+                    "p_worker_id": self.config.worker_id,
+                    "p_batch_id": batch_id,
+                    "p_item_id": item_id,
+                    "p_lease_seconds": self.config.lease_seconds,
+                    "p_status": status,
+                    "p_hostname": socket.gethostname(),
+                    "p_version": "registration-check-auto-2",
+                },
+                headers=headers,
+            )
+        except Exception as exc:
+            LOG.debug("heartbeat_registration_check RPC 异常: %s", exc)
+
+        meta = {
+            "execution_mode": "REGISTRATION_CHECK",
+            "concurrency": getattr(self.config, "concurrency", 4),
+            "active_slots": 0,
+        }
+        if metadata:
+            meta.update(metadata)
+        try:
+            self.session.patch(
+                f"{self.rest_url}/worker_heartbeats",
+                params={"worker_id": f"eq.{self.config.worker_id}"},
+                json={"metadata": meta},
+                timeout=self.config.request_timeout_seconds,
+            )
+        except Exception:
+            pass
 
     def heartbeat_tick(
         self,
@@ -312,7 +372,7 @@ class SupabaseAdminClient:
             data=content,
             timeout=self.config.request_timeout_seconds,
         )
-        self._check(response, f"?? Check Registration ???? ({extension})")
+        self._check(response, f"上传 Check Registration 私有凭证 ({extension})")
         return object_path
 
     def upload_screenshot(self, item_id: str, image_bytes: bytes) -> str:
@@ -327,7 +387,15 @@ class SupabaseAdminClient:
         raw_summary: dict[str, Any] | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
         try:
             result = self._rpc(
                 "finish_registration_check_worker",
@@ -340,12 +408,13 @@ class SupabaseAdminClient:
                     "p_error_code": error_code,
                     "p_error_message": error_message,
                 },
+                headers=headers,
             )
             if isinstance(result, dict):
                 return result
         except Exception as exc:
             LOG.warning(
-                "?? finish_registration_check_worker ??,??? finish_item: %s",
+                "调用 finish_registration_check_worker 异常，回退至 finish_item: %s",
                 exc,
             )
 
@@ -367,6 +436,8 @@ class SupabaseAdminClient:
             retryable=False,
             error_code=error_code,
             error_message=error_message,
+            batch_claim_token=batch_claim_token,
+            item_claim_token=item_claim_token,
         )
 
     def finish_item(
@@ -382,7 +453,15 @@ class SupabaseAdminClient:
         retryable: bool,
         error_code: str | None,
         error_message: str | None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        headers = {}
+        if batch_claim_token:
+            headers["x-mdac-batch-token"] = str(batch_claim_token)
+        if item_claim_token:
+            headers["x-mdac-item-token"] = str(item_claim_token)
         result = self._rpc(
             "finish_registration_check_item",
             {
@@ -400,9 +479,10 @@ class SupabaseAdminClient:
                 "p_error_code": error_code,
                 "p_error_message": error_message,
             },
+            headers=headers,
         )
         if not isinstance(result, dict):
-            raise WorkerError("finish_registration_check_item ???????")
+            raise WorkerError("finish_registration_check_item 返回格式不正确")
         return result
 
 
@@ -506,20 +586,76 @@ def check_dates_match(page_text: str, entry_date: str | None, exit_date: str | N
     return has_entry and has_exit
 
 
+def compute_slot_window_geometry(slot_id: int) -> tuple[str, str]:
+    """Compute 2x2 quadrant window position and size for concurrent slots.
+
+    Dynamically queries Windows desktop working area (excluding taskbar)
+    to cleanly divide the screen into 4 quadrants:
+      - Slot 1: Top-Left (左上角, e.g. 0,0 768x412)
+      - Slot 2: Top-Right (右上角, e.g. 768,0 768x412)
+      - Slot 3: Bottom-Left (左下角, e.g. 0,412 768x412)
+      - Slot 4: Bottom-Right (右下角, e.g. 768,412 768x412)
+    """
+    env_pos = os.getenv(f"REGISTRATION_CHECK_SLOT_{slot_id}_POSITION")
+    env_size = os.getenv(f"REGISTRATION_CHECK_SLOT_{slot_id}_SIZE")
+    if env_pos and env_size:
+        return env_pos, env_size
+
+    work_w, work_h = 1536, 824
+    origin_x, origin_y = 0, 0
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            rect = RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+                work_w = rect.right - rect.left
+                work_h = rect.bottom - rect.top
+                origin_x = rect.left
+                origin_y = rect.top
+        except Exception:
+            pass
+
+    w2 = work_w // 2
+    h2 = work_h // 2
+    grid = {
+        1: (f"{origin_x},{origin_y}", f"{w2},{h2}"),
+        2: (f"{origin_x + w2},{origin_y}", f"{work_w - w2},{h2}"),
+        3: (f"{origin_x},{origin_y + h2}", f"{w2},{work_h - h2}"),
+        4: (f"{origin_x + w2},{origin_y + h2}", f"{work_w - w2},{work_h - h2}"),
+    }
+    return grid.get(slot_id, (f"{origin_x},{origin_y}", f"{w2},{h2}"))
+
+
 async def query_and_capture_page(
     config: WorkerConfig,
     runtime_input: dict[str, str],
     target_entry_date: str | None = None,
     target_exit_date: str | None = None,
+    slot_id: int = 1,
+    **kwargs: Any,
 ) -> tuple[str, bytes, str, dict[str, Any]]:
     async with async_playwright() as playwright:
         browser_args = [
             "--no-sandbox",
+            "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",
         ]
         if not config.headless:
-            window_size = os.getenv("BROWSER_WINDOW_SIZE", "820,780")
-            window_pos = os.getenv("BROWSER_WINDOW_POSITION", "700,40")
+            if getattr(config, "concurrency", 4) == 1 and os.getenv("BROWSER_WINDOW_POSITION"):
+                window_pos = os.getenv("BROWSER_WINDOW_POSITION", "700,40")
+                window_size = os.getenv("BROWSER_WINDOW_SIZE", "820,780")
+            else:
+                window_pos, window_size = compute_slot_window_geometry(slot_id)
             browser_args.extend([
                 f"--window-size={window_size}",
                 f"--window-position={window_pos}",
@@ -535,6 +671,15 @@ async def query_and_capture_page(
         )
         try:
             page: Page = await context.new_page()
+
+            dialog_messages: list[str] = []
+            async def on_dialog(dialog):
+                msg = dialog.message
+                dialog_messages.append(msg)
+                LOG.info("[槽位 %d] 官网弹窗: %s", slot_id, msg)
+                await dialog.accept()
+            page.on("dialog", on_dialog)
+
             await page.goto(
                 config.check_url,
                 wait_until="domcontentloaded",
@@ -554,7 +699,7 @@ async def query_and_capture_page(
                 "pinKeyId": (await page.input_value("#pinKeyId")) == runtime_input["pin_value"],
             }
             if not all(field_checks.values()):
-                raise WorkerError("Check Registration ???????")
+                raise WorkerError("Check Registration 字段回读不一致")
 
             markup = await page.content()
             challenge_type = challenge_type_from_markup(markup)
@@ -563,7 +708,7 @@ async def query_and_capture_page(
                 slider_ok = True
                 canvas_count = await page.locator("canvas").count()
                 if challenge_type == "CAPTCHA_SLIDER" or canvas_count >= 2:
-                    LOG.info("??? Check Registration ??,?? slider_solver ????...")
+                    LOG.info("[槽位 %d] 检测到 Check Registration 滑块，调用 slider_solver 自动处理...", slot_id)
                     slider_ok = await solve_mdac_slider(page, log_func=LOG.info, max_retries=3)
 
                 if not slider_ok:
@@ -577,7 +722,7 @@ async def query_and_capture_page(
                     summary["error"] = "SLIDER_SOLVER_FAILED"
                     return ("NEEDS_REVIEW", screenshot, "png", summary)
 
-                LOG.info("??????,???? Submit ??...")
+                LOG.info("[槽位 %d] 滑块验证通过，准备触发 Submit 查询...", slot_id)
                 submit_locator = page.locator(
                     "#submit, button[type='submit'], input[type='submit'], #searchRegistration"
                 ).first
@@ -585,151 +730,212 @@ async def query_and_capture_page(
                     await page.wait_for_timeout(1000)
 
                 await submit_locator.click()
-                LOG.info("??? Submit ??,??????...")
+                LOG.info("[槽位 %d] 已点击 Submit 查询，等待结果返回...", slot_id)
 
-                for _ in range(20):
+                query_wait_seconds = getattr(config, "query_wait_seconds", 45)
+                query_grace_seconds = getattr(config, "query_grace_seconds", 15)
+                explicit_invalid_pin = False
+                explicit_no_record = False
+                found_record = False
+                page_text = ""
+
+                for _ in range(query_wait_seconds):
                     await page.wait_for_timeout(1000)
+                    all_dialog_text = " ".join(dialog_messages).lower()
+                    if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text or "pin salah" in all_dialog_text:
+                        explicit_invalid_pin = True
+                        break
+                    if "no record" in all_dialog_text or "rekod tidak dijumpai" in all_dialog_text or "tiada rekod" in all_dialog_text:
+                        explicit_no_record = True
+                        break
+
                     page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
                     lowered_text = page_text.lower()
 
-                    if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text:
-                        LOG.info("????????:?????? (NO_RECORD)")
-                        screenshot = await page.screenshot(full_page=True, type="png")
-                        return ("NO_RECORD", screenshot, "png", {
-                            "source": "MDAC_CHECK_REGISTRATION",
-                            "outcome": "NO_RECORD",
-                            "slider_solved": True,
-                            "submitted": True,
-                        })
+                    if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text or "tiada rekod" in lowered_text:
+                        explicit_no_record = True
+                        break
 
-                    if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text:
-                        LOG.warning("????????:PIN ?? (PIN_INVALID)")
-                        screenshot = await page.screenshot(full_page=True, type="png")
-                        return ("PIN_INVALID", screenshot, "png", {
-                            "source": "MDAC_CHECK_REGISTRATION",
-                            "outcome": "PIN_INVALID",
-                            "slider_solved": True,
-                            "submitted": True,
-                        })
+                    if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text or "pin salah" in lowered_text:
+                        explicit_invalid_pin = True
+                        break
 
                     if ("registration no" in lowered_text or "no pendaftaran" in lowered_text
                             or "tarikh masuk" in lowered_text or "date of arrival" in lowered_text
                             or "traveling information" in lowered_text or "trip id" in lowered_text):
-                        if not check_dates_match(page_text, target_entry_date, target_exit_date):
-                            LOG.warning("?????????? MDAC ???,??????????")
-                            screenshot = await page.screenshot(full_page=True, type="png")
-                            return ("NEEDS_REVIEW", screenshot, "png", {
-                                "source": "MDAC_CHECK_REGISTRATION",
-                                "outcome": "DATE_MISMATCH",
-                                "slider_solved": True,
-                                "submitted": True,
-                                "note": "??????????,?????",
-                            })
+                        found_record = True
+                        break
 
-                        # ????????????? MDAC Slip PDF
-                        pdf_downloaded: bytes | None = None
-                        target_trip_id: str | None = None
-                        try:
-                            rows = await page.locator("table tr:has(td)").all()
-                            target_row = None
+                if not (explicit_invalid_pin or explicit_no_record or found_record) and query_grace_seconds > 0:
+                    is_still_loading = await page.evaluate("""() => {
+                        const loader = document.querySelector('.blockUI, .loading, .spinner, .overlay, .modal-backdrop');
+                        const body = document.body ? document.body.innerText : '';
+                        return Boolean(loader || body.includes('Loading') || body.includes('Memuatkan'));
+                    }""")
+                    if is_still_loading:
+                        LOG.info("[槽位 %d] 官网页面仍在加载中，启动弹性宽限期 (%d 秒)...", slot_id, query_grace_seconds)
+                        for _ in range(query_grace_seconds):
+                            await page.wait_for_timeout(1000)
+                            all_dialog_text = " ".join(dialog_messages).lower()
+                            if "invalid pin" in all_dialog_text or "pin tidak sah" in all_dialog_text:
+                                explicit_invalid_pin = True
+                                break
+                            if "no record" in all_dialog_text or "rekod tidak dijumpai" in all_dialog_text:
+                                explicit_no_record = True
+                                break
+                            page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+                            lowered_text = page_text.lower()
+                            if "no record found" in lowered_text or "rekod tidak dijumpai" in lowered_text:
+                                explicit_no_record = True
+                                break
+                            if "invalid pin" in lowered_text or "pin tidak sah" in lowered_text:
+                                explicit_invalid_pin = True
+                                break
+                            if ("registration no" in lowered_text or "no pendaftaran" in lowered_text
+                                    or "tarikh masuk" in lowered_text or "date of arrival" in lowered_text
+                                    or "traveling information" in lowered_text or "trip id" in lowered_text):
+                                found_record = True
+                                break
 
-                            entry_cands = date_candidates(target_entry_date) if target_entry_date else []
-                            for row in rows:
-                                row_text = await row.inner_text()
-                                if any(c.upper() in row_text.upper() for c in entry_cands):
-                                    target_row = row
-                                    break
+                if explicit_no_record:
+                    LOG.info("[槽位 %d] 官方页面明确显示：没有找到记录 (NO_RECORD)", slot_id)
+                    screenshot = await page.screenshot(full_page=True, type="png")
+                    return ("NO_RECORD", screenshot, "png", {
+                        "source": "MDAC_CHECK_REGISTRATION",
+                        "outcome": "NO_RECORD",
+                        "slider_solved": True,
+                        "submitted": True,
+                    })
 
-                            if target_row is None and rows:
-                                target_row = rows[0]
+                if explicit_invalid_pin:
+                    LOG.warning("[槽位 %d] 官方页面明确显示：PIN 无效 (PIN_INVALID)", slot_id)
+                    screenshot = await page.screenshot(full_page=True, type="png")
+                    return ("PIN_INVALID", screenshot, "png", {
+                        "source": "MDAC_CHECK_REGISTRATION",
+                        "outcome": "PIN_INVALID",
+                        "slider_solved": True,
+                        "submitted": True,
+                    })
 
-                            if target_row is not None:
-                                # ??????? onclick="return printSlip('...');" ??????? Trip ID(????????)
-                                link_locator = target_row.locator("a[onclick*='printSlip']").first
-                                if await link_locator.count() > 0:
-                                    onclick_attr = await link_locator.get_attribute("onclick") or ""
-                                    m = re.search(r"printSlip\(['\"]?([a-zA-Z0-9_-]+)['\"]?\)", onclick_attr)
-                                    if m:
-                                        target_trip_id = m.group(1)
-
-                                if not target_trip_id:
-                                    row_text = await target_row.inner_text()
-                                    trip_match = re.search(r"([A-Za-z0-9]{15,35})", row_text)
-                                    if trip_match:
-                                        target_trip_id = trip_match.group(1)
-
-                                # ??????:???????????? PDF ??,?????? JS ??
-                                for dl_attempt in range(1, 3):
-                                    try:
-                                        LOG.info(
-                                            "???? PDF ?? (? %d ???, Trip ID: %s)...",
-                                            dl_attempt,
-                                            target_trip_id or "??",
-                                        )
-                                        await asyncio.sleep(0.5)
-                                        async with page.expect_download(timeout=20000) as dl_info:
-                                            if await link_locator.count() > 0:
-                                                await link_locator.click()
-                                            elif target_trip_id:
-                                                await page.evaluate("""ti => {
-                                                    if (window.printSlip) {
-                                                        window.printSlip(ti);
-                                                    } else {
-                                                        const h = document.getElementById('hTripId');
-                                                        if (h) h.value = ti;
-                                                        const c = document.getElementById('cetakSlip');
-                                                        if (c) c.click();
-                                                    }
-                                                }""", target_trip_id)
-                                        dl = await dl_info.value
-                                        temp_path = await dl.path()
-                                        with open(temp_path, "rb") as f:
-                                            content = f.read()
-                                        if len(content) >= 4 and content.startswith(b"%PDF"):
-                                            pdf_downloaded = content
-                                            LOG.info("?? PDF ???? (%d ??)", len(content))
-                                            break
-                                    except Exception as single_dl_err:
-                                        LOG.warning(
-                                            "? %d ????? PDF ??: %s",
-                                            dl_attempt,
-                                            single_dl_err,
-                                        )
-                        except Exception as dl_err:
-                            LOG.warning("??????? MDAC PDF ??: %s,???????", dl_err)
-
-                        if pdf_downloaded is not None:
-                            LOG.info("?????? MDAC Slip PDF (%d bytes)", len(pdf_downloaded))
-                            return ("FOUND", pdf_downloaded, "pdf", {
-                                "source": "MDAC_CHECK_REGISTRATION",
-                                "mode": "AUTO_SEARCH",
-                                "evidence_type": "PDF",
-                                "trip_id": target_trip_id,
-                                "slider_solved": True,
-                                "submitted": True,
-                                "result_confirmed": True,
-                            })
-
+                if found_record:
+                    if not check_dates_match(page_text, target_entry_date, target_exit_date):
+                        LOG.warning("[槽位 %d] 查到记录但日期与本次 MDAC 不一致，降级人工审核防止误判", slot_id)
                         screenshot = await page.screenshot(full_page=True, type="png")
-                        LOG.warning("?????? MDAC Slip PDF,???????,????????? (NEEDS_REVIEW)")
                         return ("NEEDS_REVIEW", screenshot, "png", {
                             "source": "MDAC_CHECK_REGISTRATION",
-                            "mode": "AUTO_SEARCH",
-                            "outcome": "PDF_DOWNLOAD_FAILED",
-                            "evidence_type": "SCREENSHOT",
+                            "outcome": "DATE_MISMATCH",
                             "slider_solved": True,
                             "submitted": True,
-                            "result_confirmed": False,
-                            "note": "???????,????? PDF ?????,????????",
+                            "note": "日期与本次目标不一致，需人工核对",
                         })
 
+                    # 尝试定位对应行程并下载官方 MDAC Slip PDF
+                    pdf_downloaded: bytes | None = None
+                    target_trip_id: str | None = None
+                    try:
+                        rows = await page.locator("table tr:has(td)").all()
+                        target_row = None
+
+                        entry_cands = date_candidates(target_entry_date) if target_entry_date else []
+                        for row in rows:
+                            row_text = await row.inner_text()
+                            if any(c.upper() in row_text.upper() for c in entry_cands):
+                                target_row = row
+                                break
+
+                        if target_row is None and rows:
+                            target_row = rows[0]
+
+                        if target_row is not None:
+                            # 优先从目标行的 onclick="return printSlip('...');" 提取完整的官方 Trip ID（包含护照前缀字母）
+                            link_locator = target_row.locator("a[onclick*='printSlip']").first
+                            if await link_locator.count() > 0:
+                                onclick_attr = await link_locator.get_attribute("onclick") or ""
+                                m = re.search(r"printSlip\(['\"]?([a-zA-Z0-9_-]+)['\"]?\)", onclick_attr)
+                                if m:
+                                    target_trip_id = m.group(1)
+
+                            if not target_trip_id:
+                                row_text = await target_row.inner_text()
+                                trip_match = re.search(r"([A-Za-z0-9]{15,35})", row_text)
+                                if trip_match:
+                                    target_trip_id = trip_match.group(1)
+
+                            # 稳健下载循环：优先直接点击目标行的官方 PDF 链接，若失败再回退 JS 触发
+                            for dl_attempt in range(1, 3):
+                                try:
+                                    LOG.info(
+                                        "[槽位 %d] 触发官方 PDF 下载 (第 %d 次尝试, Trip ID: %s)...",
+                                        slot_id,
+                                        dl_attempt,
+                                        target_trip_id or "首行",
+                                    )
+                                    await asyncio.sleep(0.5)
+                                    async with page.expect_download(timeout=20000) as dl_info:
+                                        if await link_locator.count() > 0:
+                                            await link_locator.click()
+                                        elif target_trip_id:
+                                            await page.evaluate("""ti => {
+                                                if (window.printSlip) {
+                                                    window.printSlip(ti);
+                                                } else {
+                                                    const h = document.getElementById('hTripId');
+                                                    if (h) h.value = ti;
+                                                    const c = document.getElementById('cetakSlip');
+                                                    if (c) c.click();
+                                                }
+                                            }""", target_trip_id)
+                                    dl = await dl_info.value
+                                    temp_path = await dl.path()
+                                    with open(temp_path, "rb") as f:
+                                        content = f.read()
+                                    if len(content) >= 4 and content.startswith(b"%PDF"):
+                                        pdf_downloaded = content
+                                        LOG.info("[槽位 %d] 官方 PDF 下载成功 (%d 字节)", slot_id, len(content))
+                                        break
+                                except Exception as single_dl_err:
+                                    LOG.warning(
+                                        "[槽位 %d] 第 %d 次下载官方 PDF 失败: %s",
+                                        slot_id,
+                                        dl_attempt,
+                                        single_dl_err,
+                                    )
+                    except Exception as dl_err:
+                        LOG.warning("[槽位 %d] 定位或下载官方 MDAC PDF 异常: %s，将回退全页截图", slot_id, dl_err)
+
+                    if pdf_downloaded is not None:
+                        LOG.info("[槽位 %d] 成功获取官方 MDAC Slip PDF (%d bytes)", slot_id, len(pdf_downloaded))
+                        return ("FOUND", pdf_downloaded, "pdf", {
+                            "source": "MDAC_CHECK_REGISTRATION",
+                            "mode": "AUTO_SEARCH",
+                            "evidence_type": "PDF",
+                            "trip_id": target_trip_id,
+                            "slider_solved": True,
+                            "submitted": True,
+                            "result_confirmed": True,
+                        })
+
+                    screenshot = await page.screenshot(full_page=True, type="png")
+                    LOG.warning("[槽位 %d] 未能获取官方 MDAC Slip PDF，已截取网页备查，判定为需要人工复核 (NEEDS_REVIEW)", slot_id)
+                    return ("NEEDS_REVIEW", screenshot, "png", {
+                        "source": "MDAC_CHECK_REGISTRATION",
+                        "mode": "AUTO_SEARCH",
+                        "outcome": "PDF_DOWNLOAD_FAILED",
+                        "evidence_type": "SCREENSHOT",
+                        "slider_solved": True,
+                        "submitted": True,
+                        "result_confirmed": False,
+                        "note": "官方已查到记录，但下载官方 PDF 超时或失败，已存截图等待复查",
+                    })
+
                 screenshot = await page.screenshot(full_page=True, type="png")
-                return ("NEEDS_REVIEW", screenshot, "png", {
+                return ("QUERY_TIMEOUT", screenshot, "png", {
                     "source": "MDAC_CHECK_REGISTRATION",
-                    "outcome": "RESULT_UNKNOWN",
+                    "outcome": "QUERY_TIMEOUT",
+                    "error": "QUERY_TIMEOUT",
                     "slider_solved": True,
                     "submitted": True,
-                    "note": "????????????,??????",
+                    "note": "查询后超时未识别明确状态",
                 })
 
             else:
@@ -758,143 +964,340 @@ class RegistrationCheckWorker:
         self.config = config
         self.supabase = SupabaseAdminClient(config)
 
+    def _process_single_item(
+        self,
+        *,
+        slot_supabase: SupabaseAdminClient,
+        batch_id: str,
+        item_id: str,
+        customer_id: str | None,
+        case_id: str | None,
+        slot_id: int,
+        target_entry_date: str | None = None,
+        target_exit_date: str | None = None,
+        batch_claim_token: str | None = None,
+        item_claim_token: str | None = None,
+    ) -> None:
+        runtime_input = slot_supabase.get_runtime_input(item_id)
+        max_local_attempts = getattr(self.config, "max_local_attempts", 2)
+        outcome = None
+        evidence_bytes = None
+        ext = "png"
+        summary = None
+        last_exception = None
+
+        for attempt in range(1, max_local_attempts + 1):
+            try:
+                try:
+                    outcome, evidence_bytes, ext, summary = asyncio.run(
+                        query_and_capture_page(
+                            self.config,
+                            runtime_input,
+                            target_entry_date=target_entry_date,
+                            target_exit_date=target_exit_date,
+                            slot_id=slot_id,
+                        )
+                    )
+                except TypeError:
+                    outcome, evidence_bytes, ext, summary = asyncio.run(
+                        query_and_capture_page(
+                            self.config,
+                            runtime_input,
+                            target_entry_date=target_entry_date,
+                            target_exit_date=target_exit_date,
+                        )
+                    )
+
+                is_transient_outcome = (
+                    outcome == "QUERY_TIMEOUT"
+                    or (outcome == "NEEDS_REVIEW" and summary.get("error") == "SLIDER_SOLVER_FAILED")
+                )
+                if is_transient_outcome and attempt < max_local_attempts:
+                    log_event(
+                        logging.WARNING,
+                        step="page_query_retry",
+                        status="retrying",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        case_id=case_id,
+                        result={
+                            "slot": slot_id,
+                            "attempt": attempt,
+                            "max_attempts": max_local_attempts,
+                            "reason": summary.get("error") or outcome,
+                        },
+                    )
+                    time.sleep(2.0)
+                    continue
+
+                last_exception = None
+                break
+            except Exception as exception:
+                last_exception = exception
+                error_code, error_message, retryable = classify_page_failure(exception)
+                is_transient_exc = error_code in ("PAGE_TIMEOUT", "TRANSIENT_REMOTE_ERROR") or retryable
+                if is_transient_exc and attempt < max_local_attempts:
+                    log_event(
+                        logging.WARNING,
+                        step="page_query_retry",
+                        status="retrying",
+                        batch_id=batch_id,
+                        item_id=item_id,
+                        customer_id=customer_id,
+                        case_id=case_id,
+                        result={
+                            "slot": slot_id,
+                            "attempt": attempt,
+                            "max_attempts": max_local_attempts,
+                            "error_code": error_code,
+                            "error_message": error_message,
+                        },
+                    )
+                    time.sleep(2.0)
+                    continue
+                break
+
+        if last_exception is not None:
+            error_code, error_message, retryable = classify_page_failure(last_exception)
+            log_event(
+                logging.ERROR,
+                step="page_preview",
+                status="failed",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+                case_id=case_id,
+                result="RESULT_UNKNOWN",
+                error_code=error_code,
+                error_message=error_message,
+            )
+            try:
+                slot_supabase.finish_check_worker(
+                    item_id=item_id,
+                    outcome="NEEDS_REVIEW",
+                    evidence_path=None,
+                    raw_summary={
+                        "source": "MDAC_CHECK_REGISTRATION",
+                        "mode": self.config.mode,
+                        "submitted": False,
+                        "result_confirmed": False,
+                        "captcha_bypass": False,
+                        "screenshot_saved": False,
+                        "error": error_code,
+                    },
+                    error_code=error_code,
+                    error_message=error_message,
+                    batch_claim_token=batch_claim_token,
+                    item_claim_token=item_claim_token,
+                )
+            except Exception:
+                log_event(
+                    logging.ERROR,
+                    step="result_writeback",
+                    status="failed",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    case_id=case_id,
+                    result="FAILED",
+                    error_code="SUPABASE_WRITEBACK_FAILED",
+                    error_message="Registration Check failure writeback failed",
+                )
+            return
+
+        evidence_path: str | None = None
+        try:
+            evidence_path = slot_supabase.upload_evidence(item_id, evidence_bytes, ext)
+            summary["evidence_path"] = evidence_path
+        except Exception as upload_err:
+            log_event(
+                logging.WARNING,
+                step="evidence_upload",
+                status="failed",
+                batch_id=batch_id,
+                item_id=item_id,
+                customer_id=customer_id,
+                case_id=case_id,
+                error_code="EVIDENCE_UPLOAD_FAILED",
+                error_message=str(upload_err),
+            )
+            summary["evidence_upload_failed"] = True
+
+        error_code = None
+        error_message = None
+        if outcome == "NEEDS_REVIEW":
+            error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
+            error_message = summary.get("note") or "Check Registration 需要人工审核"
+        elif outcome == "QUERY_TIMEOUT":
+            outcome = "NEEDS_REVIEW"
+            error_code = "QUERY_TIMEOUT"
+            error_message = "官方页面无响应超时，未得出结论"
+        elif outcome == "NO_RECORD":
+            error_code = "NO_RECORD"
+            error_message = "官方页面显示无记录"
+        elif outcome == "PIN_INVALID":
+            error_code = "PIN_INVALID"
+            error_message = "官方页面提示 PIN 错误"
+
+        try:
+            slot_supabase.finish_check_worker(
+                item_id=item_id,
+                outcome=outcome,
+                evidence_path=evidence_path,
+                raw_summary=summary,
+                error_code=error_code,
+                error_message=error_message,
+                batch_claim_token=batch_claim_token,
+                item_claim_token=item_claim_token,
+            )
+        except TypeError:
+            slot_supabase.finish_check_worker(
+                item_id=item_id,
+                outcome=outcome,
+                evidence_path=evidence_path,
+                raw_summary=summary,
+                error_code=error_code,
+                error_message=error_message,
+            )
+
+        log_event(
+            logging.INFO,
+            step="result_writeback",
+            status="succeeded" if outcome == "FOUND" else "processed",
+            batch_id=batch_id,
+            item_id=item_id,
+            customer_id=customer_id,
+            case_id=case_id,
+            result={"outcome": outcome, "slot": slot_id},
+            error_code=error_code,
+            error_message=error_message,
+        )
+
     def process_batch(self, batch: dict[str, Any]) -> int:
         batch_id = str(batch["id"])
-        self.supabase.heartbeat_tick(status="BUSY", batch_id=batch_id, force=True)
+        batch_claim_token = str(batch.get("claim_token") or "")
+        concurrency = getattr(self.config, "concurrency", 4)
         log_event(
             logging.INFO,
             step="batch_claim",
             status="running",
             batch_id=batch_id,
+            result={"concurrency": concurrency},
         )
-        processed = 0
-        while True:
-            item = self.supabase.claim_item(batch_id)
-            if item is None:
-                break
-            item_id = str(item["id"])
-            customer_id = str(item.get("customer_id") or "") or None
-            self.supabase.heartbeat(status="BUSY", batch_id=batch_id, item_id=item_id)
-            log_event(
-                logging.INFO,
-                step="item_claim",
-                status="running",
-                batch_id=batch_id,
-                item_id=item_id,
-                customer_id=customer_id,
-            )
-            try:
-                runtime_input = self.supabase.get_runtime_input(item_id)
+
+        processed_counter = {"count": 0}
+        counter_lock = threading.Lock()
+        active_slots: dict[int, dict[str, Any]] = {}
+        active_lock = threading.Lock()
+        stop_batch = threading.Event()
+
+        def batch_heartbeat_worker() -> None:
+            hb_client = getattr(self, "supabase", None) or SupabaseAdminClient(self.config)
+            while not stop_batch.is_set():
+                try:
+                    with active_lock:
+                        active_count = len(active_slots)
+                        active_items = [v.get("item_id") for v in active_slots.values() if v.get("item_id")]
+                    status = "BUSY" if active_count > 0 else "ONLINE"
+                    meta = {
+                        "execution_mode": "REGISTRATION_CHECK",
+                        "concurrency": concurrency,
+                        "active_slots": active_count,
+                        "active_items": active_items,
+                    }
+                    hb_client.heartbeat(
+                        status=status,
+                        batch_id=batch_id if active_count > 0 else None,
+                        metadata=meta,
+                        batch_claim_token=batch_claim_token if active_count > 0 else None,
+                    )
+                except Exception:
+                    pass
+                stop_batch.wait(15.0)
+
+        def slot_worker(slot_id: int) -> None:
+            stagger_unit = getattr(self.config, "slot_stagger_seconds", 0.0)
+            if stagger_unit > 0 and slot_id > 1:
+                stagger_delay = (slot_id - 1) * stagger_unit
+                LOG.info("[槽位 %d] 错峰冷启动等待 %.1f 秒...", slot_id, stagger_delay)
+                stop_batch.wait(stagger_delay)
+
+            mock_client = getattr(self, "supabase", None)
+            if mock_client and not isinstance(mock_client, SupabaseAdminClient):
+                slot_supabase = mock_client
+            else:
+                slot_supabase = SupabaseAdminClient(self.config)
+            while not stop_batch.is_set():
+                try:
+                    item = slot_supabase.claim_item(batch_id, batch_claim_token=batch_claim_token)
+                except TypeError:
+                    item = slot_supabase.claim_item(batch_id)
+                if item is None:
+                    break
+                item_id = str(item["id"])
+                item_claim_token = str(item.get("claim_token") or "")
+                customer_id = str(item.get("customer_id") or "") or None
+                case_id = str(item.get("case_id") or "") or None
                 snapshot = item.get("customer_snapshot") or {}
                 target_entry_date = snapshot.get("target_entry_date")
                 target_exit_date = snapshot.get("target_exit_date")
 
-                outcome, evidence_bytes, ext, summary = asyncio.run(
-                    query_and_capture_page(
-                        self.config,
-                        runtime_input,
-                        target_entry_date=target_entry_date,
-                        target_exit_date=target_exit_date,
-                    )
-                )
-                evidence_path: str | None = None
-                try:
-                    evidence_path = self.supabase.upload_evidence(item_id, evidence_bytes, ext)
-                    summary["evidence_path"] = evidence_path
-                except Exception as upload_err:
-                    log_event(
-                        logging.WARNING,
-                        step="evidence_upload",
-                        status="failed",
-                        batch_id=batch_id,
-                        item_id=item_id,
-                        customer_id=customer_id,
-                        error_code="EVIDENCE_UPLOAD_FAILED",
-                        error_message=str(upload_err),
-                    )
-                    summary["evidence_upload_failed"] = True
-
-                error_code = None
-                error_message = None
-                if outcome == "NEEDS_REVIEW":
-                    error_code = summary.get("error") or summary.get("outcome") or "MANUAL_REVIEW_REQUIRED"
-                    error_message = summary.get("note") or "Check Registration ??????"
-                elif outcome == "NO_RECORD":
-                    error_code = "NO_RECORD"
-                    error_message = "?????????"
-                elif outcome == "PIN_INVALID":
-                    error_code = "PIN_INVALID"
-                    error_message = "?????? PIN ??"
-
-                self.supabase.finish_check_worker(
-                    item_id=item_id,
-                    outcome=outcome,
-                    evidence_path=evidence_path,
-                    raw_summary=summary,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-                processed += 1
+                with active_lock:
+                    active_slots[slot_id] = {"item_id": item_id, "customer_id": customer_id}
                 log_event(
                     logging.INFO,
-                    step="result_writeback",
-                    status="succeeded" if outcome == "FOUND" else "processed",
+                    step="item_claim",
+                    status="running",
                     batch_id=batch_id,
                     item_id=item_id,
                     customer_id=customer_id,
-                    result=outcome,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-            except Exception as exception:
-                error_code, error_message, retryable = classify_page_failure(exception)
-                log_event(
-                    logging.ERROR,
-                    step="page_preview",
-                    status="failed",
-                    batch_id=batch_id,
-                    item_id=item_id,
-                    customer_id=customer_id,
-                    result="RESULT_UNKNOWN",
-                    error_code=error_code,
-                    error_message=error_message,
+                    case_id=case_id,
+                    result={"slot": slot_id},
                 )
                 try:
-                    self.supabase.finish_check_worker(
-                        item_id=item_id,
-                        outcome="NEEDS_REVIEW",
-                        evidence_path=None,
-                        raw_summary={
-                            "source": "MDAC_CHECK_REGISTRATION",
-                            "mode": self.config.mode,
-                            "submitted": False,
-                            "result_confirmed": False,
-                            "captcha_bypass": False,
-                            "screenshot_saved": False,
-                        },
-                        error_code=error_code,
-                        error_message=error_message,
-                    )
-                except Exception:
-                    log_event(
-                        logging.ERROR,
-                        step="result_writeback",
-                        status="failed",
+                    self._process_single_item(
+                        slot_supabase=slot_supabase,
                         batch_id=batch_id,
                         item_id=item_id,
                         customer_id=customer_id,
-                        result="FAILED",
-                        error_code="SUPABASE_WRITEBACK_FAILED",
-                        error_message="Registration Check failure writeback failed",
+                        case_id=case_id,
+                        slot_id=slot_id,
+                        target_entry_date=target_entry_date,
+                        target_exit_date=target_exit_date,
+                        batch_claim_token=batch_claim_token,
+                        item_claim_token=item_claim_token,
                     )
+                    with counter_lock:
+                        processed_counter["count"] += 1
+                finally:
+                    with active_lock:
+                        active_slots.pop(slot_id, None)
 
-        self.supabase.heartbeat_tick(status="ONLINE", force=True)
+        hb_thread = threading.Thread(target=batch_heartbeat_worker, name="CheckRegHeartbeat", daemon=True)
+        hb_thread.start()
+
+        threads: list[threading.Thread] = []
+        for s in range(1, concurrency + 1):
+            t = threading.Thread(target=slot_worker, args=(s,), name=f"CheckRegSlot-{s}", daemon=True)
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        stop_batch.set()
+        hb_thread.join(timeout=2.0)
+
+        processed = processed_counter["count"]
+        hb_client = getattr(self, "supabase", None) or SupabaseAdminClient(self.config)
+        hb_client.heartbeat_tick(status="ONLINE", force=True)
         log_event(
             logging.INFO,
             step="batch_complete",
             status="completed",
             batch_id=batch_id,
-            result={"processed_count": processed},
+            result={"processed_count": processed, "concurrency": concurrency},
         )
         return processed
 
@@ -926,7 +1329,7 @@ class RegistrationCheckWorker:
                         status="completed",
                         result={"processed_count": processed},
                     )
-                    # ????????????????,????????
+                    # 发现并处理任务后立即重置退避计时，连续拉取下一任务
                     backoff_idx = 0
                     continue
 
@@ -975,11 +1378,11 @@ def main() -> None:
     config = WorkerConfig.from_env()
     configure_logging(config.log_level)
     print("========================================================")
-    print("   Check Registration Worker ???(????)")
+    print("   Check Registration Worker 已启动（本地服务）")
     print(f"  Worker ID: {config.worker_id}")
-    print(f"  ????: {config.mode} (??????: {config.allow_real_submit})")
-    print(f"  ?????: {'????' if config.headless else '????'}")
-    print("  ???? Supabase Registration Check ??...")
+    print(f"  运行模式: {config.mode} (允许真实查询: {config.allow_real_submit})")
+    print(f"  桌面浏览器: {'后台静默' if config.headless else '前台可见'}")
+    print("  正在监听 Supabase Registration Check 队列...")
     print("========================================================")
     worker = RegistrationCheckWorker(config)
     if args.once:
@@ -988,7 +1391,7 @@ def main() -> None:
     if args.poll:
         worker.run_poll()
         return
-    parser.error("???? --once ? --poll")
+    parser.error("必须指定 --once 或 --poll")
 
 
 if __name__ == "__main__":

@@ -167,6 +167,97 @@ class RegistrationCheckWorkerTests(unittest.TestCase):
         self.assertNotIn("pin_value", str(events))
 
 
+    def test_compute_slot_window_geometry_quadrants(self) -> None:
+        for slot in (1, 2, 3, 4):
+            pos, size = worker.compute_slot_window_geometry(slot)
+            x, y = map(int, pos.split(","))
+            w, h = map(int, size.split(","))
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertGreater(w, 300)
+            self.assertGreater(h, 200)
+
+    def test_compute_slot_window_geometry_env_override(self) -> None:
+        env_override = {
+            "REGISTRATION_CHECK_SLOT_2_POSITION": "120,240",
+            "REGISTRATION_CHECK_SLOT_2_SIZE": "520,620",
+        }
+        with patch.dict(os.environ, env_override):
+            pos, size = worker.compute_slot_window_geometry(2)
+            self.assertEqual(pos, "120,240")
+            self.assertEqual(size, "520,620")
+
+    def test_config_reads_concurrency_and_fault_tolerance_defaults(self) -> None:
+        base_env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-test-placeholder",
+            "REGISTRATION_CHECK_WORKER_ID": "test-worker",
+            "REGISTRATION_CHECK_MODE": "AUTO_SEARCH",
+            "ALLOW_REAL_SUBMIT": "true",
+            "REGISTRATION_CHECK_HEADLESS": "false",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            cfg = worker.WorkerConfig.from_env()
+            self.assertEqual(cfg.concurrency, 4)
+            self.assertEqual(cfg.slot_stagger_seconds, 1.5)
+            self.assertEqual(cfg.query_wait_seconds, 45)
+            self.assertEqual(cfg.query_grace_seconds, 15)
+            self.assertEqual(cfg.max_local_attempts, 2)
+
+    def test_process_batch_concurrent_4_slots(self) -> None:
+        supabase = _FakeSupabase()
+        supabase.items = [
+            {"id": f"item-{i}", "customer_id": f"customer-{i}"}
+            for i in range(1, 5)
+        ]
+        instance = worker.RegistrationCheckWorker.__new__(worker.RegistrationCheckWorker)
+        instance.config = SimpleNamespace(
+            concurrency=4,
+            slot_stagger_seconds=0.0,
+            max_local_attempts=2,
+            mode="AUTO_SEARCH",
+        )
+        instance.supabase = supabase
+
+        async def fake_query(config, runtime_input, target_entry_date=None, target_exit_date=None, slot_id=1):
+            return ("FOUND", b"%PDF-1.4", "pdf", {"challenge_type": None, "screenshot_saved": False})
+
+        with patch.object(worker, "query_and_capture_page", side_effect=fake_query):
+            processed = instance.process_batch({"id": "batch-concurrent", "claim_token": "b-tok"})
+
+        self.assertEqual(processed, 4)
+        self.assertEqual(len(supabase.finished), 4)
+        outcomes = [r["outcome"] for r in supabase.finished]
+        self.assertEqual(outcomes, ["FOUND", "FOUND", "FOUND", "FOUND"])
+
+    def test_process_batch_local_retry_on_query_timeout(self) -> None:
+        supabase = _FakeSupabase()
+        supabase.items = [{"id": "item-retry", "customer_id": "cust-retry"}]
+        instance = worker.RegistrationCheckWorker.__new__(worker.RegistrationCheckWorker)
+        instance.config = SimpleNamespace(
+            concurrency=1,
+            slot_stagger_seconds=0.0,
+            max_local_attempts=2,
+            mode="AUTO_SEARCH",
+        )
+        instance.supabase = supabase
+
+        attempts = 0
+        async def mock_query(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return ("QUERY_TIMEOUT", b"png", "png", {"outcome": "QUERY_TIMEOUT", "error": "QUERY_TIMEOUT"})
+            return ("FOUND", b"%PDF-1.4", "pdf", {"outcome": "FOUND"})
+
+        with patch.object(worker, "query_and_capture_page", side_effect=mock_query), patch("time.sleep"):
+            processed = instance.process_batch({"id": "batch-retry", "claim_token": "tok"})
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(supabase.finished), 1)
+        self.assertEqual(supabase.finished[0]["outcome"], "FOUND")
+
 class _FakeSupabase:
     def __init__(self) -> None:
         self.items = [{"id": "item-1", "customer_id": "customer-1"}]
@@ -178,7 +269,7 @@ class _FakeSupabase:
     def heartbeat_tick(self, **kwargs) -> None:
         return None
 
-    def claim_item(self, batch_id: str) -> dict | None:
+    def claim_item(self, batch_id: str, **kwargs) -> dict | None:
         return self.items.pop(0) if self.items else None
 
     def get_runtime_input(self, item_id: str) -> dict[str, str]:
