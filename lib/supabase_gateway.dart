@@ -1180,6 +1180,10 @@ class SupabaseGateway {
           'result_unknown': false,
           'started_at': null,
           'finished_at': null,
+          'locked_by': null,
+          'locked_at': null,
+          'lease_expires_at': null,
+          'next_attempt_at': null,
         })
         .eq('batch_id', batchId)
         .inFilter('status', ['NEEDS_REVIEW', 'FAILED']);
@@ -1188,6 +1192,9 @@ class SupabaseGateway {
         .update({
           'status': 'QUEUED',
           'failed_count': 0,
+          'locked_by': null,
+          'locked_at': null,
+          'lease_expires_at': null,
         })
         .eq('id', batchId);
   }

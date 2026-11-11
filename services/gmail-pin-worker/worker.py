@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 
 import requests
@@ -174,7 +175,11 @@ class WorkerConfig:
         )
 
 
-class SupabaseAdminClient:
+from pathlib import Path as _WorkerPath
+sys.path.insert(0, str(_WorkerPath(__file__).resolve().parents[2]))
+from mdac_protocol import FencedRPCMixin
+
+class SupabaseAdminClient(FencedRPCMixin):
     def __init__(self, config: WorkerConfig) -> None:
         self.config = config
         self.rest_url = f"{config.supabase_url}/rest/v1"
@@ -189,18 +194,10 @@ class SupabaseAdminClient:
 
     def _check(self, response: requests.Response, action: str) -> None:
         if not response.ok:
-            raise WorkerError(f"{action}失败：HTTP {response.status_code} {response.text[:400]}")
+            raise WorkerError(f"{action}失败：HTTP {response.status_code}")
 
     def _rpc(self, name: str, payload: dict[str, Any]) -> Any:
-        response = self.session.post(
-            f"{self.rest_url}/rpc/{name}",
-            json=payload,
-            timeout=self.config.request_timeout_seconds,
-        )
-        self._check(response, f"调用 Supabase RPC {name}")
-        if not response.content:
-            return None
-        return response.json()
+        return self.protocol_rpc(name, payload)
 
     def claim_batch(self) -> dict[str, Any] | None:
         rows = self._rpc(
@@ -443,9 +440,8 @@ def extract_fields(body: str) -> dict[str, str | None]:
     # Matches both single-line ("Name: LI NA") and multi-line HTML table text ("Name\n:\nLI NA")
     name = first(r"Name\s*[:：]\s*([^\n\r]+)")
     passport = first(r"Passport\s+No\.?\s*[:：]\s*([A-Za-z0-9]+)")
-    pin = first(
-        r"PIN\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9\-_]{1,22}[A-Za-z0-9]|[A-Za-z0-9]{3,24})"
-    )
+    # Do not cross a newline after an empty PIN label or truncate inner spaces.
+    pin = first(r"\bPIN[ \t]*[:：][ \t]*([A-Za-z0-9][A-Za-z0-9_ \t-]*)[ \t]*$")
     return {
         "name": name,
         "passport_number": passport.upper() if passport else None,
@@ -453,10 +449,66 @@ def extract_fields(body: str) -> dict[str, str | None]:
     }
 
 
+class _PinTableParser(HTMLParser):
+    """Read a PIN from its own HTML table row, preserving value whitespace."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self.row: list[str] | None = None
+        self.cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag == "tr":
+            self.row = []
+            self.cell = None
+        elif tag in ("td", "th") and self.row is not None:
+            self.cell = []
+        elif tag == "br" and self.cell is not None:
+            self.cell.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self.cell is not None and self.row is not None:
+            self.row.append("".join(self.cell).replace("\xa0", " ").strip())
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            self.rows.append(self.row)
+            self.row = None
+            self.cell = None
+
+
+def extract_html_table_pin(message: Message) -> tuple[bool, str | None]:
+    candidates: set[str] = set()
+    has_pin_row = False
+    for part in message.walk():
+        if part.get_content_type() != "text/html" or part.get_content_disposition() == "attachment":
+            continue
+        parser = _PinTableParser()
+        parser.feed(decode_part_text(part))
+        for row in parser.rows:
+            value = None
+            if len(row) == 3 and row[0].upper() == "PIN" and row[1] in (":", "："):
+                has_pin_row = True
+                value = row[2]
+            elif len(row) == 2 and re.fullmatch(r"PIN\s*[:：]", row[0], flags=re.IGNORECASE):
+                has_pin_row = True
+                value = row[1]
+            if value and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_ \t-]*", value):
+                candidates.add(value)
+    return has_pin_row, next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def parse_message(raw_email: bytes) -> ParsedEmail:
     message = email.message_from_bytes(raw_email)
     body = extract_email_body(message)
     fields = extract_fields(body)
+    has_pin_row, table_pin = extract_html_table_pin(message)
+    if has_pin_row:
+        fields["pin"] = table_pin
     received_at: str | None = None
     date_header = message.get("Date")
     if date_header:
@@ -495,30 +547,12 @@ def decide_for_item(
             error_message="Customer snapshot does not contain a passport number",
         )
 
-    # Determine registration cutoff timestamp if available
-    registration_cutoff: datetime | None = None
-    cutoff_source: str | None = None
-    for key in ("latest_mdac_submitted_at", "customer_created_at", "item_created_at"):
-        val = snapshot.get(key)
-        if val:
-            try:
-                dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
-                # Allow a 30-minute grace window for clock skew / registration delay
-                registration_cutoff = dt - timedelta(minutes=30)
-                cutoff_source = key
-                break
-            except (ValueError, TypeError):
-                continue
-
     previous_pin = normalize_pin(snapshot.get("previous_pin_value"))
-    previous_received_at: datetime | None = None
-    if snapshot.get("previous_pin_received_at"):
-        try:
-            previous_received_at = datetime.fromisoformat(
-                str(snapshot.get("previous_pin_received_at")).replace("Z", "+00:00")
-            )
-        except (ValueError, TypeError):
-            pass
+    previous_received_at = (
+        str(snapshot.get("previous_pin_received_at")).strip()
+        if snapshot.get("previous_pin_received_at")
+        else None
+    )
 
     candidates = [
         message
@@ -534,6 +568,22 @@ def decide_for_item(
         "pin_value_logged": False,
     }
     if not candidates:
+        if previous_pin:
+            reused_email = ParsedEmail(
+                message_id=None,
+                sender=DEFAULT_SENDER,
+                subject="MDAC PIN (Existing Customer Bound PIN)",
+                received_at=previous_received_at,
+                name=str(snapshot.get("full_name") or "").strip() or None,
+                passport_number=passport_number,
+                pin=previous_pin,
+            )
+            return PinDecision(
+                status="RECEIVED",
+                email=reused_email,
+                confidence=1.0,
+                summary={**base_summary, "reason": "existing_customer_pin_reused"},
+            )
         return PinDecision(
             status="NOT_FOUND",
             email=None,
@@ -543,99 +593,40 @@ def decide_for_item(
             error_message="No matching MDAC PIN email found in the lookback window",
         )
 
-    # Partition candidates into fresh and stale based on registration cutoff and historical PIN
-    fresh_candidates: list[ParsedEmail] = []
-    stale_candidates: list[ParsedEmail] = []
-
-    for msg in candidates:
-        msg_dt: datetime | None = None
+    # Customer PIN is uniquely bound to the passport; no old vs new PIN distinction.
+    def _sort_key(msg: ParsedEmail) -> tuple[int, float]:
+        has_pin = 1 if msg.pin is not None else 0
+        ts = 0.0
         if msg.received_at:
             try:
-                msg_dt = datetime.fromisoformat(msg.received_at)
+                ts = datetime.fromisoformat(msg.received_at).timestamp()
             except ValueError:
-                pass
+                ts = 0.0
+        return (has_pin, ts)
 
-        is_stale = False
-        if registration_cutoff and msg_dt and msg_dt < registration_cutoff:
-            is_stale = True
-        elif previous_pin and msg.pin == previous_pin:
-            if previous_received_at and msg_dt and msg_dt <= previous_received_at:
-                is_stale = True
-            elif registration_cutoff and msg_dt and msg_dt <= registration_cutoff:
-                is_stale = True
-
-        if is_stale:
-            stale_candidates.append(msg)
-        else:
-            fresh_candidates.append(msg)
-
-    if not fresh_candidates:
-        if stale_candidates:
-            return PinDecision(
-                status="NOT_FOUND",
-                email=None,
-                confidence=None,
-                summary={
-                    **base_summary,
-                    "reason": "stale_emails_ignored_waiting_for_new",
-                    "stale_candidate_count": len(stale_candidates),
-                    "cutoff": registration_cutoff.isoformat() if registration_cutoff else None,
-                    "cutoff_source": cutoff_source,
-                },
-                error_code="PIN_NOT_FOUND_STALE_IGNORED",
-                error_message="Only historical PIN emails from earlier registration found; waiting for new registration email",
-            )
-        return PinDecision(
-            status="NOT_FOUND",
-            email=None,
-            confidence=None,
-            summary=base_summary,
-            error_code="PIN_NOT_FOUND",
-            error_message="No matching MDAC PIN email found in the lookback window",
-        )
-
-    candidate = fresh_candidates[0]
-    selection_reason = "unique_passport_match"
-    if len(fresh_candidates) > 1:
-        dated_candidates: list[tuple[datetime, ParsedEmail]] = []
-        for message in fresh_candidates:
-            if message.received_at is None:
-                continue
-            try:
-                dated_candidates.append(
-                    (datetime.fromisoformat(message.received_at), message)
-                )
-            except ValueError:
-                continue
-        if len(dated_candidates) != len(fresh_candidates):
-            return PinDecision(
-                status="NEEDS_REVIEW",
-                email=None,
-                confidence=None,
-                summary={**base_summary, "reason": "multiple_matches_missing_date"},
-                error_code="PIN_MATCH_NOT_UNIQUE",
-                error_message="Multiple matching Gmail messages require manual review",
-            )
-        dated_candidates.sort(key=lambda entry: entry[0], reverse=True)
-        if (
-            dated_candidates[0][0] == dated_candidates[1][0]
-            and dated_candidates[0][1].pin != dated_candidates[1][1].pin
-        ):
-            return PinDecision(
-                status="NEEDS_REVIEW",
-                email=None,
-                confidence=None,
-                summary={
-                    **base_summary,
-                    "reason": "multiple_matches_same_date_differing_pin",
-                },
-                error_code="PIN_MATCH_NOT_UNIQUE",
-                error_message="Multiple latest Gmail messages with differing PINs require manual review",
-            )
-        candidate = dated_candidates[0][1]
-        selection_reason = "latest_passport_match"
+    sorted_candidates = sorted(candidates, key=_sort_key, reverse=True)
+    candidate = sorted_candidates[0]
+    selection_reason = (
+        "unique_passport_match" if len(candidates) == 1 else "latest_passport_match"
+    )
 
     if candidate.pin is None:
+        if previous_pin:
+            reused_email = ParsedEmail(
+                message_id=candidate.message_id,
+                sender=candidate.sender or DEFAULT_SENDER,
+                subject=candidate.subject,
+                received_at=candidate.received_at or previous_received_at,
+                name=candidate.name,
+                passport_number=passport_number,
+                pin=previous_pin,
+            )
+            return PinDecision(
+                status="RECEIVED",
+                email=reused_email,
+                confidence=1.0,
+                summary={**base_summary, "reason": "existing_customer_pin_reused"},
+            )
         return PinDecision(
             status="PARSE_FAILED",
             email=candidate,
@@ -669,6 +660,10 @@ def decide_for_item(
     )
 
 
+class TransientGmailError(WorkerError):
+    """Raised when Gmail IMAP connection fails due to transient network/socket issues."""
+
+
 class GmailReader:
     def __init__(self, config: WorkerConfig) -> None:
         self.config = config
@@ -679,59 +674,66 @@ class GmailReader:
         threshold = datetime.now(timezone.utc).date() - timedelta(
             days=self.config.gmail_lookback_days
         )
-        mailbox: imaplib.IMAP4_SSL | None = None
-        parsed: list[ParsedEmail] = []
-        try:
-            mailbox = imaplib.IMAP4_SSL(
-                self.config.gmail_imap_host,
-                timeout=max(10, int(self.config.request_timeout_seconds)),
-            )
-            mailbox.login(gmail_address, gmail_app_password)
-            status, _ = mailbox.select(self.config.gmail_imap_folder, readonly=True)
-            if status != "OK":
-                raise WorkerError("Gmail INBOX 无法以只读模式打开")
-            status, data = mailbox.uid(
-                "search",
-                None,
-                "FROM",
-                self.config.gmail_sender_filter,
-                "SINCE",
-                threshold.strftime("%d-%b-%Y"),
-            )
-            if status != "OK":
-                raise WorkerError("Gmail IMAP 搜索失败")
-            uids = (data[0] or b"").split() if data else []
-            for uid in uids:
-                status, fetched = mailbox.uid("fetch", uid, "(BODY.PEEK[])")
-                if status != "OK":
-                    log_event(
-                        logging.WARNING,
-                        step="email_parse",
-                        status="skipped",
-                        error_code="EMAIL_PARSE_FAILED",
-                        error_message="A Gmail candidate could not be parsed",
-                    )
-                    continue
-                raw_email = next(
-                    (
-                        part[1]
-                        for part in fetched
-                        if isinstance(part, tuple) and len(part) > 1 and isinstance(part[1], bytes)
-                    ),
-                    None,
+        last_transient_exc: Exception | None = None
+        for attempt in range(1, 3):
+            mailbox: imaplib.IMAP4_SSL | None = None
+            parsed: list[ParsedEmail] = []
+            try:
+                mailbox = imaplib.IMAP4_SSL(
+                    self.config.gmail_imap_host,
+                    timeout=max(10, int(self.config.request_timeout_seconds)),
                 )
-                if raw_email is None:
+                mailbox.login(gmail_address, gmail_app_password)
+                status, _ = mailbox.select(self.config.gmail_imap_folder, readonly=True)
+                if status != "OK":
+                    raise WorkerError("Gmail INBOX 无法以只读模式打开")
+                status, data = mailbox.uid(
+                    "search",
+                    None,
+                    "FROM",
+                    self.config.gmail_sender_filter,
+                    "SINCE",
+                    threshold.strftime("%d-%b-%Y"),
+                )
+                if status != "OK":
+                    raise WorkerError("Gmail IMAP 搜索失败")
+                uids = (data[0] or b"").split() if data else []
+                chunk_size = 40
+                for idx in range(0, len(uids), chunk_size):
+                    chunk = uids[idx : idx + chunk_size]
+                    uid_set = b",".join(chunk)
+                    status, fetched = mailbox.uid("fetch", uid_set, "(BODY.PEEK[])")
+                    if status != "OK" or not fetched:
+                        log_event(
+                            logging.WARNING,
+                            step="email_parse",
+                            status="skipped",
+                            error_code="EMAIL_PARSE_FAILED",
+                            error_message="A Gmail candidate batch could not be fetched",
+                        )
+                        continue
+                    for part in fetched:
+                        if isinstance(part, tuple) and len(part) > 1 and isinstance(part[1], bytes):
+                            try:
+                                parsed.append(parse_message(part[1]))
+                            except Exception:
+                                continue
+                return parsed
+            except (imaplib.IMAP4.abort, OSError, TimeoutError) as exc:
+                last_transient_exc = exc
+                if attempt < 2:
+                    time.sleep(2.0)
                     continue
-                parsed.append(parse_message(raw_email))
-            return parsed
-        except imaplib.IMAP4.error as exc:
-            raise WorkerError("Gmail IMAP 认证或邮箱访问失败") from exc
-        finally:
-            if mailbox is not None:
-                try:
-                    mailbox.logout()
-                except Exception:
-                    pass
+                raise TransientGmailError("Gmail IMAP 网络连接暂时中断或超时") from exc
+            except imaplib.IMAP4.error as exc:
+                raise WorkerError("Gmail IMAP 认证或邮箱访问失败") from exc
+            finally:
+                if mailbox is not None:
+                    try:
+                        mailbox.logout()
+                    except Exception:
+                        pass
+        raise TransientGmailError("Gmail IMAP 网络连接暂时中断或超时") from last_transient_exc
 
 
 class GmailPinWorker:
@@ -795,6 +797,16 @@ class GmailPinWorker:
                         batch_id=batch_id,
                         result={"candidate_count": len(messages)},
                     )
+            except TransientGmailError:
+                credential_error = "gmail_fetch_transient_timeout"
+                log_event(
+                    logging.WARNING,
+                    step="gmail_fetch",
+                    status="retrying",
+                    batch_id=batch_id,
+                    error_code="GMAIL_FETCH_TRANSIENT_RETRY",
+                    error_message="Gmail IMAP connection timed out transiently; items will retry",
+                )
             except WorkerError:
                 credential_error = "gmail_credentials_unavailable"
                 log_event(
@@ -838,6 +850,20 @@ class GmailPinWorker:
                     },
                     error_code="SNAPSHOT_INVALID",
                     error_message="Customer snapshot is not a JSON object",
+                )
+            elif credential_error == "gmail_fetch_transient_timeout":
+                decision = PinDecision(
+                    status="NOT_FOUND",
+                    email=None,
+                    confidence=None,
+                    summary={
+                        "source": "GMAIL_IMAP",
+                        "reason": credential_error,
+                        "email_body_stored": False,
+                        "pin_value_logged": False,
+                    },
+                    error_code="GMAIL_FETCH_TRANSIENT_RETRY",
+                    error_message="Gmail IMAP 网络连接暂时超时，等待下一轮自动重试",
                 )
             elif credential_error is not None:
                 decision = PinDecision(
@@ -938,7 +964,7 @@ class GmailPinWorker:
             result={"poll_seconds": self.config.poll_seconds},
         )
         self.supabase.heartbeat_tick(status="ONLINE", force=True)
-        backoff_steps = [2.0, 5.0, 10.0, 20.0, 30.0]
+        backoff_steps = [2.0, 5.0, 10.0]
         backoff_idx = 0
         while True:
             try:

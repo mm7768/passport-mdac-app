@@ -4,11 +4,114 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'supabase_gateway.dart';
+
+Future<String?> downloadAndSaveEvidenceFile({
+  required BuildContext context,
+  String? storagePath,
+  String? fallbackUrl,
+  required bool isPdf,
+  String? customerName,
+  String? evidenceType,
+}) async {
+  try {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(isPdf ? '正在准备下载 PDF 凭证...' : '正在准备下载原图截图...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    Uint8List? bytes;
+    final cleanPath = (storagePath ?? '').trim();
+    if (cleanPath.isNotEmpty) {
+      bytes = await SupabaseGateway.downloadStorageFile(cleanPath);
+    } else if (fallbackUrl != null && fallbackUrl.trim().isNotEmpty) {
+      final client = HttpClient();
+      try {
+        final req = await client.getUrl(Uri.parse(fallbackUrl.trim()));
+        req.followRedirects = true;
+        final resp = await req.close();
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          throw HttpException('下载失败（HTTP ${resp.statusCode}）');
+        }
+        final builder = BytesBuilder(copy: false);
+        await for (final chunk in resp) {
+          builder.add(chunk);
+        }
+        bytes = builder.takeBytes();
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    if (bytes == null || bytes.isEmpty) {
+      throw const FormatException('下载到的凭证文件内容为空。');
+    }
+
+    String ext = isPdf ? 'pdf' : 'png';
+    final lowerPath = cleanPath.toLowerCase();
+    if (lowerPath.endsWith('.pdf')) {
+      ext = 'pdf';
+    } else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
+      ext = 'jpg';
+    } else if (lowerPath.endsWith('.png')) {
+      ext = 'png';
+    }
+
+    final now = DateTime.now();
+    final datePrefix =
+        '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+    final safeName = (customerName ?? '')
+        .trim()
+        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+        .replaceAll(RegExp(r'\s+'), '_');
+    final typeSuffix = (evidenceType == 'VISIT_PASS_CHECK' || !isPdf)
+        ? 'VisitPass'
+        : 'Registration';
+    final fileName = safeName.isNotEmpty
+        ? '${datePrefix}_${safeName}_$typeSuffix.$ext'
+        : '${datePrefix}_$typeSuffix.$ext';
+
+    final savedPath = await FilePicker.platform.saveFile(
+      dialogTitle: '保存 $fileName',
+      fileName: fileName,
+      type: FileType.custom,
+      allowedExtensions: [ext],
+      bytes: bytes,
+    );
+
+    if (savedPath != null && savedPath.trim().isNotEmpty) {
+      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+        try {
+          final file = File(savedPath);
+          if (!await file.exists() || await file.length() == 0) {
+            await file.writeAsBytes(bytes, flush: true);
+          }
+        } catch (_) {}
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已保存：$fileName')),
+        );
+      }
+      return fileName;
+    }
+    return null;
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('下载失败：$e')),
+      );
+    }
+    return null;
+  }
+}
 
 enum HumanQueryKind { registration, visitPass }
 
@@ -699,8 +802,13 @@ class _HumanQueryReviewPageState extends State<HumanQueryReviewPage> {
 }
 
 class CustomerQueryEvidenceCard extends StatefulWidget {
-  const CustomerQueryEvidenceCard({super.key, required this.customerId});
+  const CustomerQueryEvidenceCard({
+    super.key,
+    required this.customerId,
+    this.customerName = '',
+  });
   final String customerId;
+  final String customerName;
   @override
   State<CustomerQueryEvidenceCard> createState() => _CustomerQueryEvidenceCardState();
 }
@@ -724,6 +832,9 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
       await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (_) => PrivateEvidencePreviewPage(
           url: url,
+          storagePath: path,
+          customerName: widget.customerName,
+          evidenceType: row['type']?.toString(),
           isPdf: path.toLowerCase().endsWith('.pdf'),
           title: row['type'] == 'VISIT_PASS_CHECK'
               ? 'Visit Pass 查询凭证'
@@ -736,6 +847,17 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
         SnackBar(content: Text('凭证加载失败：$exception')),
       );
     }
+  }
+  Future<void> _download(Map<String, dynamic> row) async {
+    final path = row['screenshot_path']?.toString() ?? '';
+    if (path.isEmpty) return;
+    await downloadAndSaveEvidenceFile(
+      context: context,
+      storagePath: path,
+      isPdf: path.toLowerCase().endsWith('.pdf'),
+      customerName: widget.customerName,
+      evidenceType: row['type']?.toString(),
+    );
   }
   Future<void> _deleteEvidence(Map<String, dynamic> row) async {
     final checkId = row['id']?.toString() ?? '';
@@ -851,6 +973,14 @@ class _CustomerQueryEvidenceCardState extends State<CustomerQueryEvidenceCard> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
+                        icon: const Icon(Icons.download_rounded, size: 20),
+                        tooltip: row['type'] == 'VISIT_PASS_CHECK'
+                            ? '直接下载 Visit Pass 截图'
+                            : '直接下载此凭证',
+                        color: const Color(0xFF087F78),
+                        onPressed: () => _download(row),
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.open_in_new_rounded, size: 20),
                         tooltip: '查看凭证',
                         color: const Color(0xFF087F78),
@@ -880,10 +1010,16 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
     required this.url,
     required this.isPdf,
     required this.title,
+    this.storagePath,
+    this.customerName,
+    this.evidenceType,
   });
   final String url;
   final bool isPdf;
   final String title;
+  final String? storagePath;
+  final String? customerName;
+  final String? evidenceType;
 
   String _buildPdfViewerHtml(String pdfUrl) {
     return '''
@@ -988,6 +1124,20 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
       appBar: AppBar(
         title: Text(title),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.download_rounded),
+            tooltip: isPdf ? '直接下载 PDF' : '直接下载截图',
+            onPressed: () async {
+              await downloadAndSaveEvidenceFile(
+                context: context,
+                storagePath: storagePath,
+                fallbackUrl: url,
+                isPdf: isPdf,
+                customerName: customerName,
+                evidenceType: evidenceType,
+              );
+            },
+          ),
           if (isPdf)
             IconButton(
               icon: const Icon(Icons.open_in_browser_rounded),
@@ -1032,7 +1182,7 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '双指手势可缩放浏览 · 右上角支持一键在手机浏览器打开或复制直链。',
+                        '双指手势可缩放浏览 · 右上角支持直接下载、在浏览器打开或复制直链。',
                         style: TextStyle(fontSize: 11, color: Color(0xFF5F6368)),
                       ),
                     ),
@@ -1040,7 +1190,29 @@ class PrivateEvidencePreviewPage extends StatelessWidget {
                 ),
               ),
             )
-          : null,
+          : Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: const Color(0xFFF1F3F4),
+              child: SafeArea(
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      await downloadAndSaveEvidenceFile(
+                        context: context,
+                        storagePath: storagePath,
+                        fallbackUrl: url,
+                        isPdf: isPdf,
+                        customerName: customerName,
+                        evidenceType: evidenceType,
+                      );
+                    },
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                    label: const Text('直接下载原图截图'),
+                  ),
+                ),
+              ),
+            ),
       body: isPdf
           ? InAppWebView(
               initialData: InAppWebViewInitialData(

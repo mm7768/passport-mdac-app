@@ -11646,7 +11646,11 @@ Future<void> showCustomerDetail(
                 if (SupabaseGateway.isConfigured &&
                     SupabaseGateway.currentUserId != null) ...[
                   const SizedBox(height: 18),
-                  CustomerQueryEvidenceCard(key: evidenceKey, customerId: currentCustomer.id),
+                  CustomerQueryEvidenceCard(
+                    key: evidenceKey,
+                    customerId: currentCustomer.id,
+                    customerName: currentCustomer.fullName,
+                  ),
                 ],
                 if (currentCustomer.lastSummary != null) ...[
                   const SizedBox(height: 18),
@@ -11667,6 +11671,44 @@ Future<void> showCustomerDetail(
                 Text(
                   '录入日期 ${formatDateTime(currentCustomer.createdAt)} · ${currentCustomer.createdBy}',
                   style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        final paths = await SupabaseGateway.fetchCustomerBundleEvidence(
+                          currentCustomer.id,
+                        );
+                        final vpPath = paths.visitPassScreenshotPath?.trim() ?? '';
+                        if (vpPath.isEmpty) {
+                          if (sheetContext.mounted) {
+                            ScaffoldMessenger.of(sheetContext).showSnackBar(
+                              const SnackBar(content: Text('该客户暂无 Visit Pass 截图记录')),
+                            );
+                          }
+                          return;
+                        }
+                        if (!sheetContext.mounted) return;
+                        await downloadAndSaveEvidenceFile(
+                          context: sheetContext,
+                          storagePath: vpPath,
+                          isPdf: vpPath.toLowerCase().endsWith('.pdf'),
+                          customerName: currentCustomer.fullName,
+                          evidenceType: 'VISIT_PASS_CHECK',
+                        );
+                      } catch (e) {
+                        if (sheetContext.mounted) {
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            SnackBar(content: Text('下载 Visit Pass 截图失败：$e')),
+                          );
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.download_rounded),
+                    label: const Text('单独下载 Visit Pass 截图'),
+                  ),
                 ),
                 const SizedBox(height: 10),
                 SizedBox(
@@ -12747,6 +12789,8 @@ class _TaskDetailDialogState extends State<_TaskDetailDialog> {
                                             MaterialPageRoute(
                                               builder: (_) => PrivateEvidencePreviewPage(
                                                 url: url,
+                                                storagePath: screenshotPath,
+                                                customerName: name,
                                                 isPdf: isPdf,
                                                 title: isPdf ? '$name 官方 MDAC PDF' : '$name 查询截图',
                                               ),

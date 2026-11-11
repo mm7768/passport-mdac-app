@@ -110,7 +110,7 @@ class WorkerConfig:
     slot_stagger_seconds: float = 1.5
     query_wait_seconds: int = 45
     query_grace_seconds: int = 15
-    max_local_attempts: int = 2
+    max_local_attempts: int = 3
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -182,7 +182,7 @@ class WorkerConfig:
             slot_stagger_seconds=positive_float("VISIT_PASS_SLOT_STAGGER_SECONDS", "1.5", 0.0),
             query_wait_seconds=bounded_int("VISIT_PASS_QUERY_WAIT_SECONDS", "45", 15, 120),
             query_grace_seconds=bounded_int("VISIT_PASS_QUERY_GRACE_SECONDS", "15", 0, 60),
-            max_local_attempts=bounded_int("VISIT_PASS_MAX_LOCAL_ATTEMPTS", "2", 1, 5),
+            max_local_attempts=bounded_int("VISIT_PASS_MAX_LOCAL_ATTEMPTS", "3", 1, 5),
         )
 
 
@@ -224,15 +224,37 @@ class SupabaseAdminClient:
             return None
         return response.json()
 
+    def _unlock_stale_queued_batches(self, task_type: str) -> bool:
+        try:
+            resp = self.session.patch(
+                f"{self.rest_url}/automation_batches",
+                params={"task_type": f"eq.{task_type}", "status": "eq.QUEUED", "locked_by": "not.is.null"},
+                headers={"Prefer": "return=representation"},
+                json={"locked_by": None, "locked_at": None, "lease_expires_at": None},
+                timeout=self.config.request_timeout_seconds,
+            )
+            if resp.ok and resp.json():
+                for b in resp.json():
+                    self.session.patch(
+                        f"{self.rest_url}/automation_items",
+                        params={"batch_id": f"eq.{b['id']}", "status": "eq.QUEUED", "locked_by": "not.is.null"},
+                        json={"locked_by": None, "locked_at": None, "lease_expires_at": None},
+                        timeout=self.config.request_timeout_seconds,
+                    )
+                return True
+        except Exception:
+            pass
+        return False
+
     def claim_batch(self) -> dict[str, Any] | None:
-        rows = self._rpc(
-            "claim_visit_pass_check_batch",
-            {
-                "p_worker_id": self.config.worker_id,
-                "p_lease_seconds": self.config.lease_seconds,
-                "p_max_attempts": self.config.max_attempts,
-            },
-        )
+        payload = {
+            "p_worker_id": self.config.worker_id,
+            "p_lease_seconds": self.config.lease_seconds,
+            "p_max_attempts": self.config.max_attempts,
+        }
+        rows = self._rpc("claim_visit_pass_check_batch", payload)
+        if not rows and self._unlock_stale_queued_batches("VISIT_PASS_CHECK"):
+            rows = self._rpc("claim_visit_pass_check_batch", payload)
         if not rows:
             return None
         if not isinstance(rows, list):
@@ -1309,6 +1331,9 @@ class VisitPassCheckWorker:
         slot_id: int,
         batch_claim_token: str | None = None,
         item_claim_token: str | None = None,
+        item_attempt_count: int = 1,
+        can_requeue_fn: Any = None,
+        on_requeued_fn: Any = None,
     ) -> None:
         runtime_input = slot_supabase.get_runtime_input(item_id, case_id=case_id)
         if not case_id and runtime_input.get("case_id"):
@@ -1322,7 +1347,7 @@ class VisitPassCheckWorker:
             elif customer_id:
                 target_entry_date = slot_supabase.get_customer_entry_date(customer_id)
 
-        max_local_attempts = getattr(self.config, "max_local_attempts", 2)
+        max_local_attempts = getattr(self.config, "max_local_attempts", 3)
         outcome = None
         screenshot = None
         summary = None
@@ -1360,7 +1385,17 @@ class VisitPassCheckWorker:
                             "reason": summary.get("error") or outcome,
                         },
                     )
-                    time.sleep(2.0)
+                    try:
+                        slot_supabase.heartbeat(
+                            status="BUSY",
+                            batch_id=batch_id,
+                            item_id=item_id,
+                            batch_claim_token=batch_claim_token,
+                            item_claim_token=item_claim_token,
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(2.0 * attempt)
                     continue
 
                 last_exception = None
@@ -1387,43 +1422,80 @@ class VisitPassCheckWorker:
                             "error_message": error_message,
                         },
                     )
-                    time.sleep(2.0)
+                    try:
+                        slot_supabase.heartbeat(
+                            status="BUSY",
+                            batch_id=batch_id,
+                            item_id=item_id,
+                            batch_claim_token=batch_claim_token,
+                            item_claim_token=item_claim_token,
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(2.0 * attempt)
                     continue
                 break
 
+        max_requeue_attempts = min(getattr(self.config, "max_attempts", 5), 3)
+
         if last_exception is not None:
             error_code, error_message, retryable = classify_page_failure(last_exception)
+            is_transient_exc = error_code in ("PAGE_TIMEOUT", "TRANSIENT_REMOTE_ERROR") or retryable
+            can_requeue = (
+                is_transient_exc
+                and item_attempt_count < max_requeue_attempts
+                and (can_requeue_fn is None or bool(can_requeue_fn()))
+            )
             log_event(
-                logging.ERROR,
+                logging.WARNING if can_requeue else logging.ERROR,
                 step="page_preview",
-                status="failed",
+                status="requeued" if can_requeue else "failed",
                 batch_id=batch_id,
                 item_id=item_id,
                 customer_id=customer_id,
                 case_id=case_id,
-                result="RESULT_UNKNOWN",
+                result="RETRY_QUEUED" if can_requeue else "RESULT_UNKNOWN",
                 error_code=error_code,
                 error_message=error_message,
             )
             try:
-                slot_supabase.finish_visit_pass_worker(
-                    item_id=item_id,
-                    outcome="NEEDS_REVIEW",
-                    evidence_path=None,
-                    raw_summary={
-                        "source": "MDAC_CHECK_VISIT_PASS",
-                        "mode": self.config.mode,
-                        "submitted": False,
-                        "result_confirmed": False,
-                        "captcha_bypass": False,
-                        "screenshot_saved": False,
-                        "error": error_code,
-                    },
-                    error_code=error_code,
-                    error_message=error_message,
-                    batch_claim_token=batch_claim_token,
-                    item_claim_token=item_claim_token,
-                )
+                raw_summary = {
+                    "source": "MDAC_CHECK_VISIT_PASS",
+                    "mode": self.config.mode,
+                    "submitted": False,
+                    "result_confirmed": False,
+                    "captcha_bypass": False,
+                    "screenshot_saved": False,
+                    "error": error_code,
+                }
+                if can_requeue:
+                    slot_supabase.finish_item(
+                        item_id=item_id,
+                        check_status="FAILED",
+                        normalized_status=None,
+                        raw_summary=raw_summary,
+                        screenshot_path=None,
+                        challenge_type=None,
+                        result_unknown=False,
+                        retryable=True,
+                        error_code=error_code,
+                        error_message=error_message,
+                        batch_claim_token=batch_claim_token,
+                        item_claim_token=item_claim_token,
+                    )
+                    if on_requeued_fn is not None:
+                        on_requeued_fn()
+                else:
+                    slot_supabase.finish_visit_pass_worker(
+                        item_id=item_id,
+                        outcome="NEEDS_REVIEW",
+                        evidence_path=None,
+                        raw_summary=raw_summary,
+                        error_code=error_code,
+                        error_message=error_message,
+                        batch_claim_token=batch_claim_token,
+                        item_claim_token=item_claim_token,
+                    )
             except Exception:
                 log_event(
                     logging.ERROR,
@@ -1457,6 +1529,10 @@ class VisitPassCheckWorker:
             summary["screenshot_saved"] = False
             summary["screenshot_upload_failed"] = True
 
+        is_transient_outcome = (
+            outcome == "QUERY_TIMEOUT"
+            or (outcome == "NEEDS_REVIEW" and summary.get("error") == "SLIDER_SOLVER_FAILED")
+        )
         error_code = None
         error_message = None
         if outcome == "NEEDS_REVIEW":
@@ -1472,6 +1548,45 @@ class VisitPassCheckWorker:
         elif outcome == "PIN_INVALID":
             error_code = "PIN_INVALID"
             error_message = "官方页面提示 PIN 错误"
+
+        can_requeue_outcome = (
+            is_transient_outcome
+            and item_attempt_count < max_requeue_attempts
+            and (can_requeue_fn is None or bool(can_requeue_fn()))
+        )
+        if can_requeue_outcome:
+            try:
+                slot_supabase.finish_item(
+                    item_id=item_id,
+                    check_status="FAILED",
+                    normalized_status=None,
+                    raw_summary=summary,
+                    screenshot_path=screenshot_path,
+                    challenge_type=None,
+                    result_unknown=False,
+                    retryable=True,
+                    error_code=error_code,
+                    error_message=error_message,
+                    batch_claim_token=batch_claim_token,
+                    item_claim_token=item_claim_token,
+                )
+                if on_requeued_fn is not None:
+                    on_requeued_fn()
+                log_event(
+                    logging.WARNING,
+                    step="result_writeback",
+                    status="requeued",
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    customer_id=customer_id,
+                    case_id=case_id,
+                    result={"outcome": "RETRY_QUEUED", "slot": slot_id, "attempt_count": item_attempt_count},
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                return
+            except Exception as requeue_err:
+                LOG.warning("Visit Pass Check 自动重排回退至 finish_visit_pass_worker: %s", requeue_err)
 
         slot_supabase.finish_visit_pass_worker(
             item_id=item_id,
@@ -1572,6 +1687,7 @@ class VisitPassCheckWorker:
 
                 item_id = str(item["id"])
                 item_claim_token = str(item.get("claim_token") or "")
+                item_attempt_count = int(item.get("attempt_count") or 1)
                 customer_id = str(item.get("customer_id") or "") or None
                 case_id = str(item.get("case_id") or "") or None
 
@@ -1603,6 +1719,9 @@ class VisitPassCheckWorker:
                         slot_id=slot_id,
                         batch_claim_token=batch_claim_token,
                         item_claim_token=item_claim_token,
+                        item_attempt_count=item_attempt_count,
+                        can_requeue_fn=lambda: len(active_slots) <= 1,
+                        on_requeued_fn=stop_batch.set,
                     )
                     with counter_lock:
                         processed_counter["count"] += 1
