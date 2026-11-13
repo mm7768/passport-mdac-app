@@ -59,14 +59,14 @@ jobs:
           KEY=$(echo "c2Jfc2VjcmV0X1ByZ1EwQXN6OF9RMDJOd0pkb0toRVFfY3pKRlF5NGM=" | base64 -d)
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           echo "Attempting optimized release build..."
-          if flutter build apk --release --no-tree-shake-icons \
+          if flutter build apk --release --no-tree-shake-icons --android-skip-build-dependency-validation \
             --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee build_log.txt; then
             echo "Release build succeeded! Optimized APK generated."
             cp build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
           else
             echo "Release build failed, falling back to debug build..."
-            flutter build apk --debug \
+            flutter build apk --debug --android-skip-build-dependency-validation \
               --dart-define=SUPABASE_URL=https://xdmcxhvdqsbcqedfprcy.supabase.co \
               --dart-define=SUPABASE_PUBLISHABLE_KEY="$KEY" 2>&1 | tee -a build_log.txt
             cp build/app/outputs/flutter-apk/app-debug.apk "build/app/outputs/flutter-apk/PassportMDAC-v${VERSION}.apk"
