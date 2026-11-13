@@ -999,19 +999,50 @@ class DemoRepository extends ChangeNotifier {
   bool get remoteMode =>
       SupabaseGateway.isConfigured && SupabaseGateway.currentUserId != null;
 
+  bool archivedCustomersLoaded = false;
+  bool archivedCustomersLoading = false;
+
   Future<String?> syncCustomersFromSupabase() async {
     if (!remoteMode) return null;
     try {
-      final rows = await SupabaseGateway.fetchCustomers();
+      final rows = await SupabaseGateway.fetchCustomers(archivedOnly: false);
+      final preservedArchived = archivedCustomersLoaded
+          ? customers.where((c) => c.businessStatus == 'ARCHIVED').toList()
+          : <Customer>[];
       customers
         ..clear()
-        ..addAll(rows.map(_customerFromRemote));
-      auditEvents.insert(0, '已从 Supabase 同步 ${customers.length} 个客户档案');
+        ..addAll(rows.map(_customerFromRemote))
+        ..addAll(preservedArchived);
+      auditEvents.insert(0, '已从 Supabase 同步 ${rows.length} 个活跃客户档案');
       syncWorkersHealthFromSupabase();
       notifyListeners();
       return null;
     } catch (exception) {
       return '客户云端同步失败：$exception';
+    }
+  }
+
+  Future<String?> syncArchivedCustomersFromSupabase() async {
+    if (!remoteMode) return null;
+    archivedCustomersLoading = true;
+    notifyListeners();
+    try {
+      final rows = await SupabaseGateway.fetchCustomers(archivedOnly: true);
+      final activeOnly = customers
+          .where((c) => c.businessStatus != 'ARCHIVED')
+          .toList();
+      customers
+        ..clear()
+        ..addAll(activeOnly)
+        ..addAll(rows.map(_customerFromRemote));
+      archivedCustomersLoaded = true;
+      auditEvents.insert(0, '已从 Supabase 按需加载 ${rows.length} 个已归档客户档案');
+      return null;
+    } catch (exception) {
+      return '已归档客户云端同步失败：$exception';
+    } finally {
+      archivedCustomersLoading = false;
+      notifyListeners();
     }
   }
 
@@ -1991,6 +2022,9 @@ class DemoRepository extends ChangeNotifier {
           return 'Supabase 返回的更新数量不一致，已阻止本地状态更新。';
         }
         await syncCustomersFromSupabase();
+        if (archivedCustomersLoaded) {
+          await syncArchivedCustomersFromSupabase();
+        }
         await syncAutomationTasksFromSupabase();
         auditEvents.insert(
           0,
@@ -4206,6 +4240,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   customerFunnelFilter = key;
                   selected.clear();
                 });
+                if (key == 'ARCHIVED' &&
+                    widget.repository.remoteMode &&
+                    !widget.repository.archivedCustomersLoaded &&
+                    !widget.repository.archivedCustomersLoading) {
+                  widget.repository.syncArchivedCustomersFromSupabase().then((err) {
+                    if (err != null && mounted) {
+                      showToast(context, err, error: true);
+                    }
+                  });
+                }
               },
               borderRadius: BorderRadius.circular(12),
               child: AnimatedContainer(
@@ -4255,7 +4299,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text(
-                        '$count',
+                        key == 'ARCHIVED' &&
+                                widget.repository.remoteMode &&
+                                !widget.repository.archivedCustomersLoaded
+                            ? (widget.repository.archivedCustomersLoading ? '...' : '按需')
+                            : '$count',
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w800,
@@ -7088,7 +7136,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
           IconButton.outlined(
             onPressed: () async {
               final results = await Future.wait([
-                widget.repository.syncCustomersFromSupabase(),
+                customerFunnelFilter == 'ARCHIVED'
+                    ? widget.repository.syncArchivedCustomersFromSupabase()
+                    : widget.repository.syncCustomersFromSupabase(),
                 widget.repository.syncMdacBatchMembershipsFromSupabase(),
                 widget.repository.syncAutomationTasksFromSupabase(),
                 widget.repository.syncWorkersHealthFromSupabase(),
@@ -7338,24 +7388,46 @@ class _CustomersScreenState extends State<CustomersScreen> {
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 28),
-              child: groups.isEmpty
+              child: (customerFunnelFilter == 'ARCHIVED' &&
+                      widget.repository.archivedCustomersLoading &&
+                      groups.isEmpty)
                   ? const SectionCard(
                       padding: EdgeInsets.all(32),
-                      child: EmptyState(
-                        icon: Icons.people_outline_rounded,
-                        title: '没有符合条件的客户',
-                        body: '可以导入护照资料，或清除当前搜索条件。',
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 12),
+                            Text(
+                              '正在从云端加载已归档客户...',
+                              style: TextStyle(
+                                color: AppTheme.muted,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     )
-                  : Column(
-                      children: groups
-                          .map((group) => _buildGroupCard(
-                                group,
-                                compact,
-                                isSearching,
-                              ))
-                          .toList(),
-                    ),
+                  : groups.isEmpty
+                      ? const SectionCard(
+                          padding: EdgeInsets.all(32),
+                          child: EmptyState(
+                            icon: Icons.people_outline_rounded,
+                            title: '没有符合条件的客户',
+                            body: '可以导入护照资料，或清除当前搜索条件。',
+                          ),
+                        )
+                      : Column(
+                          children: groups
+                              .map((group) => _buildGroupCard(
+                                    group,
+                                    compact,
+                                    isSearching,
+                                  ))
+                              .toList(),
+                        ),
             ),
             if (selected.isNotEmpty)
               SelectionBar(
