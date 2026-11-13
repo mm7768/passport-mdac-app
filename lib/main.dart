@@ -4155,18 +4155,26 @@ class _CustomersScreenState extends State<CustomersScreen> {
   bool onlyWithPinFilter = false;
   String sortOption = 'DEFAULT'; // 'DEFAULT' (录入时间倒序), 'NAME_ASC' (姓名 A-Z), 'NAME_DESC' (姓名 Z-A)
 
-  int get allCount => widget.repository.activeCustomers.length;
-  int get needMdacCount => widget.repository.activeCustomers
+  Iterable<Customer> get _unarchivedActiveCustomers =>
+      widget.repository.activeCustomers.where(
+        (c) => c.businessStatus != 'ARCHIVED',
+      );
+
+  int get allCount => _unarchivedActiveCustomers.length;
+  int get needMdacCount => _unarchivedActiveCustomers
       .where((c) => c.businessStatus == 'PENDING')
       .length;
-  int get needPinCount => widget.repository.activeCustomers
+  int get needPinCount => _unarchivedActiveCustomers
       .where((c) => c.businessStatus != 'PENDING' && (c.pin ?? '').trim().isEmpty)
       .length;
-  int get needVisitPassCount => widget.repository.activeCustomers
+  int get needVisitPassCount => _unarchivedActiveCustomers
       .where((c) => (c.pin ?? '').trim().isNotEmpty && c.businessStatus != 'VISIT_PASS_CHECKED')
       .length;
-  int get completedCount => widget.repository.activeCustomers
+  int get completedCount => _unarchivedActiveCustomers
       .where((c) => c.businessStatus == 'VISIT_PASS_CHECKED')
+      .length;
+  int get archivedCount => widget.repository.activeCustomers
+      .where((c) => c.businessStatus == 'ARCHIVED')
       .length;
 
   Widget _buildFunnelBar() {
@@ -4176,6 +4184,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       ('NEED_PIN', '待取 PIN', needPinCount, Icons.vpn_key_rounded, const Color(0xFF2563EB)),
       ('NEED_VISIT_PASS', '待查 Visit Pass', needVisitPassCount, Icons.badge_outlined, const Color(0xFF0D9488)),
       ('COMPLETED', '已完成', completedCount, Icons.check_circle_rounded, const Color(0xFF16A34A)),
+      ('ARCHIVED', '已归档', archivedCount, Icons.inventory_2_rounded, const Color(0xFF64748B)),
     ];
 
     return SingleChildScrollView(
@@ -4317,7 +4326,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   List<Customer> get filtered {
     final query = searchController.text.trim().toLowerCase();
+    final viewingArchived = customerFunnelFilter == 'ARCHIVED' ||
+        businessStatusFilter == businessStatusLabel('ARCHIVED');
     final result = widget.repository.activeCustomers.where((customer) {
+      final isArchived = customer.businessStatus == 'ARCHIVED';
+      if (viewingArchived && !isArchived) return false;
+      if (!viewingArchived && isArchived) return false;
+
       final matchesQuery =
           query.isEmpty ||
           customer.fullName.toLowerCase().contains(query) ||
@@ -4328,6 +4343,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         'NEED_PIN' => customer.businessStatus != 'PENDING' && (customer.pin ?? '').trim().isEmpty,
         'NEED_VISIT_PASS' => (customer.pin ?? '').trim().isNotEmpty && customer.businessStatus != 'VISIT_PASS_CHECKED',
         'COMPLETED' => customer.businessStatus == 'VISIT_PASS_CHECKED',
+        'ARCHIVED' => customer.businessStatus == 'ARCHIVED',
         _ => true,
       };
 
@@ -4768,42 +4784,81 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        InkWell(
-                          onTap: () => _showMergeBatchDialog(group),
-                          borderRadius: BorderRadius.circular(6),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2.5,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppTheme.teal.withValues(alpha: 0.08),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            InkWell(
+                              onTap: () => _showMergeBatchDialog(group),
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
-                                color: AppTheme.teal.withValues(alpha: 0.25),
-                                width: 0.8,
-                              ),
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.merge_type_rounded, size: 13, color: AppTheme.teal),
-                                SizedBox(width: 3),
-                                Text(
-                                  '合并',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.teal,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.teal.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: AppTheme.teal.withValues(alpha: 0.25),
+                                    width: 0.8,
                                   ),
                                 ),
-                              ],
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.merge_type_rounded, size: 13, color: AppTheme.teal),
+                                    SizedBox(width: 3),
+                                    Text(
+                                      '合并',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppTheme.teal,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ),
+                            const SizedBox(width: 4),
+                            InkWell(
+                              onTap: () => _showSplitBatchDialog(group),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0D9488).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: const Color(0xFF0D9488).withValues(alpha: 0.25),
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.call_split_rounded, size: 13, color: Color(0xFF0D9488)),
+                                    SizedBox(width: 3),
+                                    Text(
+                                      '拆分',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF0D9488),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 4),
                         InkWell(
-                          onTap: () => _showSplitBatchDialog(group),
+                          onTap: () => _toggleGroupArchive(group),
                           borderRadius: BorderRadius.circular(6),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
@@ -4811,24 +4866,32 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               vertical: 2.5,
                             ),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF0D9488).withValues(alpha: 0.08),
+                              color: const Color(0xFF64748B).withValues(alpha: 0.10),
                               borderRadius: BorderRadius.circular(6),
                               border: Border.all(
-                                color: const Color(0xFF0D9488).withValues(alpha: 0.25),
+                                color: const Color(0xFF64748B).withValues(alpha: 0.30),
                                 width: 0.8,
                               ),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.call_split_rounded, size: 13, color: Color(0xFF0D9488)),
-                                SizedBox(width: 3),
+                                Icon(
+                                  group.customers.every((c) => c.businessStatus == 'ARCHIVED')
+                                      ? Icons.unarchive_outlined
+                                      : Icons.inventory_2_outlined,
+                                  size: 13,
+                                  color: const Color(0xFF475569),
+                                ),
+                                const SizedBox(width: 3),
                                 Text(
-                                  '拆分',
-                                  style: TextStyle(
+                                  group.customers.every((c) => c.businessStatus == 'ARCHIVED')
+                                      ? '移出归档'
+                                      : '一键归档',
+                                  style: const TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
-                                    color: Color(0xFF0D9488),
+                                    color: Color(0xFF475569),
                                   ),
                                 ),
                               ],
@@ -6234,7 +6297,65 @@ class _CustomersScreenState extends State<CustomersScreen> {
     setState(() => selected.clear());
     showToast(
       context,
-      '已将 $count 位客户的状态批量更新为“${businessStatusLabel(chosenStatus)}”',
+      chosenStatus == 'ARCHIVED'
+          ? '已将 $count 位客户归档，可在顶部「已归档」栏查看'
+          : '已将 $count 位客户的状态批量更新为“${businessStatusLabel(chosenStatus)}”',
+    );
+  }
+
+  Future<void> _toggleGroupArchive(_CustomerBatchGroup group) async {
+    final ids = group.customers.map((c) => c.id).toList();
+    if (ids.isEmpty) return;
+    final allArchived =
+        group.customers.every((c) => c.businessStatus == 'ARCHIVED');
+    final targetStatus = allArchived ? 'VISIT_PASS_CHECKED' : 'ARCHIVED';
+    final error = await widget.repository.updateCustomersBusinessStatusWithSync(
+      ids,
+      targetStatus,
+      widget.actor,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+      return;
+    }
+    setState(() => selected.removeAll(ids));
+    showToast(
+      context,
+      allArchived
+          ? '已将该批次 ${ids.length} 位客户移出归档'
+          : '已将该批次 ${ids.length} 位客户收入「已归档」栏',
+    );
+  }
+
+  Future<void> toggleArchiveSelected() async {
+    if (selected.isEmpty) {
+      showToast(context, '请先选择客户。');
+      return;
+    }
+    final ids = selected.toList();
+    final selectedCustomers = widget.repository.activeCustomers
+        .where((c) => selected.contains(c.id))
+        .toList();
+    final allArchived = selectedCustomers.isNotEmpty &&
+        selectedCustomers.every((c) => c.businessStatus == 'ARCHIVED');
+    final targetStatus = allArchived ? 'VISIT_PASS_CHECKED' : 'ARCHIVED';
+    final error = await widget.repository.updateCustomersBusinessStatusWithSync(
+      ids,
+      targetStatus,
+      widget.actor,
+    );
+    if (!mounted) return;
+    if (error != null) {
+      showToast(context, error, error: true);
+      return;
+    }
+    setState(() => selected.clear());
+    showToast(
+      context,
+      allArchived
+          ? '已将 ${ids.length} 位客户移出归档'
+          : '已将 ${ids.length} 位客户收入「已归档」栏',
     );
   }
 
@@ -7245,6 +7366,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     startSimpleTask(TaskType.registrationCheck),
                 onVisitPass: () => startSimpleTask(TaskType.visitPassCheck),
                 onBundlePdf: bundleSelectedPdf,
+                onArchive: toggleArchiveSelected,
+                isArchiveView: customerFunnelFilter == 'ARCHIVED',
                 onStatus: updateSelectedBusinessStatus,
                 onCreatedAt: widget.role == UserRole.owner
                     ? updateSelectedCreatedAt
@@ -10017,6 +10140,8 @@ class SelectionBar extends StatelessWidget {
     required this.onPin,
     required this.onRegistration,
     required this.onVisitPass,
+    this.onArchive,
+    this.isArchiveView = false,
     this.onStatus,
     this.onCreatedAt,
     this.onMergeBatch,
@@ -10032,6 +10157,8 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onPin;
   final VoidCallback onRegistration;
   final VoidCallback onVisitPass;
+  final VoidCallback? onArchive;
+  final bool isArchiveView;
   final VoidCallback? onStatus;
   final VoidCallback? onCreatedAt;
   final VoidCallback? onMergeBatch;
@@ -10094,6 +10221,17 @@ class SelectionBar extends StatelessWidget {
               avatar: const Icon(Icons.picture_as_pdf_outlined, size: 16),
               label: const Text('打包归档 PDF'),
               onPressed: onBundlePdf,
+            ),
+          if (onArchive != null)
+            ActionChip(
+              avatar: Icon(
+                isArchiveView
+                    ? Icons.unarchive_outlined
+                    : Icons.inventory_2_outlined,
+                size: 16,
+              ),
+              label: Text(isArchiveView ? '移出归档' : '归档任务'),
+              onPressed: onArchive,
             ),
           if (onStatus != null)
             ActionChip(
@@ -13002,7 +13140,7 @@ Color statusColor(String value) {
       value == 'VISIT_PASS_CHECKED') {
     return AppTheme.mint;
   }
-  if (value == 'VISIT_PASS_NOT_FOUND') {
+  if (value == 'VISIT_PASS_NOT_FOUND' || value == 'ARCHIVED') {
     return const Color(0xFFF1F5F9);
   }
   if (value == 'ACTION_REQUIRED') {
@@ -13016,7 +13154,9 @@ Color statusColor(String value) {
 
 Color statusTextColor(String value) {
   if (value == 'ACTION_REQUIRED') return AppTheme.danger;
-  if (value == 'VISIT_PASS_NOT_FOUND') return const Color(0xFF64748B);
+  if (value == 'VISIT_PASS_NOT_FOUND' || value == 'ARCHIVED') {
+    return const Color(0xFF64748B);
+  }
   return AppTheme.ink;
 }
 

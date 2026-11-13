@@ -1201,32 +1201,52 @@ class SupabaseGateway {
 
   static Future<List<Map<String, dynamic>>> fetchCustomers() async {
     final client = _requiredClient;
+    const selectCols =
+        'id, full_name, date_of_birth, place_of_birth, passport_number, '
+        'nationality, gender, passport_expiry_date, passport_image_path, '
+        'business_status, created_by, created_at, deleted_at, '
+        'created_by_name, pin_record';
     try {
-      final rows = await client
-          .from('customer_current_state')
-          .select(
-            'id, full_name, date_of_birth, place_of_birth, passport_number, '
-            'nationality, gender, passport_expiry_date, passport_image_path, '
-            'business_status, created_by, created_at, deleted_at, '
-            'created_by_name, pin_record',
-          )
-          .order('created_at', ascending: false)
-          .limit(500);
+      final results = await Future.wait<List<dynamic>>([
+        client
+            .from('customer_current_state')
+            .select(selectCols)
+            .neq('business_status', 'ARCHIVED')
+            .order('created_at', ascending: false)
+            .limit(500),
+        client
+            .from('customer_current_state')
+            .select(selectCols)
+            .eq('business_status', 'ARCHIVED')
+            .order('created_at', ascending: false)
+            .limit(500),
+      ]);
 
-      return rows
-          .map((row) => Map<String, dynamic>.from(row))
+      return [...results[0], ...results[1]]
+          .map((row) => Map<String, dynamic>.from(row as Map))
           .toList(growable: false);
     } catch (_) {
-      final rows = await client
-          .from('customers')
-          .select(
-            'id, full_name, date_of_birth, place_of_birth, passport_number, '
-            'nationality, gender, passport_expiry_date, passport_image_path, '
-            'business_status, created_by, created_at, deleted_at',
-          )
-          .isFilter('deleted_at', null)
-          .order('created_at', ascending: false)
-          .limit(500);
+      const baseCols =
+          'id, full_name, date_of_birth, place_of_birth, passport_number, '
+          'nationality, gender, passport_expiry_date, passport_image_path, '
+          'business_status, created_by, created_at, deleted_at';
+      final results = await Future.wait<List<dynamic>>([
+        client
+            .from('customers')
+            .select(baseCols)
+            .isFilter('deleted_at', null)
+            .neq('business_status', 'ARCHIVED')
+            .order('created_at', ascending: false)
+            .limit(500),
+        client
+            .from('customers')
+            .select(baseCols)
+            .isFilter('deleted_at', null)
+            .eq('business_status', 'ARCHIVED')
+            .order('created_at', ascending: false)
+            .limit(500),
+      ]);
+      final rows = [...results[0], ...results[1]];
       final pins = await client
           .from('email_pin_records')
           .select('customer_id, pin_value, status, received_at, created_at')
@@ -1253,8 +1273,8 @@ class SupabaseGateway {
       return [
         for (final row in rows)
           {
-            ...Map<String, dynamic>.from(row),
-            'created_by_name': names[row['created_by']] ?? row['created_by'],
+            ...Map<String, dynamic>.from(row as Map),
+            'created_by_name': names[(row as Map)['created_by']] ?? row['created_by'],
             'pin_record': latestPins[row['id']],
           },
       ];
