@@ -1211,7 +1211,7 @@ class SupabaseGateway {
             'created_by_name, pin_record',
           )
           .order('created_at', ascending: false)
-          .limit(200);
+          .limit(500);
 
       return rows
           .map((row) => Map<String, dynamic>.from(row))
@@ -1226,12 +1226,12 @@ class SupabaseGateway {
           )
           .isFilter('deleted_at', null)
           .order('created_at', ascending: false)
-          .limit(200);
+          .limit(500);
       final pins = await client
           .from('email_pin_records')
           .select('customer_id, pin_value, status, received_at, created_at')
           .order('created_at', ascending: false)
-          .limit(500);
+          .limit(1000);
       final profiles = await client
           .from('profiles')
           .select('id, name')
